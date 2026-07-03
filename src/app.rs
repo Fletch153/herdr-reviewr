@@ -100,6 +100,8 @@ pub enum Mode {
     List,
     /// Choosing a commit to compare against in the commit-picker dropdown.
     CommitPick,
+    /// Typing a file-tree filter query.
+    Filter,
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
@@ -128,6 +130,12 @@ pub enum FooterAction {
     PickCommit,
     /// Commit-picker modal: close without changing the compared commit.
     ClosePicker,
+    /// Start filtering the file tree.
+    Filter,
+    /// Filter modal: apply the query and return to navigation.
+    ApplyFilter,
+    /// Filter modal: clear the query and show the full tree.
+    ClearFilter,
     Send,
     List,
     Copy,
@@ -180,6 +188,8 @@ pub struct App {
     /// The flattened directory tree over `entries` — the rows the navigator paints. The
     /// `file_cursor` indexes this, not `entries`.
     pub file_rows: Vec<file_list::Row>,
+    /// The file-tree filter query (case-insensitive substring of the path); empty when inactive.
+    pub filter: String,
     pub file_cursor: usize,
     /// Top visible row of the file list, kept so `file_cursor` stays on screen when the
     /// changeset is taller than the pane.
@@ -289,6 +299,7 @@ impl App {
             focus: Focus::Files,
             entries: Vec::new(),
             file_rows: Vec::new(),
+            filter: String::new(),
             file_cursor: 0,
             file_scroll: 0,
             reveal_files: false,
@@ -406,10 +417,58 @@ impl App {
         self.file_rows.iter().position(|r| r.file_index().is_some())
     }
 
-    /// Rebuild the flattened tree from `entries` and the toggled-directory set.
+    /// Rebuild the flattened tree from `entries` and the toggled-directory set. When a filter is
+    /// active, keep only matching paths and force every surviving directory expanded so the
+    /// matches are visible regardless of the collapse state.
     fn rebuild_file_rows(&mut self) {
-        self.file_rows =
-            file_list::build(&self.entries, &self.toggled_dirs, self.default_expanded());
+        let query = self.filter.trim().to_lowercase();
+        self.file_rows = if query.is_empty() {
+            file_list::build(&self.entries, &self.toggled_dirs, self.default_expanded(), None)
+        } else {
+            file_list::build(&self.entries, &HashSet::new(), true, Some(&query))
+        };
+    }
+
+    /// Enter filter-input mode, editing the current query.
+    pub fn start_filter(&mut self) {
+        self.mode = Mode::Filter;
+    }
+
+    /// Append a character to the filter and re-apply it live.
+    pub fn filter_push(&mut self, c: char) {
+        self.filter.push(c);
+        self.apply_filter();
+    }
+
+    /// Delete the last filter character and re-apply.
+    pub fn filter_backspace(&mut self) {
+        self.filter.pop();
+        self.apply_filter();
+    }
+
+    /// Clear the filter (show the full tree) and leave filter-input mode.
+    pub fn clear_filter(&mut self) {
+        self.filter.clear();
+        if self.mode == Mode::Filter {
+            self.mode = Mode::Normal;
+        }
+        self.apply_filter();
+    }
+
+    /// Keep the filter applied but leave input mode, returning to navigation.
+    pub fn confirm_filter(&mut self) {
+        if self.mode == Mode::Filter {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Rebuild the filtered tree and keep the cursor in range and visible.
+    fn apply_filter(&mut self) {
+        self.rebuild_file_rows();
+        if self.file_cursor >= self.file_rows.len() {
+            self.file_cursor = self.file_rows.len().saturating_sub(1);
+        }
+        self.reveal_files = true;
     }
 
     /// What the cursor currently points at — a file (by path) or a directory (by path) — so
@@ -1612,7 +1671,7 @@ impl App {
                 };
                 Some(c.location())
             }
-            Mode::Normal | Mode::List | Mode::CommitPick => None,
+            Mode::Normal | Mode::List | Mode::CommitPick | Mode::Filter => None,
         }
     }
 
@@ -1767,6 +1826,9 @@ impl App {
             Mode::CommitPick => {
                 return vec![(A::PickCommit, Primary), (A::ClosePicker, Normal)];
             }
+            Mode::Filter => {
+                return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
+            }
             Mode::Normal => {}
         }
 
@@ -1845,6 +1907,11 @@ impl App {
         // `C` reopens the commit picker to change the compared commit, in every Commit context.
         if self.scope == Scope::Commit && !out.iter().any(|&(a, _)| a == A::Commit) {
             out.push((A::Commit, Normal));
+        }
+
+        // `/` filters the file tree — offered whenever there's a tree to filter.
+        if !self.file_rows.is_empty() || !self.filter.is_empty() {
+            out.push((A::Filter, Normal));
         }
 
         // Once a comment is written, sending is the next relevant move — just below the primary

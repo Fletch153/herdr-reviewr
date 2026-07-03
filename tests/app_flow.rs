@@ -2302,3 +2302,34 @@ fn dir_has_changes_detects_a_nested_change_respecting_boundaries() {
     assert!(!app.dir_has_changes("other"), "no change under a sibling dir");
     assert!(!app.dir_has_changes("s"), "prefix match respects the / boundary");
 }
+
+#[test]
+fn filtering_narrows_the_tree_and_clearing_restores() {
+    let r = Repo::init();
+    r.write("contracts/evm_pool.rs", "1\n");
+    r.write("contracts/sol_pool.rs", "1\n");
+    r.write("docs/readme.md", "1\n");
+    r.commit_all("init");
+    for f in ["contracts/evm_pool.rs", "contracts/sol_pool.rs", "docs/readme.md"] {
+        r.write(f, "2\n"); // modify all three so Changes shows them expanded
+    }
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    let full = app.file_rows.len();
+
+    app.start_filter();
+    for c in "evm".chars() {
+        app.filter_push(c);
+    }
+    let names: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "evm_pool.rs"), "the match is shown: {names:?}");
+    assert!(
+        !names.iter().any(|n| n == "sol_pool.rs" || n == "readme.md"),
+        "non-matches are pruned: {names:?}"
+    );
+    assert!(app.file_rows.len() < full, "the tree is narrower while filtering");
+
+    app.clear_filter();
+    assert_eq!(app.file_rows.len(), full, "clearing restores the full tree");
+    assert_eq!(app.mode, Mode::Normal, "and leaves filter mode");
+}

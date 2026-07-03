@@ -390,6 +390,17 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::Filter {
+        match key.code {
+            Esc => app.clear_filter(),
+            Enter => app.confirm_filter(),
+            Backspace => app.filter_backspace(),
+            Char(c) if !ctrl => app.filter_push(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match (key.code, ctrl) {
         // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
         // keys move the focused pane's cursor (the view follows), like `j`/`k`.
@@ -448,8 +459,15 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('n'), _) => app.jump_comment(1),
         (Char('N'), _) => app.jump_comment(-1),
         (Char('l'), _) => app.open_list(),
-        // `esc` clears an in-progress line selection (the footer's `esc clear`).
-        (Esc, _) => app.clear_selection(),
+        (Char('/'), false) => app.start_filter(),
+        // `esc` clears an active file filter first, else an in-progress line selection.
+        (Esc, _) => {
+            if app.filter.is_empty() {
+                app.clear_selection();
+            } else {
+                app.clear_filter();
+            }
+        }
         _ => {}
     }
     Ok(())

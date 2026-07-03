@@ -109,14 +109,22 @@ struct Dir {
 /// resting state — `true` for `Changes` (expanded unless toggled), `false` for `All files`
 /// (collapsed unless toggled); `toggled` holds the paths flipped from that default.
 /// Each directory level is its own row; directories sort before files, alphabetically within
-/// a parent.
+/// a parent. `filter` (lowercased) keeps only entries whose path contains it, pruning the
+/// folders that end up empty.
 pub fn build<S: BuildHasher>(
     entries: &[Entry],
     toggled: &HashSet<String, S>,
     default_expanded: bool,
+    filter: Option<&str>,
 ) -> Vec<Row> {
     let mut root = Dir::default();
     for (i, e) in entries.iter().enumerate() {
+        // When filtering, keep only entries whose path contains the (lowercased) query; the
+        // folders that hold them survive because the tree is derived from the surviving paths.
+        // `i` stays the entry's original index, so `RowKind::File.index` still indexes `entries`.
+        if filter.is_some_and(|q| !e.path.to_lowercase().contains(q)) {
+            continue;
+        }
         insert(&mut root, e, i);
     }
     let mut rows = Vec::new();
@@ -209,7 +217,7 @@ mod tests {
     /// Render the rows as `<depth>:<dir|file>:<name>` lines, for compact assertions. Uses the
     /// `Changes` default (expanded unless toggled).
     fn shape(files: &[ChangedFile], collapsed: &HashSet<String>) -> Vec<String> {
-        shape_rows(&build(&entries(files), collapsed, true))
+        shape_rows(&build(&entries(files), collapsed, true, None))
     }
 
     fn shape_rows(rows: &[super::Row]) -> Vec<String> {
@@ -262,7 +270,7 @@ mod tests {
     #[test]
     fn a_file_row_carries_its_source_index_and_stats() {
         let files = [file("z.rs"), file("a.rs")];
-        let rows = build(&entries(&files), &HashSet::new(), true);
+        let rows = build(&entries(&files), &HashSet::new(), true, None);
         // Sorted alphabetically: a.rs first → source index 1, then z.rs → index 0.
         assert_eq!(rows[0].file_index(), Some(1));
         assert_eq!(rows[1].file_index(), Some(0));
@@ -276,11 +284,11 @@ mod tests {
     fn all_files_collapses_directories_by_default() {
         // default_expanded = false: src/ is collapsed unless toggled, so its children hide.
         let files = [file("src/app.rs"), file("src/ui.rs")];
-        assert_eq!(shape_rows(&build(&entries(&files), &HashSet::new(), false)), ["0:dir:src"]);
+        assert_eq!(shape_rows(&build(&entries(&files), &HashSet::new(), false, None)), ["0:dir:src"]);
         // Toggling src/ into the set expands it under the collapse-default policy.
         let toggled: HashSet<String> = ["src".to_string()].into_iter().collect();
         assert_eq!(
-            shape_rows(&build(&entries(&files), &toggled, false)),
+            shape_rows(&build(&entries(&files), &toggled, false, None)),
             ["0:dir:src", "1:file:app.rs", "1:file:ui.rs"]
         );
     }
@@ -295,7 +303,7 @@ mod tests {
             ignored: false,
             is_dir: false,
         };
-        let rows = build(&[entry], &HashSet::new(), false);
+        let rows = build(&[entry], &HashSet::new(), false, None);
         assert!(matches!(rows[0].kind, RowKind::File { annotation: None, .. }));
     }
 
@@ -313,7 +321,7 @@ mod tests {
     fn an_ignored_dir_placeholder_renders_as_a_collapsed_ignored_row() {
         // A wholly-ignored directory shows as one dimmed dir row, with no children until the
         // app loads them on expand (file-list.md).
-        let rows = build(&[ignored_dir("target")], &HashSet::new(), false);
+        let rows = build(&[ignored_dir("target")], &HashSet::new(), false, None);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].ignored, "the placeholder row is marked ignored (dimmed)");
         assert!(matches!(rows[0].kind, RowKind::Dir { expanded: false, .. }));
@@ -328,8 +336,31 @@ mod tests {
             ignored: true,
             is_dir: false,
         };
-        let rows = build(&[entry], &HashSet::new(), false);
+        let rows = build(&[entry], &HashSet::new(), false, None);
         assert!(rows[0].ignored, "an ignored file row is dimmed");
         assert!(matches!(rows[0].kind, RowKind::File { .. }));
+    }
+
+    #[test]
+    fn a_filter_keeps_matching_paths_and_their_folders() {
+        let files = [
+            file("contracts/evm_pool.rs"),
+            file("contracts/sol_pool.rs"),
+            file("evm/x.rs"),
+            file("docs/readme.md"),
+        ];
+        // Matches the file name (`evm_pool.rs`) and the folder name (`evm/`); prunes the rest.
+        let rows = shape_rows(&build(&entries(&files), &HashSet::new(), true, Some("evm")));
+        assert_eq!(
+            rows,
+            ["0:dir:contracts", "1:file:evm_pool.rs", "0:dir:evm", "1:file:x.rs"]
+        );
+    }
+
+    #[test]
+    fn a_filter_is_case_insensitive() {
+        let files = [file("src/EvmClient.rs"), file("src/other.rs")];
+        let rows = shape_rows(&build(&entries(&files), &HashSet::new(), true, Some("evm")));
+        assert_eq!(rows, ["0:dir:src", "1:file:EvmClient.rs"]);
     }
 }

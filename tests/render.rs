@@ -835,3 +835,18 @@ fn the_status_marker_sits_in_a_left_gutter_that_aligns_rows() {
     assert_eq!(chars[a_col - 2], 'M', "the M marker leads the gutter");
     assert_eq!(chars[a_col - 1], '│', "a vertical rule closes the gutter");
 }
+
+#[test]
+fn the_filter_query_shows_in_the_pane_title() {
+    let r = Repo::init();
+    r.write("evm.rs", "1\n");
+    r.commit_all("init");
+    r.write("evm.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.start_filter();
+    for c in "evm".chars() {
+        app.filter_push(c);
+    }
+    assert!(render(&app).contains("/evm"), "the pane title carries the active filter");
+}

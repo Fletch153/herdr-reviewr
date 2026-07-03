@@ -542,15 +542,28 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
-    let block = bordered("Files", app.focus == Focus::Files, p);
+    // While filtering, the title carries the query (with a caret in input mode) so the active
+    // filter is visible.
+    let title = if app.filter.is_empty() {
+        "Files".to_string()
+    } else if app.mode == Mode::Filter {
+        format!("Files  /{}▏", app.filter)
+    } else {
+        format!("Files  /{}", app.filter)
+    };
+    let block = bordered(&title, app.focus == Focus::Files, p);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if app.file_rows.is_empty() {
-        let msg = match app.tab {
-            Tab::AllFiles => "no files",
-            Tab::Changes if app.awaiting_turn() => "waiting for the agent's next turn",
-            _ => "no changes",
+        let msg = if app.filter.is_empty() {
+            match app.tab {
+                Tab::AllFiles => "no files",
+                Tab::Changes if app.awaiting_turn() => "waiting for the agent's next turn",
+                _ => "no changes",
+            }
+        } else {
+            "no matches"
         };
         frame.render_widget(dim_paragraph(msg, p), inner);
         return;
@@ -1208,7 +1221,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
     let (k, l): (&str, &str) = match action {
         A::Comment => ("c", "comment"),
         A::Select => ("v", "select"),
-        A::ClearSelection => ("esc", "clear"),
+        A::ClearSelection | A::ClearFilter => ("esc", "clear"),
         A::EditComment => ("e", "edit"),
         A::OpenEditor => ("e", "editor"),
         A::DeleteComment => ("d", "delete"),
@@ -1222,6 +1235,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Scope => ("u/b/t/C", "scope"),
         A::Base => ("B", "base"),
         A::Commit => ("C", "commit"),
+        A::Filter => ("/", "filter"),
+        A::ApplyFilter => ("enter", "done"),
         A::PickCommit => ("enter", "compare"),
         A::Send => return ("s".into(), format!("send {}", app.store.len())),
         A::List => ("l", "list"),

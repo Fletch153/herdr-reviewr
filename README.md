@@ -85,6 +85,7 @@ below are the full reference.
 | `Tab` | Switch focus between the file list and the diff |
 | `→` `←` | Expand / collapse a directory or expand a fold; otherwise scroll the diff sideways |
 | `w` | Toggle line wrap |
+| `/` | Filter the file tree by name (type to filter, `esc` clears, `enter` keeps it) |
 | `]` `[` | Widen / narrow the file list |
 | `r` | Refresh now |
 | `q` | Quit |
