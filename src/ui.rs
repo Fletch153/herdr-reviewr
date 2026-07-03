@@ -576,9 +576,9 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
-                    // A blank status gutter keeps directories aligned with the files' marker
-                    // column (a directory has no single git status).
-                    let mut spans = vec![Span::raw("  ")];
+                    // A blank status gutter (a directory has no single git status) keeps the
+                    // `│` rule continuous and directories aligned with the files.
+                    let mut spans = gutter_spans(' ', p.text, p);
                     if app.icons {
                         // The open/closed folder glyph already conveys expansion, so the
                         // `▾`/`▸` arrow is dropped.
@@ -611,8 +611,21 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// A file row: `<status gutter><indent><icon><name> <stats>` — a fixed 2-col left gutter holds
-/// the git-status marker (colored by kind; blank when unchanged) so every row's tree content
+/// Width of the status gutter: a status letter, a `│` rule, and a space.
+const GUTTER_WIDTH: usize = 3;
+
+/// The status-gutter spans shared by file and directory rows: the colored status letter (a
+/// space when there's none) followed by a dim `│ ` rule. Rendered on every row, the rule forms
+/// one continuous vertical line delimiting the gutter from the tree.
+fn gutter_spans(marker: char, marker_color: Color, p: &Palette) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(marker.to_string(), Style::default().fg(marker_color)),
+        Span::styled("│ ", Style::default().fg(p.overlay0)),
+    ]
+}
+
+/// A file row: `<status gutter><indent><icon><name> <stats>` — the gutter holds the git-status
+/// marker (colored by kind; blank when unchanged) behind a `│` rule so every row's tree content
 /// aligns, the basename is bright with its parent directories dimmed, and the `+a −d` stats are
 /// right-aligned against the pane edge. A name too wide for the row is truncated at the end.
 #[derive(Clone, Copy)]
@@ -629,11 +642,12 @@ struct FileRow<'a> {
 
 fn file_row_item(row: FileRow) -> ListItem<'static> {
     let FileRow { indent, annotation, name, width, fill, ignored, icons, p } = row;
-    // Git-status gutter: a fixed 2-col column (marker + space) at the far left — blank when
-    // unchanged — so every row aligns regardless of tree depth or change state.
-    let (gutter, gutter_color) = match annotation {
-        Some(a) => (format!("{} ", a.change.marker()), kind_color(p, a.change.marker())),
-        None => ("  ".to_string(), p.text),
+    // Git-status gutter: a colored status letter, a dim `│` rule, then a space. Every row has
+    // it (blank letter when unchanged), so the rule forms a continuous vertical line that reads
+    // as a deliberate status column rather than stray indentation. Fixed 3 cols wide.
+    let (marker, marker_color) = match annotation {
+        Some(a) => (a.change.marker(), kind_color(p, a.change.marker())),
+        None => (' ', p.text),
     };
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
@@ -642,7 +656,7 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
     // to fit — the width self-accounts even for an ambiguous-width glyph.
     let icon = icons.then(|| crate::icons::file_icon(name, p));
     let icon_w = icon.map_or(0, |(g, _)| format!("{g} ").width());
-    let fixed = gutter.width() + indent.width() + icon_w + stats.width() + gap;
+    let fixed = GUTTER_WIDTH + indent.width() + icon_w + stats.width() + gap;
     // Truncate a too-long name at the end (trailing `…`) rather than eliding the head.
     let shown = truncate_width(name, width.saturating_sub(fixed).max(1));
     // Dim the parent directories of a collapsed-chain name; keep the basename bright.
@@ -651,10 +665,8 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
         None => ("", shown.as_str()),
     };
 
-    let mut spans = vec![
-        Span::styled(gutter, Style::default().fg(gutter_color)),
-        Span::styled(indent.to_string(), text_style(p)),
-    ];
+    let mut spans = gutter_spans(marker, marker_color, p);
+    spans.push(Span::styled(indent.to_string(), text_style(p)));
     if let Some((glyph, color)) = icon {
         spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
     }
