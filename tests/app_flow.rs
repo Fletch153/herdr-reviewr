@@ -2406,3 +2406,29 @@ fn clearing_the_filter_keeps_the_same_file_selected() {
         "clearing the filter keeps the same file selected, not a different row"
     );
 }
+
+#[test]
+fn enter_expands_a_folder_and_its_child_folders_one_level() {
+    use herdr_reviewr::app::Tab;
+    let r = Repo::init();
+    for f in ["src/app/mod.rs", "src/ui/view.rs", "src/app/deep/x.rs"] {
+        r.write(f, "1\n");
+    }
+    r.commit_all("init");
+    for f in ["src/app/mod.rs", "src/ui/view.rs", "src/app/deep/x.rs"] {
+        r.write(f, "2\n");
+    }
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.set_tab(Tab::AllFiles).unwrap(); // dirs start collapsed
+    app.file_cursor = 0; // the lone top-level `src` row
+
+    app.toggle_dir_children();
+    let names: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert!(names.iter().any(|n| n == "mod.rs"), "child folder app/ expanded: {names:?}");
+    assert!(names.iter().any(|n| n == "view.rs"), "child folder ui/ expanded: {names:?}");
+    assert!(!names.iter().any(|n| n == "x.rs"), "the deeper deep/ folder stays collapsed: {names:?}");
+
+    app.toggle_dir_children(); // enter again reverses
+    let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert!(!after.iter().any(|n| n == "mod.rs"), "pressing enter again collapses: {after:?}");
+}

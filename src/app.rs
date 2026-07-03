@@ -1321,6 +1321,33 @@ impl App {
         }
     }
 
+    /// `Enter` on a folder: expand it and its direct child folders (one level, not recursive);
+    /// pressing it again on the now-open folder collapses them all back.
+    pub fn toggle_dir_children(&mut self) {
+        let Some(folder) = self.dir_under_cursor() else { return };
+        let want = !self.dir_expanded(&folder);
+        let prefix = format!("{folder}/");
+        // The direct child directories: a path under `folder` with a further `/`. Collected
+        // before mutating (idempotent `set_dir_expanded` tolerates the duplicates).
+        let kids: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|e| {
+                e.path
+                    .strip_prefix(&prefix)
+                    .and_then(|rest| rest.split_once('/'))
+                    .map(|(seg, _)| format!("{folder}/{seg}"))
+            })
+            .collect();
+        let mut changed = self.set_dir_expanded(&folder, want);
+        for kid in kids {
+            changed |= self.set_dir_expanded(&kid, want);
+        }
+        if changed {
+            self.apply_dir_change();
+        }
+    }
+
     /// Collapse the directory under the cursor (`←`); a no-op if it is a file or already shut.
     pub fn collapse_dir(&mut self) {
         if let Some(path) = self.dir_under_cursor()
