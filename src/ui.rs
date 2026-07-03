@@ -462,6 +462,8 @@ fn commit_chip(app: &App) -> String {
         // A commit is pinned but not in the loaded choices — show its short SHA (hex, ASCII).
         None => match app.selected_commit.as_deref() {
             Some(sha) => format!(" [>{}]", &sha[..sha.len().min(8)]),
+            // Nothing pinned yet: prompt to pick, or say so when the fork point has nothing ahead.
+            None if app.commit_choices.is_empty() => " [no commits]".to_string(),
             None => " [>pick commit]".to_string(),
         },
     }

@@ -507,6 +507,13 @@ impl App {
             Scope::Commit => self.selected_commit.clone(),
             _ => None,
         };
+        // Keep the pickable commits current in Commit scope so the header chip can tell "pick a
+        // commit" from "no commits since the fork". Skipped while the picker is open, so a poll
+        // can't shuffle the list under the cursor (the picker loads its own copy on open).
+        if self.scope == Scope::Commit && self.mode != Mode::CommitPick {
+            self.commit_choices =
+                git::commits_since_fork(&self.repo, self.base.as_deref(), COMMIT_PICK_LIMIT);
+        }
         let changed = match self.scope {
             Scope::LastTurn => match self.turn.baseline() {
                 Some(t) => git::changed_against_tree(&self.repo, t)?,

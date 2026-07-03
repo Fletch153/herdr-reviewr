@@ -725,3 +725,17 @@ fn the_commit_chip_shows_the_selected_commit() {
     );
     assert!(out.contains("add beta feature"), "and its title");
 }
+
+#[test]
+fn the_commit_chip_says_no_commits_when_the_fork_has_nothing_ahead() {
+    let r = Repo::init(); // main, nothing ahead of the base
+    r.write("a.rs", "0\n");
+    r.commit_all("only");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    app.reload().unwrap();
+
+    app.enter_commit_scope().unwrap(); // switches to Commit scope; the empty picker won't open
+    let out = render(&app);
+    assert!(out.contains("[no commits]"), "the chip states there is nothing to pick: {out}");
+    assert!(!out.contains("pick commit"), "and does not invite a pick");
+}
