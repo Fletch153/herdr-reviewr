@@ -34,6 +34,15 @@ pub enum Focus {
     Diff,
 }
 
+/// A pending request to open a file in `$EDITOR`, produced by [`App::request_editor`] and drained
+/// by the event loop. `path` is absolute (repo-joined); `line` is the worktree line under the
+/// cursor, or `None` when the cursor is on a fold/deletion row with no new-side line.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EditorRequest {
+    pub path: PathBuf,
+    pub line: Option<u32>,
+}
+
 /// What the file-list cursor points at, by path, so it can be restored to the same target
 /// after the tree rebuilds on a poll.
 enum Anchor {
@@ -97,6 +106,8 @@ pub enum FooterAction {
     Select,
     ClearSelection,
     EditComment,
+    /// Open the file under review in `$EDITOR` — diff pane, when no comment is under the cursor.
+    OpenEditor,
     DeleteComment,
     JumpComment,
     ExpandFold,
@@ -223,6 +234,9 @@ pub struct App {
     /// Set when the PR view needs a (re)fetch; the event loop services it after drawing, so a
     /// `loading` frame shows before the blocking `gh` calls run.
     pub pr_pending: bool,
+    /// Set when `e` asks to open the current file in `$EDITOR`; the event loop takes it after
+    /// key handling, suspends the TUI, and runs the editor (it owns the terminal, this doesn't).
+    pending_editor: Option<EditorRequest>,
     highlighter: Highlighter,
     /// The active palette every renderer paints from (`specs/theme.md`).
     palette: Palette,
@@ -288,6 +302,7 @@ impl App {
             pr_cursor: 0,
             pr_read_scroll: 0,
             pr_pending: false,
+            pending_editor: None,
             highlighter: Highlighter::new(theme.syntax),
             palette: theme.palette,
             theme_name: theme.name,
@@ -1549,10 +1564,27 @@ impl App {
     }
 
     /// The store index of a comment whose range covers the current diff row, if any.
-    fn comment_under_cursor(&self) -> Option<usize> {
+    pub(crate) fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
         let row = self.visible.get(self.diff_cursor)?;
         self.store.iter().position(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
+    }
+
+    /// Ask the event loop to open the file under review in `$EDITOR`. No-op unless the diff pane
+    /// is focused with a file open and no comment is being composed. The line is the worktree line
+    /// under the cursor when the row has one (fold/deletion rows open the file at the top).
+    pub fn request_editor(&mut self) {
+        if self.focus != Focus::Diff || self.composing() {
+            return;
+        }
+        let Some(rel) = self.diff_path.clone() else { return };
+        let line = self.visible.get(self.diff_cursor).and_then(Row::new_no);
+        self.pending_editor = Some(EditorRequest { path: self.repo.join(rel), line });
+    }
+
+    /// Take the pending editor request, if any — drained by the event loop after key handling.
+    pub fn take_pending_editor(&mut self) -> Option<EditorRequest> {
+        self.pending_editor.take()
     }
 
     pub fn delete_comment(&mut self) {
@@ -1686,6 +1718,21 @@ impl App {
         // the file tabs — unless it's already the primary (the empty / no-diff states above).
         if !out.iter().any(|&(a, _)| a == A::Scope) {
             out.push((A::Scope, Normal));
+        }
+
+        // `e` opens the file in $EDITOR whenever the diff is focused and no comment sits under the
+        // cursor (there `e` edits the comment — same key, so only ever one of them shows).
+        if self.focus == Focus::Diff
+            && !self.visible.is_empty()
+            && self.comment_under_cursor().is_none()
+        {
+            out.push((A::OpenEditor, Normal));
+        }
+
+        // `B` cycles the branch-scope base, so the hint belongs in every Branch context — not only
+        // the empty changeset that first surfaced it (the guard keeps that earlier push unique).
+        if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
+            out.push((A::Base, Normal));
         }
 
         // Once a comment is written, sending is the next relevant move — just below the primary

@@ -94,7 +94,8 @@ below are the full reference.
 | --- | --- |
 | `v` | Start a line selection, then `j` / `k` to extend (or click-drag) |
 | `c` | Comment on the selection — or on the current line |
-| `e` `d` | Edit / delete the comment under the cursor |
+| `e` | Open the file in `$EDITOR` — or edit the comment under the cursor, if any |
+| `d` | Delete the comment under the cursor |
 | `n` `N` | Jump to the next / previous comment |
 | `l` | List every comment |
 | `s` | Send all comments to the agent |

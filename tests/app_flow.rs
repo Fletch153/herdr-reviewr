@@ -2132,3 +2132,77 @@ fn cycle_base_with_an_explicit_startup_base_visits_every_candidate_and_wraps() {
     assert_eq!(app.base.as_deref(), Some("main"), "wraps home to the explicit base");
     assert_eq!(app.changed_count(), 2, "home diff restored");
 }
+
+#[test]
+fn e_requests_the_editor_for_the_file_under_the_cursor() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+'); // a changed line with a worktree line number
+    let expected_line = app.visible[app.diff_cursor].new_no();
+    assert!(expected_line.is_some(), "an inserted line carries a new-side number");
+
+    app.request_editor();
+    let req = app.take_pending_editor().expect("`e` queued an editor request");
+    assert_eq!(req.line, expected_line, "opens at the line under the cursor");
+    assert!(req.path.is_absolute(), "the editor is handed an absolute path");
+    assert!(req.path.ends_with("a.rs"), "the path is the file under review, got {:?}", req.path);
+    assert!(app.take_pending_editor().is_none(), "the request drains exactly once");
+}
+
+#[test]
+fn the_editor_request_needs_the_diff_pane_and_no_open_composer() {
+    let r = edited_repo();
+
+    // The file list is not a file to edit.
+    let mut app = app_on(&r);
+    app.focus = Focus::Files;
+    app.request_editor();
+    assert!(app.take_pending_editor().is_none(), "no editor from the file list");
+
+    // Mid-comment, `e` types into the composer — it must not also launch an editor.
+    let mut app = composing_app();
+    app.request_editor();
+    assert!(app.take_pending_editor().is_none(), "no editor while composing a comment");
+}
+
+#[test]
+fn the_editor_hint_shows_in_the_diff_and_yields_to_edit_on_a_comment() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+'); // a plain changed line, no comment yet
+    assert!(
+        app.footer_actions().iter().any(|&(a, _)| a == FooterAction::OpenEditor),
+        "the diff viewer offers `e editor`"
+    );
+
+    // A commented line means `e` edits the comment, so the editor hint stands aside — `e` is
+    // never advertised twice.
+    comment_on(&mut app, '+', "note");
+    let acts = app.footer_actions();
+    assert!(acts.iter().any(|&(a, _)| a == FooterAction::EditComment), "commented line offers edit");
+    assert!(
+        !acts.iter().any(|&(a, _)| a == FooterAction::OpenEditor),
+        "and does not also show the editor hint on the same key"
+    );
+}
+
+#[test]
+fn the_base_hint_shows_in_branch_scope_even_with_files_present() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init"); // on main — the branch-scope base
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("b.rs", "two\n");
+    r.commit_all("add b"); // a change vs main
+
+    let mut app = App::new(r.path_buf(), Scope::Branch, None);
+    app.reload().unwrap();
+
+    assert!(!app.file_rows.is_empty(), "branch scope sees the feature commit's file");
+    assert!(
+        app.footer_actions().iter().any(|&(a, _)| a == FooterAction::Base),
+        "`B base` stays offered in branch scope with files present (regression: it only showed when empty)"
+    );
+}

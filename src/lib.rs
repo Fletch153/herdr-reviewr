@@ -12,6 +12,7 @@ pub mod app;
 pub mod browser;
 pub mod config;
 pub mod diff;
+pub mod editor;
 pub mod export;
 pub mod file_list;
 pub mod forge;
@@ -65,12 +66,21 @@ pub fn run() -> Result<()> {
     }
     app.reload()?;
 
-    let mut terminal = ratatui::init();
-    // Bracketed paste so a multi-line paste arrives as one event, not raw keystrokes whose
-    // embedded newlines would submit the comment early.
+    let (mut terminal, kbd) = enter_tui();
+    let result = event_loop(&mut terminal, &mut app, cfg.poll, kbd);
+    leave_tui(kbd);
+    result
+}
+
+/// Enter the alternate screen in raw mode with mouse capture and bracketed paste, enabling the
+/// kitty keyboard protocol when the terminal supports it (so Ctrl/Alt+arrows report modifiers the
+/// legacy encoding drops). Bracketed paste keeps a multi-line paste one event, so its embedded
+/// newlines don't submit a comment early. Returns whether the keyboard flags were pushed, so
+/// `leave_tui` pops exactly what was set. Reused around an external editor so the panel's terminal
+/// state and the editor's can't drift out of sync.
+fn enter_tui() -> (DefaultTerminal, bool) {
+    let terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
-    // The kitty keyboard protocol reports modifiers on keys the legacy encoding drops — most
-    // notably Ctrl/Alt+arrows — so word-jump by arrow works where the terminal supports it.
     let kbd = supports_keyboard_enhancement().unwrap_or(false);
     logln!("keyboard enhancement supported={kbd}");
     if kbd {
@@ -79,13 +89,17 @@ pub fn run() -> Result<()> {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    let result = event_loop(&mut terminal, &mut app, cfg.poll);
+    (terminal, kbd)
+}
+
+/// Restore the terminal to the shell: undo `enter_tui` in reverse — pop the keyboard flags,
+/// disable mouse capture and bracketed paste, then leave the alternate screen.
+fn leave_tui(kbd: bool) {
     if kbd {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
     let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
-    result
 }
 
 /// A transient status message (e.g. "sent 3 comments") fades after this long idle.
@@ -97,7 +111,12 @@ const STATUS_TTL: Duration = Duration::from_secs(4);
 const PR_POLL: Duration = Duration::from_secs(60);
 
 /// Draw, then wait up to the poll deadline for input; refresh on each tick.
-fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> Result<()> {
+fn event_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    poll: Duration,
+    kbd: bool,
+) -> Result<()> {
     let mut last_poll = Instant::now();
     let mut last_pr_poll = Instant::now();
     // The PR snapshot is fetched on a worker thread and delivered over this channel, so the slow
@@ -198,6 +217,25 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> 
                         app.diff_scroll,
                         app.store.len()
                     );
+                    // `e` in the diff pane asks to open the file in $EDITOR. Service it here,
+                    // where we own the terminal: drop back to the shell, run the editor on the
+                    // inherited stdio, then re-enter and repaint. Reload after so the edit shows;
+                    // the same file stays open (App::reload only resets the view if it changed).
+                    if let Some(req) = app.take_pending_editor() {
+                        leave_tui(kbd);
+                        let status = editor::open(&app.repo, &req.path, req.line);
+                        let (t, _) = enter_tui();
+                        *terminal = t;
+                        let _ = terminal.clear();
+                        match status {
+                            Ok(s) if !s.success() => app.status = format!("editor exited: {s}"),
+                            Err(e) => app.status = format!("editor failed: {e}"),
+                            _ => {}
+                        }
+                        if let Err(e) = app.reload() {
+                            app.status = format!("error: {e}");
+                        }
+                    }
                 }
                 Event::Mouse(m) => {
                     // Reuse this frame's `area` and `heights` (computed above for the scroll
@@ -373,10 +411,18 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('B'), false) => app.cycle_base()?,
         (Char('v'), _) => app.toggle_select(),
         (Char('c'), _) => app.start_comment(),
-        // `e`/`d` act on the comment under the diff cursor, so they only fire with the diff
-        // focused — otherwise `d` would silently delete a comment under an off-screen cursor.
-        // (The comments-list overlay has its own `e`/`d`, which target the highlighted row.)
-        (Char('e'), _) if app.focus == Focus::Diff => app.start_edit(),
+        // `e`/`d` are diff-focused so they can't act on an off-screen cursor (`d` would silently
+        // delete a comment under it). On a commented line `e` edits that comment; anywhere else in
+        // the diff it opens the file in $EDITOR — mutually exclusive, so the footer shows `e edit`
+        // vs `e editor`. (The comments-list overlay has its own `e`/`d`, targeting the highlighted
+        // row.)
+        (Char('e'), _) if app.focus == Focus::Diff => {
+            if app.comment_under_cursor().is_some() {
+                app.start_edit();
+            } else {
+                app.request_editor();
+            }
+        }
         (Char('d'), false) if app.focus == Focus::Diff => app.delete_comment(),
         (Char('s' | 'S'), _) => app.export(&Agent),
         (Char('y' | 'Y'), _) => app.export(&Clipboard),

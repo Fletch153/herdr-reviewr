@@ -429,12 +429,11 @@ fn base_chip(app: &App) -> String {
     }
     // An explicit selection shows bare; the home slot is labeled `auto:` so cycling between
     // auto-detected `origin/develop` and a local `develop` candidate doesn't read as a duplicate.
-    match app.base.as_deref() {
-        Some(name) => format!(" [>{}]", truncate_width(name, 24)),
-        None => {
-            let name = app.resolved_base.as_deref().unwrap_or("?");
-            format!(" [>auto:{}]", truncate_width(name, 19))
-        }
+    if let Some(name) = app.base.as_deref() {
+        format!(" [>{}]", truncate_width(name, 24))
+    } else {
+        let name = app.resolved_base.as_deref().unwrap_or("?");
+        format!(" [>auto:{}]", truncate_width(name, 19))
     }
 }
 
@@ -1129,6 +1128,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Select => ("v", "select"),
         A::ClearSelection => ("esc", "clear"),
         A::EditComment => ("e", "edit"),
+        A::OpenEditor => ("e", "editor"),
         A::DeleteComment => ("d", "delete"),
         A::JumpComment => ("n/N", "jump"),
         A::ExpandFold => ("→", "expand fold"),
