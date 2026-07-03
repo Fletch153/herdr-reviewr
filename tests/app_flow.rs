@@ -2286,3 +2286,19 @@ fn the_commit_picker_reports_instead_of_opening_without_commits() {
     assert_eq!(app.mode, Mode::Normal, "no commits since fork → the picker does not open");
     assert!(app.status.contains("no commits"), "and it explains why: {:?}", app.status);
 }
+
+#[test]
+fn dir_has_changes_detects_a_nested_change_respecting_boundaries() {
+    let r = Repo::init();
+    r.write("src/deep/a.rs", "1\n");
+    r.write("other/b.rs", "1\n");
+    r.commit_all("init");
+    r.write("src/deep/a.rs", "2\n"); // change only under src/deep
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    assert!(app.dir_has_changes("src"), "an ancestor of the changed file");
+    assert!(app.dir_has_changes("src/deep"), "the direct parent");
+    assert!(!app.dir_has_changes("other"), "no change under a sibling dir");
+    assert!(!app.dir_has_changes("s"), "prefix match respects the / boundary");
+}

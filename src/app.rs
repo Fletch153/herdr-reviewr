@@ -1904,6 +1904,14 @@ impl App {
         self.changed.len()
     }
 
+    /// Whether any changed file lives under the directory at `path` (a strict descendant, so the
+    /// `/` boundary is respected — `src` is not a parent of `src2`). Drives the folder highlight.
+    pub fn dir_has_changes(&self, path: &str) -> bool {
+        self.changed
+            .keys()
+            .any(|p| p.strip_prefix(path).is_some_and(|rest| rest.starts_with('/')))
+    }
+
     /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
     /// the changeset; a File-view (content) comment only once its file is gone from the
     /// worktree, since it was never tied to the changeset (specs/review-model.md).

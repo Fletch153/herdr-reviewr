@@ -569,10 +569,13 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let fill = (i == app.file_cursor).then(|| p.cursor_bg(app.focus == Focus::Files));
             let indent = "  ".repeat(row.depth);
             match &row.kind {
-                RowKind::Dir { expanded, .. } => {
-                    // A git-ignored directory recedes into a dim, unbolded row (file-list.md).
+                RowKind::Dir { expanded, path } => {
+                    // A git-ignored directory recedes into a dim, unbolded row (file-list.md); a
+                    // directory holding a change anywhere below gets a subtle blue (lavender) tint.
                     let name_style = if row.ignored {
                         Style::default().fg(p.overlay0)
+                    } else if app.dir_has_changes(path) {
+                        Style::default().fg(p.lavender).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
