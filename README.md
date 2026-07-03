@@ -166,6 +166,19 @@ CLI flags on the pane command:
 | `--base <ref>` | auto | base branch for `branch` scope |
 | `--theme <name>` | `catppuccin` | UI + syntax theme (see below) |
 | `--wrap <on\|off>` | `on` | soft-wrap long diff lines (`w` toggles at runtime) |
+| `--icons <on\|off>` | `off` | Nerd Font file/folder icons in the tree (needs a Nerd Font) |
+
+### Icons
+
+The file tree can show Nerd Font filetype and folder glyphs, colored by type. It's **off by
+default** because the glyphs only render on a terminal using a patched Nerd Font (e.g. Ghostty's
+built-in fallback, or a Nerd Font in your terminal) — without one they appear as boxes. Enable it
+in reviewr's config file (read once at startup; the CLI flag wins):
+
+```toml
+# $HERDR_PLUGIN_CONFIG_DIR/config.toml
+icons = true
+```
 
 ### Base
 

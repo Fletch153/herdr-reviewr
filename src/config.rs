@@ -15,6 +15,8 @@ pub struct Config {
     pub theme: Option<String>,
     /// `Some(false)` when `--wrap off` is passed; `None` keeps the default (wrap on).
     pub wrap: Option<bool>,
+    /// `--icons on|off`; `None` falls back to the config file, then off (Nerd Font required).
+    pub icons: Option<bool>,
 }
 
 impl Config {
@@ -28,6 +30,7 @@ impl Config {
         let mut base: Option<String> = None;
         let mut theme: Option<String> = None;
         let mut wrap: Option<bool> = None;
+        let mut icons: Option<bool> = None;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -39,13 +42,14 @@ impl Config {
                 "--base" => base = it.next(),
                 "--theme" => theme = it.next(),
                 "--wrap" => wrap = it.next().map(|v| v != "off"),
+                "--icons" => icons = it.next().map(|v| v != "off"),
                 other if !other.starts_with('-') => repo = Some(PathBuf::from(other)),
                 _ => {}
             }
         }
         let repo =
             repo.or_else(|| std::env::current_dir().ok()).unwrap_or_else(|| PathBuf::from("."));
-        Self { repo, poll: Duration::from_millis(poll_ms.max(200)), base, theme, wrap }
+        Self { repo, poll: Duration::from_millis(poll_ms.max(200)), base, theme, wrap, icons }
     }
 
     /// Parse from the real process arguments.
@@ -68,12 +72,26 @@ pub fn config_file_base() -> Option<String> {
     config_key_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?, "base")
 }
 
+/// The `icons` boolean from reviewr's config file, read once at startup. `None` when the dir is
+/// unset, the file is absent or unparseable, or it has no `icons` key.
+pub fn config_file_icons() -> Option<bool> {
+    config_icons_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?)
+}
+
 /// A string key from `<dir>/config.toml`, or `None` if the file is absent, unparseable,
 /// or lacks the key. Split from the env lookup so it is testable.
 fn config_key_in(dir: impl AsRef<std::path::Path>, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(dir.as_ref().join("config.toml")).ok()?;
     let table: toml::Table = text.parse().ok()?;
     table.get(key).and_then(toml::Value::as_str).map(str::to_owned)
+}
+
+/// The `icons` boolean from `<dir>/config.toml`, or `None` if absent/unparseable/missing.
+/// Split from the env lookup so it is testable.
+fn config_icons_in(dir: impl AsRef<std::path::Path>) -> Option<bool> {
+    let text = std::fs::read_to_string(dir.as_ref().join("config.toml")).ok()?;
+    let table: toml::Table = text.parse().ok()?;
+    table.get("icons").and_then(toml::Value::as_bool)
 }
 
 #[cfg(test)]
@@ -118,6 +136,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "base = \"origin/develop\"\n").unwrap();
         assert_eq!(super::config_key_in(dir.path(), "base"), Some("origin/develop".to_string()));
+    }
+
+    #[test]
+    fn reads_icons_bool_from_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "icons = true\n").unwrap();
+        assert_eq!(super::config_icons_in(dir.path()), Some(true));
+    }
+
+    #[test]
+    fn icons_flag_parses_on_and_off() {
+        assert_eq!(parse(&["--icons", "on"]).icons, Some(true));
+        assert_eq!(parse(&["--icons", "off"]).icons, Some(false));
+        assert_eq!(parse(&[]).icons, None);
     }
 
     #[test]

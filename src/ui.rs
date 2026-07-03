@@ -577,21 +577,27 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
-                    let spans = vec![
-                        Span::styled(format!("{indent}{arrow}"), Style::default().fg(p.overlay0)),
-                        Span::styled(format!("{}/", row.name), name_style),
-                    ];
+                    let mut spans = vec![Span::styled(
+                        format!("{indent}{arrow}"),
+                        Style::default().fg(p.overlay0),
+                    )];
+                    if app.icons {
+                        let (glyph, color) = crate::icons::folder_icon(*expanded, p);
+                        spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
+                    }
+                    spans.push(Span::styled(format!("{}/", row.name), name_style));
                     selectable_row(spans, width, fill)
                 }
-                RowKind::File { annotation, .. } => file_row_item(
-                    &indent,
-                    annotation.as_ref(),
-                    &row.name,
+                RowKind::File { annotation, .. } => file_row_item(FileRow {
+                    indent: &indent,
+                    annotation: annotation.as_ref(),
+                    name: &row.name,
                     width,
                     fill,
-                    row.ignored,
+                    ignored: row.ignored,
+                    icons: app.icons,
                     p,
-                ),
+                }),
             }
         })
         .collect();
@@ -602,20 +608,29 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
 /// bright with its parent directories dimmed, and the `+a −d` stats right-aligned against the
 /// pane edge. A name too wide for the row keeps its tail behind a leading `…/`. An unannotated
 /// row (an unchanged `All files` file) drops the marker and stats, showing just the name.
-fn file_row_item(
-    indent: &str,
-    annotation: Option<&Annotation>,
-    name: &str,
+#[derive(Clone, Copy)]
+struct FileRow<'a> {
+    indent: &'a str,
+    annotation: Option<&'a Annotation>,
+    name: &'a str,
     width: usize,
     fill: Option<Color>,
     ignored: bool,
-    p: &Palette,
-) -> ListItem<'static> {
+    icons: bool,
+    p: &'a Palette,
+}
+
+fn file_row_item(row: FileRow) -> ListItem<'static> {
+    let FileRow { indent, annotation, name, width, fill, ignored, icons, p } = row;
     let marker = annotation.map_or(String::new(), |a| format!("{} ", a.change.marker()));
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
     let gap = if stats.is_empty() { 0 } else { 2 };
-    let fixed = indent.width() + marker.width() + stats.width() + gap;
+    // Optional filetype icon, measured (a glyph + trailing space) so the name still truncates
+    // to fit — the width self-accounts even for an ambiguous-width glyph.
+    let icon = icons.then(|| crate::icons::file_icon(name, p));
+    let icon_w = icon.map_or(0, |(g, _)| format!("{g} ").width());
+    let fixed = indent.width() + marker.width() + icon_w + stats.width() + gap;
     let shown = elide_head(name, width.saturating_sub(fixed).max(1));
     // Dim the parent directories of a collapsed-chain name; keep the basename bright.
     let (dim, base) = match shown.rfind('/') {
@@ -626,6 +641,9 @@ fn file_row_item(
     let mut spans = vec![Span::styled(indent.to_string(), text_style(p))];
     if let Some(a) = annotation {
         spans.push(Span::styled(marker, Style::default().fg(kind_color(p, a.change.marker()))));
+    }
+    if let Some((glyph, color)) = icon {
+        spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
     }
     if !dim.is_empty() {
         spans.push(Span::styled(dim.to_string(), Style::default().fg(p.overlay0)));

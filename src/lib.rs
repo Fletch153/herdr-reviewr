@@ -19,6 +19,7 @@ pub mod forge;
 pub mod git;
 pub mod herdr;
 pub mod highlight;
+pub mod icons;
 #[macro_use]
 pub mod log;
 pub mod model;
@@ -63,6 +64,11 @@ pub fn run() -> Result<()> {
     app.set_cli_theme(cfg.theme.clone());
     if let Some(wrap) = cfg.wrap {
         app.wrap = wrap;
+    }
+    // CLI --icons wins; else the config file's `icons` key. Read once at startup — a terminal's
+    // Nerd Font capability doesn't change mid-session.
+    if let Some(icons) = cfg.icons.or_else(config::config_file_icons) {
+        app.icons = icons;
     }
     app.reload()?;
 

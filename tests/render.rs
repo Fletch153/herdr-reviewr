@@ -739,3 +739,34 @@ fn the_commit_chip_says_no_commits_when_the_fork_has_nothing_ahead() {
     assert!(out.contains("[no commits]"), "the chip states there is nothing to pick: {out}");
     assert!(!out.contains("pick commit"), "and does not invite a pick");
 }
+
+#[test]
+fn icons_show_folder_and_file_glyphs_when_enabled() {
+    // Two files under src/ so the directory isn't folded into its single child.
+    let r = Repo::init();
+    r.write("src/a.rs", "1\n");
+    r.write("src/b.rs", "2\n");
+    r.commit_all("init");
+    r.write("src/a.rs", "11\n");
+    r.write("src/b.rs", "22\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.icons = true;
+
+    let out = render(&app);
+    assert!(out.contains('\u{f07b}') || out.contains('\u{f07c}'), "a folder glyph shows for src/");
+    assert!(out.contains('\u{e7a8}'), "the rust filetype glyph shows for the .rs files");
+}
+
+#[test]
+fn icons_are_absent_by_default() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.commit_all("init");
+    r.write("a.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    let out = render(&app);
+    assert!(!out.contains('\u{e7a8}'), "no filetype glyph when icons are off (the default)");
+}

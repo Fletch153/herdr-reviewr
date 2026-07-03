@@ -221,6 +221,8 @@ pub struct App {
     pub h_scroll: usize,
     /// Whether long diff lines wrap (default) or are scrolled horizontally.
     pub wrap: bool,
+    /// Whether the file tree shows Nerd Font filetype/folder icons (opt-in; needs a Nerd Font).
+    pub icons: bool,
     /// The file-list pane's width as a percent of the body; the diff takes the rest. The
     /// reviewer resizes it by dragging the divider or with `[` / `]`.
     pub list_pct: u16,
@@ -303,6 +305,7 @@ impl App {
             diff_scroll: 0,
             h_scroll: 0,
             wrap: true,
+            icons: false,
             list_pct: DEFAULT_LIST_PCT,
             resizing: false,
             select_anchor: None,
