@@ -15,8 +15,8 @@ use crate::model::{ChangeKind, ChangedFile};
 pub struct Row {
     /// Nesting level, for indentation.
     pub depth: usize,
-    /// The segment(s) shown — a directory name, a file basename, or a collapsed chain
-    /// joined with `/` (single-child directories fold into their child).
+    /// The segment shown — a single directory name or a file basename. Each directory level is
+    /// its own row (no single-child folding).
     pub name: String,
     pub kind: RowKind,
     /// Whether git ignores this row's path — rendered dimmed in `All files` (file-list.md).
@@ -108,8 +108,8 @@ struct Dir {
 /// Flatten `entries` into the visible tree rows. `default_expanded` sets a directory's
 /// resting state — `true` for `Changes` (expanded unless toggled), `false` for `All files`
 /// (collapsed unless toggled); `toggled` holds the paths flipped from that default.
-/// Single-child directories fold into their child; directories sort before files,
-/// alphabetically within a parent.
+/// Each directory level is its own row; directories sort before files, alphabetically within
+/// a parent.
 pub fn build<S: BuildHasher>(
     entries: &[Entry],
     toggled: &HashSet<String, S>,
@@ -156,47 +156,21 @@ fn flatten<S: BuildHasher>(
     entries: &[Entry],
 ) {
     for (name, sub) in &dir.dirs {
-        let (display, path, node) = compress(name, join(prefix, name), sub);
-        if let Some((fname, &index)) = lone_file(node) {
-            // A single-child chain ending in one file folds into a file row, e.g. `a/b/x.rs`.
-            rows.push(file_row(depth, format!("{display}/{fname}"), index, entries));
-        } else {
-            let expanded = default_expanded ^ toggled.contains(&path);
-            rows.push(Row {
-                depth,
-                name: display,
-                kind: RowKind::Dir { path: path.clone(), expanded },
-                ignored: node.ignored,
-            });
-            if expanded {
-                flatten(rows, node, &path, depth + 1, toggled, default_expanded, entries);
-            }
+        let path = join(prefix, name);
+        let expanded = default_expanded ^ toggled.contains(&path);
+        rows.push(Row {
+            depth,
+            name: name.clone(),
+            kind: RowKind::Dir { path: path.clone(), expanded },
+            ignored: sub.ignored,
+        });
+        if expanded {
+            flatten(rows, sub, &path, depth + 1, toggled, default_expanded, entries);
         }
     }
     for (fname, &index) in &dir.files {
         rows.push(file_row(depth, fname.clone(), index, entries));
     }
-}
-
-/// Follow single-child directory links from `start`, joining names with `/`, returning the
-/// display name, full path, and the node where the chain stops (a real directory or a node
-/// holding a single file).
-fn compress<'a>(name: &str, path: String, start: &'a Dir) -> (String, String, &'a Dir) {
-    let mut display = name.to_string();
-    let mut path = path;
-    let mut node = start;
-    while node.files.is_empty() && node.dirs.len() == 1 {
-        let (child_name, child) = node.dirs.iter().next().expect("len == 1");
-        display = format!("{display}/{child_name}");
-        path = format!("{path}/{child_name}");
-        node = child;
-    }
-    (display, path, node)
-}
-
-/// `Some((name, index))` when `node` holds exactly one file and no sub-directories.
-fn lone_file(node: &Dir) -> Option<(&String, &usize)> {
-    (node.dirs.is_empty() && node.files.len() == 1).then(|| node.files.iter().next().unwrap())
 }
 
 fn file_row(depth: usize, name: String, index: usize, entries: &[Entry]) -> Row {
@@ -259,18 +233,23 @@ mod tests {
     }
 
     #[test]
-    fn a_single_child_chain_folds_into_the_file() {
-        // A chain of one-child directories collapses into one file row.
+    fn each_directory_level_in_a_chain_is_its_own_row() {
+        // A chain of one-child directories is not folded — every level shows.
         let files = [file("docs/plans/2026/plan.md")];
-        assert_eq!(shape(&files, &HashSet::new()), ["0:file:docs/plans/2026/plan.md"]);
+        assert_eq!(
+            shape(&files, &HashSet::new()),
+            ["0:dir:docs", "1:dir:plans", "2:dir:2026", "3:file:plan.md"]
+        );
     }
 
     #[test]
-    fn a_single_child_directory_folds_but_a_branch_does_not() {
-        // `a/b/` collapses (one child each) until `c/` branches into two files.
+    fn a_branching_tree_nests_every_directory() {
         let files = [file("a/b/c/one.rs"), file("a/b/c/two.rs")];
         let rows = shape(&files, &HashSet::new());
-        assert_eq!(rows, ["0:dir:a/b/c", "1:file:one.rs", "1:file:two.rs"]);
+        assert_eq!(
+            rows,
+            ["0:dir:a", "1:dir:b", "2:dir:c", "3:file:one.rs", "3:file:two.rs"]
+        );
     }
 
     #[test]
