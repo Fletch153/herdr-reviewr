@@ -770,3 +770,36 @@ fn icons_are_absent_by_default() {
     let out = render(&app);
     assert!(!out.contains('\u{e7a8}'), "no filetype glyph when icons are off (the default)");
 }
+
+#[test]
+fn icons_replace_the_folder_arrows() {
+    let r = Repo::init();
+    r.write("src/a.rs", "1\n");
+    r.write("src/b.rs", "2\n");
+    r.commit_all("init");
+    r.write("src/a.rs", "11\n");
+    r.write("src/b.rs", "22\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.icons = true;
+
+    let out = render(&app);
+    assert!(!out.contains("\u{25be} src") && !out.contains("\u{25b8} src"), "no arrow before the folder");
+    assert!(out.contains('\u{f07c}') || out.contains('\u{f07b}'), "the folder glyph conveys expansion");
+}
+
+#[test]
+fn a_long_file_name_truncates_at_the_end() {
+    let r = Repo::init();
+    let long = "a_very_long_file_name_that_exceeds_the_narrow_list_pane_width.rs";
+    r.write(long, "1\n");
+    r.commit_all("init");
+    r.write(long, "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    let out = render(&app);
+    assert!(out.contains("a_very_long"), "the start of the name is shown");
+    assert!(out.contains('\u{2026}'), "a trailing ellipsis marks the truncation");
+    assert!(!out.contains("\u{2026}rs"), "not the old leading-ellipsis (…name.rs) form");
+}

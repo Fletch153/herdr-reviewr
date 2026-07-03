@@ -570,20 +570,25 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(row.depth);
             match &row.kind {
                 RowKind::Dir { expanded, .. } => {
-                    let arrow = if *expanded { "▾ " } else { "▸ " };
                     // A git-ignored directory recedes into a dim, unbolded row (file-list.md).
                     let name_style = if row.ignored {
                         Style::default().fg(p.overlay0)
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
-                    let mut spans = vec![Span::styled(
-                        format!("{indent}{arrow}"),
-                        Style::default().fg(p.overlay0),
-                    )];
+                    let mut spans = Vec::new();
                     if app.icons {
+                        // The open/closed folder glyph already conveys expansion, so the
+                        // `▾`/`▸` arrow is dropped.
                         let (glyph, color) = crate::icons::folder_icon(*expanded, p);
+                        spans.push(Span::styled(indent.clone(), Style::default().fg(p.overlay0)));
                         spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
+                    } else {
+                        let arrow = if *expanded { "▾ " } else { "▸ " };
+                        spans.push(Span::styled(
+                            format!("{indent}{arrow}"),
+                            Style::default().fg(p.overlay0),
+                        ));
                     }
                     spans.push(Span::styled(format!("{}/", row.name), name_style));
                     selectable_row(spans, width, fill)
@@ -631,7 +636,8 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
     let icon = icons.then(|| crate::icons::file_icon(name, p));
     let icon_w = icon.map_or(0, |(g, _)| format!("{g} ").width());
     let fixed = indent.width() + marker.width() + icon_w + stats.width() + gap;
-    let shown = elide_head(name, width.saturating_sub(fixed).max(1));
+    // Truncate a too-long name at the end (trailing `…`) rather than eliding the head.
+    let shown = truncate_width(name, width.saturating_sub(fixed).max(1));
     // Dim the parent directories of a collapsed-chain name; keep the basename bright.
     let (dim, base) = match shown.rfind('/') {
         Some(s) => (&shown[..=s], &shown[s + 1..]),
