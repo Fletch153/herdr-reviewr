@@ -803,3 +803,36 @@ fn a_long_file_name_truncates_at_the_end() {
     assert!(out.contains('\u{2026}'), "a trailing ellipsis marks the truncation");
     assert!(!out.contains("\u{2026}rs"), "not the old leading-ellipsis (…name.rs) form");
 }
+
+#[test]
+fn the_status_marker_sits_in_a_left_gutter_that_aligns_rows() {
+    use herdr_reviewr::app::Tab;
+    let r = Repo::init();
+    r.write("aaa.rs", "1\n");
+    r.write("bbb.rs", "1\n");
+    r.commit_all("init");
+    r.write("aaa.rs", "2\n"); // aaa.rs modified; bbb.rs unchanged
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.set_tab(Tab::AllFiles).unwrap(); // shows changed and unchanged files together
+
+    let out = render(&app);
+    // Find each name in the file-list pane (rightmost occurrence; skip the diff pane's title
+    // border), as a character column so multibyte box-drawing on the left doesn't skew it.
+    let column_of = |name: &str| -> (String, usize) {
+        let line = out
+            .lines()
+            .filter(|l| !l.contains('┌'))
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("{name} not found in a list row"));
+        let byte = line.rfind(name).unwrap();
+        (line.to_string(), line[..byte].chars().count())
+    };
+    let (a_line, a_col) = column_of("aaa.rs");
+    let (_b_line, b_col) = column_of("bbb.rs");
+    assert_eq!(a_col, b_col, "the fixed gutter keeps the changed and unchanged names aligned");
+    assert_eq!(
+        a_line.chars().nth(a_col - 2),
+        Some('M'),
+        "the M marker sits in the gutter two columns left of the changed name"
+    );
+}

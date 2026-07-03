@@ -576,7 +576,9 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
-                    let mut spans = Vec::new();
+                    // A blank status gutter keeps directories aligned with the files' marker
+                    // column (a directory has no single git status).
+                    let mut spans = vec![Span::raw("  ")];
                     if app.icons {
                         // The open/closed folder glyph already conveys expansion, so the
                         // `▾`/`▸` arrow is dropped.
@@ -609,10 +611,10 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// A file row: `<indent><marker> <name> <stats>` — the marker colored by kind, the basename
-/// bright with its parent directories dimmed, and the `+a −d` stats right-aligned against the
-/// pane edge. A name too wide for the row keeps its tail behind a leading `…/`. An unannotated
-/// row (an unchanged `All files` file) drops the marker and stats, showing just the name.
+/// A file row: `<status gutter><indent><icon><name> <stats>` — a fixed 2-col left gutter holds
+/// the git-status marker (colored by kind; blank when unchanged) so every row's tree content
+/// aligns, the basename is bright with its parent directories dimmed, and the `+a −d` stats are
+/// right-aligned against the pane edge. A name too wide for the row is truncated at the end.
 #[derive(Clone, Copy)]
 struct FileRow<'a> {
     indent: &'a str,
@@ -627,7 +629,12 @@ struct FileRow<'a> {
 
 fn file_row_item(row: FileRow) -> ListItem<'static> {
     let FileRow { indent, annotation, name, width, fill, ignored, icons, p } = row;
-    let marker = annotation.map_or(String::new(), |a| format!("{} ", a.change.marker()));
+    // Git-status gutter: a fixed 2-col column (marker + space) at the far left — blank when
+    // unchanged — so every row aligns regardless of tree depth or change state.
+    let (gutter, gutter_color) = match annotation {
+        Some(a) => (format!("{} ", a.change.marker()), kind_color(p, a.change.marker())),
+        None => ("  ".to_string(), p.text),
+    };
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
     let gap = if stats.is_empty() { 0 } else { 2 };
@@ -635,7 +642,7 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
     // to fit — the width self-accounts even for an ambiguous-width glyph.
     let icon = icons.then(|| crate::icons::file_icon(name, p));
     let icon_w = icon.map_or(0, |(g, _)| format!("{g} ").width());
-    let fixed = indent.width() + marker.width() + icon_w + stats.width() + gap;
+    let fixed = gutter.width() + indent.width() + icon_w + stats.width() + gap;
     // Truncate a too-long name at the end (trailing `…`) rather than eliding the head.
     let shown = truncate_width(name, width.saturating_sub(fixed).max(1));
     // Dim the parent directories of a collapsed-chain name; keep the basename bright.
@@ -644,10 +651,10 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
         None => ("", shown.as_str()),
     };
 
-    let mut spans = vec![Span::styled(indent.to_string(), text_style(p))];
-    if let Some(a) = annotation {
-        spans.push(Span::styled(marker, Style::default().fg(kind_color(p, a.change.marker()))));
-    }
+    let mut spans = vec![
+        Span::styled(gutter, Style::default().fg(gutter_color)),
+        Span::styled(indent.to_string(), text_style(p)),
+    ];
     if let Some((glyph, color)) = icon {
         spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
     }
@@ -1766,11 +1773,13 @@ fn dim_paragraph<'a>(text: &'a str, p: &Palette) -> Paragraph<'a> {
 
 /// The theme accent for a change marker, matched to the diff's add/remove hues.
 fn kind_color(p: &Palette, marker: char) -> Color {
+    // Traffic-light semantics: added is go/green, modified & renamed are caution/amber, deleted &
+    // untracked are stop/red. `peach` is the palette's amber-toned accent.
     match marker {
-        'A' | '?' => p.green,
-        'D' => p.red,
-        'R' => p.mauve,
-        _ => p.yellow,
+        'A' => p.green,
+        'M' | 'R' => p.peach,
+        'D' | '?' => p.red,
+        _ => p.text,
     }
 }
 
