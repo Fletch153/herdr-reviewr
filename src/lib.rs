@@ -392,8 +392,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
 
     if app.mode == Mode::Filter {
         match key.code {
-            Esc => app.clear_filter(),
-            Enter => app.confirm_filter(),
+            Esc | Enter => app.clear_filter(),
             Backspace => app.filter_backspace(),
             // Arrows navigate the filtered results without leaving the search (the letters go
             // into the query, so `j`/`k` can't be the nav keys here).
