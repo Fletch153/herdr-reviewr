@@ -830,8 +830,8 @@ fn the_status_marker_sits_in_a_left_gutter_that_aligns_rows() {
     let (a_line, a_col) = column_of("aaa.rs");
     let (_b_line, b_col) = column_of("bbb.rs");
     assert_eq!(a_col, b_col, "the fixed gutter keeps the changed and unchanged names aligned");
-    // Gutter layout is `M│ ` before the name: marker, rule, space.
+    // Gutter layout is `M│` before the name: marker then rule.
     let chars: Vec<char> = a_line.chars().collect();
-    assert_eq!(chars[a_col - 3], 'M', "the M marker leads the gutter");
-    assert_eq!(chars[a_col - 2], '│', "a vertical rule closes the gutter");
+    assert_eq!(chars[a_col - 2], 'M', "the M marker leads the gutter");
+    assert_eq!(chars[a_col - 1], '│', "a vertical rule closes the gutter");
 }

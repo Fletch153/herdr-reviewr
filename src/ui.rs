@@ -611,16 +611,16 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// Width of the status gutter: a status letter, a `│` rule, and a space.
-const GUTTER_WIDTH: usize = 3;
+/// Width of the status gutter: a status letter and a `│` rule.
+const GUTTER_WIDTH: usize = 2;
 
 /// The status-gutter spans shared by file and directory rows: the colored status letter (a
-/// space when there's none) followed by a dim `│ ` rule. Rendered on every row, the rule forms
+/// space when there's none) followed by a dim `│` rule. Rendered on every row, the rule forms
 /// one continuous vertical line delimiting the gutter from the tree.
 fn gutter_spans(marker: char, marker_color: Color, p: &Palette) -> Vec<Span<'static>> {
     vec![
         Span::styled(marker.to_string(), Style::default().fg(marker_color)),
-        Span::styled("│ ", Style::default().fg(p.overlay0)),
+        Span::styled("│", Style::default().fg(p.overlay0)),
     ]
 }
 
