@@ -2333,3 +2333,23 @@ fn filtering_narrows_the_tree_and_clearing_restores() {
     assert_eq!(app.file_rows.len(), full, "clearing restores the full tree");
     assert_eq!(app.mode, Mode::Normal, "and leaves filter mode");
 }
+
+#[test]
+fn a_leading_slash_is_ignored_when_filtering() {
+    let r = Repo::init();
+    r.write("src/evm.rs", "1\n");
+    r.commit_all("init");
+    r.write("src/evm.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    app.start_filter();
+    app.filter_push('/'); // the "restart search" reflex — must not insert a slash
+    assert_eq!(app.filter, "", "a leading slash is dropped");
+    for c in "evm".chars() {
+        app.filter_push(c);
+    }
+    assert_eq!(app.filter, "evm", "no stray leading slash");
+    app.filter_push('/'); // mid-query slash is a real filter character
+    assert_eq!(app.filter, "evm/", "a slash inside the query is kept");
+}

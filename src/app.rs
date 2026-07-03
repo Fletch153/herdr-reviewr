@@ -434,8 +434,13 @@ impl App {
         self.mode = Mode::Filter;
     }
 
-    /// Append a character to the filter and re-apply it live.
+    /// Append a character to the filter and re-apply it live. A leading `/` is ignored: `/`
+    /// opens the filter, so pressing it again on an empty query (the "restart the search"
+    /// reflex) must not insert a literal slash — and no git path starts with one anyway.
     pub fn filter_push(&mut self, c: char) {
+        if c == '/' && self.filter.is_empty() {
+            return;
+        }
         self.filter.push(c);
         self.apply_filter();
     }
