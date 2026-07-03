@@ -583,12 +583,13 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(row.depth);
             match &row.kind {
                 RowKind::Dir { expanded, path } => {
-                    // A git-ignored directory recedes into a dim, unbolded row (file-list.md); a
-                    // directory holding a change anywhere below gets a subtle blue (lavender) tint.
+                    // A directory holding a change anywhere below is flagged blue: on its icon
+                    // when icons are on (name stays normal), else on the name itself.
+                    let changed = app.dir_has_changes(path);
                     let name_style = if row.ignored {
                         Style::default().fg(p.overlay0)
-                    } else if app.dir_has_changes(path) {
-                        Style::default().fg(p.lavender).add_modifier(Modifier::BOLD)
+                    } else if changed && !app.icons {
+                        Style::default().fg(p.blue).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
@@ -597,8 +598,9 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     let mut spans = gutter_spans(' ', p.text, p);
                     if app.icons {
                         // The open/closed folder glyph already conveys expansion, so the
-                        // `▾`/`▸` arrow is dropped.
-                        let (glyph, color) = crate::icons::folder_icon(*expanded, p);
+                        // `▾`/`▸` arrow is dropped. A changed folder's glyph turns blue.
+                        let (glyph, folder_color) = crate::icons::folder_icon(*expanded, p);
+                        let color = if changed { p.blue } else { folder_color };
                         spans.push(Span::styled(indent.clone(), Style::default().fg(p.overlay0)));
                         spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
                     } else {
