@@ -130,6 +130,8 @@ pub enum FooterAction {
     ClosePicker,
     /// Start filtering the file tree.
     Filter,
+    /// Filter modal: keep the filter and return to navigation.
+    ApplyFilter,
     /// Filter modal: clear the query and show the full tree.
     ClearFilter,
     Send,
@@ -456,6 +458,14 @@ impl App {
             self.mode = Mode::Normal;
         }
         self.apply_filter();
+    }
+
+    /// Keep the filter applied but leave input mode, handing control back to normal navigation
+    /// and command keys. `/` re-enters to edit the query; `esc` clears it.
+    pub fn confirm_filter(&mut self) {
+        if self.mode == Mode::Filter {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// Rebuild the filtered tree, keeping the same file selected across the change (so clearing
@@ -1861,7 +1871,7 @@ impl App {
                 return vec![(A::PickCommit, Primary), (A::ClosePicker, Normal)];
             }
             Mode::Filter => {
-                return vec![(A::ClearFilter, Primary)];
+                return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
             }
             Mode::Normal => {}
         }

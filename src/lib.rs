@@ -392,7 +392,10 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
 
     if app.mode == Mode::Filter {
         match key.code {
-            Esc | Enter => app.clear_filter(),
+            Esc => app.clear_filter(),
+            // Keep the filter applied but hand control back to normal keys (u/b/t/C/…); `/`
+            // re-enters to edit it, `esc` clears it.
+            Enter => app.confirm_filter(),
             Backspace => app.filter_backspace(),
             // Arrows navigate the filtered results without leaving the search (the letters go
             // into the query, so `j`/`k` can't be the nav keys here).

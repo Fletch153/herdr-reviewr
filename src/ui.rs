@@ -1237,6 +1237,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Scope => ("u/b/t/C", "scope"),
         A::Base => ("B", "base"),
         A::Filter => ("/", "filter"),
+        A::ApplyFilter => ("enter", "apply"),
         A::PickCommit => ("enter", "compare"),
         A::Send => return ("s".into(), format!("send {}", app.store.len())),
         A::List => ("l", "list"),
