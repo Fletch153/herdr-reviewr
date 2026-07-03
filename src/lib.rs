@@ -395,6 +395,12 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
             Esc => app.clear_filter(),
             Enter => app.confirm_filter(),
             Backspace => app.filter_backspace(),
+            // Arrows navigate the filtered results without leaving the search (the letters go
+            // into the query, so `j`/`k` can't be the nav keys here).
+            Up => app.move_cursor(-1)?,
+            Down => app.move_cursor(1)?,
+            PageUp => app.move_cursor(-PAGE)?,
+            PageDown => app.move_cursor(PAGE)?,
             Char(c) if !ctrl => app.filter_push(c),
             _ => {}
         }

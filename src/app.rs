@@ -429,8 +429,10 @@ impl App {
         };
     }
 
-    /// Enter filter-input mode, editing the current query.
+    /// Enter filter-input mode, editing the current query. Focuses the file list so it's clear
+    /// the filter applies there (not the diff pane) and so ↑/↓ navigate the results.
     pub fn start_filter(&mut self) {
+        self.focus = Focus::Files;
         self.mode = Mode::Filter;
     }
 

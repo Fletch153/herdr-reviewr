@@ -2353,3 +2353,29 @@ fn a_leading_slash_is_ignored_when_filtering() {
     app.filter_push('/'); // mid-query slash is a real filter character
     assert_eq!(app.filter, "evm/", "a slash inside the query is kept");
 }
+
+#[test]
+fn filtering_focuses_files_and_arrows_navigate_the_results() {
+    let r = Repo::init();
+    for f in ["evm_a.rs", "evm_b.rs", "evm_c.rs"] {
+        r.write(f, "1\n");
+    }
+    r.commit_all("init");
+    for f in ["evm_a.rs", "evm_b.rs", "evm_c.rs"] {
+        r.write(f, "2\n");
+    }
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.focus = Focus::Diff; // pretend we were reviewing the diff
+
+    app.start_filter();
+    assert_eq!(app.focus, Focus::Files, "starting a search focuses the file list");
+    for c in "evm".chars() {
+        app.filter_push(c);
+    }
+    let start = app.file_cursor;
+    app.move_cursor(1).unwrap(); // ↓ while the search box is open
+    assert_eq!(app.file_cursor, start + 1, "down moves through the filtered results");
+    app.move_cursor(-1).unwrap(); // ↑
+    assert_eq!(app.file_cursor, start, "up moves back, without leaving the search");
+}
