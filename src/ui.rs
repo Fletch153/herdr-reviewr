@@ -583,12 +583,12 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(row.depth);
             match &row.kind {
                 RowKind::Dir { expanded, path } => {
-                    // A directory holding a change anywhere below is flagged blue: on its icon
-                    // when icons are on (name stays normal), else on the name itself.
+                    // A directory holding a change anywhere below is flagged blue on both its
+                    // name and (when shown) its icon.
                     let changed = app.dir_has_changes(path);
                     let name_style = if row.ignored {
                         Style::default().fg(p.overlay0)
-                    } else if changed && !app.icons {
+                    } else if changed {
                         Style::default().fg(p.blue).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
