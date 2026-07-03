@@ -43,6 +43,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_comments_list(frame, app, area);
     } else if app.mode == Mode::CommitPick {
         render_commit_picker(frame, app, area);
+    } else if app.mode == Mode::BranchPick {
+        render_branch_picker(frame, app, area);
     }
 }
 
@@ -1238,7 +1240,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Base => ("B", "base"),
         A::Filter => ("/", "filter"),
         A::ApplyFilter => ("enter", "apply"),
-        A::PickCommit => ("enter", "compare"),
+        A::PickCommit | A::PickBranch => ("enter", "compare"),
         A::Send => return ("s".into(), format!("send {}", app.store.len())),
         A::List => ("l", "list"),
         A::Copy => ("y", "copy"),
@@ -1456,6 +1458,51 @@ pub fn hit_commit_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usiz
     let scroll = commit_scroll(app.commit_cursor, inner.height as usize);
     let idx = scroll + (row - inner.y) as usize;
     (idx < app.commit_choices.len()).then_some(idx)
+}
+
+/// The branch-picker dropdown: recent branch tips, the cursor row highlighted, windowed to keep
+/// it visible — the same popup as the commit picker.
+fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let popup = commit_picker_rect(area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.mauve))
+        .title(format!("Compare with branch ({})", app.branch_choices.len()));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let width = inner.width as usize;
+    let height = inner.height as usize;
+    let scroll = commit_scroll(app.branch_cursor, height);
+    let end = (scroll + height).min(app.branch_choices.len());
+    let items: Vec<ListItem> = app.branch_choices[scroll..end]
+        .iter()
+        .enumerate()
+        .map(|(row, name)| {
+            let i = scroll + row;
+            let span = Span::styled(truncate_width(name, width), Style::default().fg(p.mauve));
+            selectable_row(vec![span], width, (i == app.branch_cursor).then_some(p.surface2))
+        })
+        .collect();
+    frame.render_widget(List::new(items), inner);
+}
+
+/// The branch index a click at `(col, row)` lands on in the open picker, if any.
+#[must_use]
+pub fn hit_branch_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
+    let inner = Block::default().borders(Borders::ALL).inner(commit_picker_rect(area));
+    if col < inner.x
+        || col >= inner.x + inner.width
+        || row < inner.y
+        || row >= inner.y + inner.height
+    {
+        return None;
+    }
+    let scroll = commit_scroll(app.branch_cursor, inner.height as usize);
+    let idx = scroll + (row - inner.y) as usize;
+    (idx < app.branch_choices.len()).then_some(idx)
 }
 
 /// The default body text color.

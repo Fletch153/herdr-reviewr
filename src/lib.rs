@@ -390,6 +390,17 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::BranchPick {
+        match key.code {
+            Esc | Char('q') => app.close_branch_picker(),
+            Char('j') | Down => app.branch_move(1),
+            Char('k') | Up => app.branch_move(-1),
+            Enter | Char('B' | 'l') => app.pick_branch(app.branch_cursor)?,
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if app.mode == Mode::Filter {
         match key.code {
             Esc => app.clear_filter(),
@@ -446,7 +457,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('u'), false) => app.set_scope(Scope::Uncommitted)?,
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
-        (Char('B'), false) => app.cycle_base()?,
+        (Char('B'), false) => app.open_branch_picker(),
         // `C` (upper) is the commit comparator; lowercase `c` stays comment.
         (Char('C'), false) => app.enter_commit_scope()?,
         (Char('v'), _) => app.toggle_select(),
@@ -506,6 +517,20 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         }
         return Ok(());
     }
+    if app.mode == Mode::BranchPick {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                match ui::hit_branch_pick(area, app, m.column, m.row) {
+                    Some(i) => app.pick_branch(i)?,
+                    None => app.close_branch_picker(),
+                }
+            }
+            MouseEventKind::ScrollDown => app.branch_move(3),
+            MouseEventKind::ScrollUp => app.branch_move(-3),
+            _ => {}
+        }
+        return Ok(());
+    }
     // The read-only PR tab: click a tab or the open button, click a row to read it, wheel the
     // navigator (right) to move, wheel the read pane (left) to scroll.
     if app.tab == crate::app::Tab::Pr {
@@ -542,7 +567,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 match hit {
                     ui::HeaderHit::Tab(tab) => app.set_tab(tab)?,
                     ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
-                    ui::HeaderHit::Base => app.cycle_base()?,
+                    ui::HeaderHit::Base => app.open_branch_picker(),
                     ui::HeaderHit::Commit => app.open_commit_picker(),
                     ui::HeaderHit::Send => app.export(&Agent),
                 }

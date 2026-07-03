@@ -2057,83 +2057,6 @@ fn theme_selection_swaps_the_palette_and_falls_back() {
 }
 
 #[test]
-fn cycle_base_repoints_the_branch_diff_and_wraps_home() {
-    let r = Repo::init();
-    r.write("base.rs", "1\n");
-    r.commit_all("base");
-    r.git(&["checkout", "-q", "-b", "mid"]);
-    r.write("mid.rs", "1\n");
-    r.commit_all("mid work");
-    r.git(&["checkout", "-q", "-b", "feature"]);
-    r.write("feature.rs", "1\n");
-    r.commit_all("feature work");
-
-    let mut app = App::new(r.path_buf(), Scope::Branch, None);
-    app.reload().unwrap();
-    // Auto base = main: both branch commits are in scope.
-    assert_eq!(app.changed_count(), 2, "vs main: mid.rs + feature.rs");
-
-    // Cycle until the base lands on `mid` — the stacked-branch case: the diff shrinks to the
-    // feature commit only, with no manual reload.
-    let mut hops = 0;
-    while app.base.as_deref() != Some("mid") {
-        app.cycle_base().unwrap();
-        hops += 1;
-        assert!(hops < 25, "cycle never reached mid; base={:?}", app.base);
-        if app.base.is_none() {
-            break;
-        }
-    }
-    assert_eq!(app.base.as_deref(), Some("mid"), "candidates should include local mid");
-    assert_eq!(
-        app.changed_count(),
-        1,
-        "vs mid: only feature.rs — took effect without manual reload"
-    );
-
-    // Completing the cycle wraps home to the startup base (auto) and restores the full set.
-    let mut hops = 0;
-    while app.base.is_some() {
-        app.cycle_base().unwrap();
-        hops += 1;
-        assert!(hops < 25, "cycle never wrapped home; base={:?}", app.base);
-    }
-    assert_eq!(app.changed_count(), 2, "wrapped home to auto (main): full set restored");
-}
-
-#[test]
-fn cycle_base_with_an_explicit_startup_base_visits_every_candidate_and_wraps() {
-    let r = Repo::init();
-    r.write("base.rs", "1\n");
-    r.commit_all("base");
-    r.git(&["checkout", "-q", "-b", "mid"]);
-    r.write("mid.rs", "1\n");
-    r.commit_all("mid work");
-    r.git(&["checkout", "-q", "-b", "feature"]);
-    r.write("feature.rs", "1\n");
-    r.commit_all("feature work");
-
-    // Explicit startup base `main` — a value that also appears among the cycle candidates.
-    // Positional cycling must still visit BOTH candidates (a value-matched "home" would
-    // re-enter the home arm on the `main` candidate and never reach past it), then wrap.
-    let mut app = App::new(r.path_buf(), Scope::Branch, Some("main".to_string()));
-    app.reload().unwrap();
-    assert_eq!(app.changed_count(), 2, "home (explicit main): mid.rs + feature.rs");
-
-    let mut seen = Vec::new();
-    for _ in 0..2 {
-        app.cycle_base().unwrap();
-        seen.push(app.base.clone().expect("candidates are always Some"));
-    }
-    seen.sort();
-    assert_eq!(seen, vec!["main".to_string(), "mid".to_string()], "both candidates visited");
-
-    app.cycle_base().unwrap();
-    assert_eq!(app.base.as_deref(), Some("main"), "wraps home to the explicit base");
-    assert_eq!(app.changed_count(), 2, "home diff restored");
-}
-
-#[test]
 fn e_requests_the_editor_for_the_file_under_the_cursor() {
     let r = edited_repo();
     let mut app = app_on(&r);
@@ -2459,4 +2382,28 @@ fn enter_completes_a_partial_expand_before_collapsing() {
     app.toggle_dir_children(); // now everything is open, so Enter collapses
     let shut: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(!shut.iter().any(|n| n == "mod.rs"), "enter again collapses: {shut:?}");
+}
+
+#[test]
+fn the_branch_picker_lists_and_picks_a_base() {
+    let r = Repo::init(); // main
+    r.write("a.rs", "1\n");
+    r.commit_all("base");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("b.rs", "2\n");
+    r.commit_all("on feature");
+    let mut app = App::new(r.path_buf(), Scope::Branch, None);
+    app.reload().unwrap();
+
+    app.open_branch_picker();
+    assert_eq!(app.mode, Mode::BranchPick, "the dropdown opens in branch scope");
+    assert!(
+        app.branch_choices.iter().any(|b| b == "main"),
+        "lists other branches, not the current one: {:?}",
+        app.branch_choices
+    );
+    let idx = app.branch_choices.iter().position(|b| b == "main").unwrap();
+    app.pick_branch(idx).unwrap();
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.base.as_deref(), Some("main"), "picking sets the base branch");
 }

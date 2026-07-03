@@ -28,6 +28,8 @@ const MIN_LIST_PCT: u16 = 15;
 const MAX_LIST_PCT: u16 = 60;
 /// How many of this branch's most-recent commits the commit picker offers.
 const COMMIT_PICK_LIMIT: usize = 50;
+/// How many recent branch tips the branch picker offers.
+const BRANCH_PICK_LIMIT: usize = 30;
 
 /// Which pane has the keyboard.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,6 +102,8 @@ pub enum Mode {
     List,
     /// Choosing a commit to compare against in the commit-picker dropdown.
     CommitPick,
+    /// Choosing a branch to compare against in the branch-picker dropdown.
+    BranchPick,
     /// Typing a file-tree filter query.
     Filter,
 }
@@ -126,6 +130,8 @@ pub enum FooterAction {
     Base,
     /// Commit-picker modal: compare against the highlighted commit.
     PickCommit,
+    /// Branch-picker modal: compare against the highlighted branch.
+    PickBranch,
     /// Commit-picker modal: close without changing the compared commit.
     ClosePicker,
     /// Start filtering the file tree.
@@ -164,12 +170,9 @@ pub enum Tier {
 pub struct App {
     pub repo: PathBuf,
     pub base: Option<String>,
-    /// The startup base (CLI/config, else `None` = auto) — the base cycle's wrap-around slot.
-    default_base: Option<String>,
-    /// Where the base cycle stands: `None` = the startup base ("home"), `Some(i)` = the i-th
-    /// cycle candidate. Positional, not by value — the startup base may itself appear among
-    /// the candidates, and value-matching would conflate the two and skip the tips after it.
-    base_cursor: Option<usize>,
+    /// The branch picker's choices (recent branch tips) and cursor row, while it is open.
+    pub branch_choices: Vec<String>,
+    pub branch_cursor: usize,
     /// What `base_ref` resolved on the last branch-scope reload — the header chip's label.
     pub resolved_base: Option<String>,
     pub scope: Scope,
@@ -287,8 +290,8 @@ impl App {
         let theme = theme::resolve(None);
         Self {
             repo,
-            default_base: base.clone(),
-            base_cursor: None,
+            branch_choices: Vec::new(),
+            branch_cursor: 0,
             resolved_base: None,
             base,
             scope,
@@ -1034,36 +1037,53 @@ impl App {
         }
     }
 
-    /// Repoint the branch-scope base to the next candidate: startup base → each recent branch
-    /// tip (newest first, minus the checked-out branch) → back to the startup base. No-op
-    /// outside Branch scope. The chip/footer only advertise it there.
-    pub fn cycle_base(&mut self) -> Result<()> {
+    /// Load the recent branches (newest first, minus the checked-out branch) and open the branch
+    /// picker, cursoring the current base. Branch scope only; reports instead of opening when
+    /// there are none.
+    pub fn open_branch_picker(&mut self) {
         if self.scope != Scope::Branch || self.composing() {
-            return Ok(());
+            return;
         }
         let current = git::current_branch(&self.repo);
-        let candidates: Vec<String> = git::recent_branches(&self.repo, 20)
+        self.branch_choices = git::recent_branches(&self.repo, BRANCH_PICK_LIMIT)
             .into_iter()
             .filter(|b| Some(b) != current.as_ref())
             .collect();
-        // Advance the positional cursor; past the last candidate it wraps home. The list is
-        // re-read each press, so churn between presses at worst wraps early — never a stale
-        // index panic and never a skipped remainder.
-        let next_idx = self.base_cursor.map_or(0, |i| i + 1);
-        if next_idx >= candidates.len() {
-            if self.base_cursor.is_none() {
-                return Ok(()); // home with no candidates: nothing to cycle to
-            }
-            self.base_cursor = None;
-            self.base = self.default_base.clone();
-        } else {
-            self.base_cursor = Some(next_idx);
-            self.base = Some(candidates[next_idx].clone());
+        if self.branch_choices.is_empty() {
+            self.status = "no other branches to compare against".to_string();
+            return;
         }
+        self.branch_cursor = self
+            .base
+            .as_deref()
+            .and_then(|b| self.branch_choices.iter().position(|c| c == b))
+            .unwrap_or(0);
+        self.mode = Mode::BranchPick;
+    }
+
+    /// Move the branch-picker cursor within the loaded choices.
+    pub fn branch_move(&mut self, delta: isize) {
+        if self.mode == Mode::BranchPick {
+            self.branch_cursor = step(self.branch_cursor, delta, self.branch_choices.len());
+        }
+    }
+
+    /// Compare against the branch at `idx`: set it as the base, close the picker, rebuild the diff.
+    pub fn pick_branch(&mut self, idx: usize) -> Result<()> {
+        let Some(branch) = self.branch_choices.get(idx) else { return Ok(()) };
+        self.base = Some(branch.clone());
+        self.mode = Mode::Normal;
         self.reset_changes_view();
         self.reload()?;
         self.reveal_files = true;
         Ok(())
+    }
+
+    /// Close the branch picker without changing the base.
+    pub fn close_branch_picker(&mut self) {
+        if self.mode == Mode::BranchPick {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// Switch to `tab`, saving the active tab's navigation and left-pane state and restoring the
@@ -1715,7 +1735,7 @@ impl App {
                 };
                 Some(c.location())
             }
-            Mode::Normal | Mode::List | Mode::CommitPick | Mode::Filter => None,
+            Mode::Normal | Mode::List | Mode::CommitPick | Mode::BranchPick | Mode::Filter => None,
         }
     }
 
@@ -1869,6 +1889,9 @@ impl App {
             }
             Mode::CommitPick => {
                 return vec![(A::PickCommit, Primary), (A::ClosePicker, Normal)];
+            }
+            Mode::BranchPick => {
+                return vec![(A::PickBranch, Primary), (A::ClosePicker, Normal)];
             }
             Mode::Filter => {
                 return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
