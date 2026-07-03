@@ -1321,11 +1321,12 @@ impl App {
         }
     }
 
-    /// `Enter` on a folder: expand it and its direct child folders (one level, not recursive);
-    /// pressing it again on the now-open folder collapses them all back.
+    /// `Enter` on a folder: expand it and its direct child folders (one level, not recursive).
+    /// If the folder was only partly open — e.g. opened with `→` so its child folders are still
+    /// shut — this *completes* the expansion rather than collapsing; only once everything is open
+    /// does another `Enter` collapse it all back.
     pub fn toggle_dir_children(&mut self) {
         let Some(folder) = self.dir_under_cursor() else { return };
-        let want = !self.dir_expanded(&folder);
         let prefix = format!("{folder}/");
         // The direct child directories: a path under `folder` with a further `/`. Collected
         // before mutating (idempotent `set_dir_expanded` tolerates the duplicates).
@@ -1339,9 +1340,13 @@ impl App {
                     .map(|(seg, _)| format!("{folder}/{seg}"))
             })
             .collect();
+        // Collapse only when the folder and every child folder are already open; otherwise
+        // expand, filling in whatever `→` left shut.
+        let fully_open = self.dir_expanded(&folder) && kids.iter().all(|k| self.dir_expanded(k));
+        let want = !fully_open;
         let mut changed = self.set_dir_expanded(&folder, want);
-        for kid in kids {
-            changed |= self.set_dir_expanded(&kid, want);
+        for kid in &kids {
+            changed |= self.set_dir_expanded(kid, want);
         }
         if changed {
             self.apply_dir_change();

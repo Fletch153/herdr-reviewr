@@ -2432,3 +2432,31 @@ fn enter_expands_a_folder_and_its_child_folders_one_level() {
     let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(!after.iter().any(|n| n == "mod.rs"), "pressing enter again collapses: {after:?}");
 }
+
+#[test]
+fn enter_completes_a_partial_expand_before_collapsing() {
+    use herdr_reviewr::app::Tab;
+    let r = Repo::init();
+    for f in ["src/app/mod.rs", "src/ui/view.rs"] {
+        r.write(f, "1\n");
+    }
+    r.commit_all("init");
+    for f in ["src/app/mod.rs", "src/ui/view.rs"] {
+        r.write(f, "2\n");
+    }
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.file_cursor = 0; // the `src` row
+
+    app.expand_dir(); // `→` opens src only; its child folders stay shut
+    let opened: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert!(!opened.iter().any(|n| n == "mod.rs"), "-> left child folders shut: {opened:?}");
+
+    app.toggle_dir_children(); // Enter completes the expansion (does not collapse)
+    let done: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert!(done.iter().any(|n| n == "mod.rs"), "enter fills in the shut child folders: {done:?}");
+
+    app.toggle_dir_children(); // now everything is open, so Enter collapses
+    let shut: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert!(!shut.iter().any(|n| n == "mod.rs"), "enter again collapses: {shut:?}");
+}
