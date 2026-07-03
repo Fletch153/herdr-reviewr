@@ -469,12 +469,18 @@ impl App {
         }
     }
 
-    /// Rebuild the filtered tree and keep the cursor in range and visible.
+    /// Rebuild the filtered tree, keeping the same file selected across the change (so clearing
+    /// the filter doesn't jump to a different row) and loading its content so the diff follows
+    /// the highlight instead of waiting for the next poll.
     fn apply_filter(&mut self) {
+        let anchor = self.cursor_anchor();
         self.rebuild_file_rows();
-        if self.file_cursor >= self.file_rows.len() {
+        if let Some(pos) = anchor.and_then(|a| self.row_of_anchor(&a)) {
+            self.file_cursor = pos;
+        } else if self.file_cursor >= self.file_rows.len() {
             self.file_cursor = self.file_rows.len().saturating_sub(1);
         }
+        self.open_cursor_file();
         self.reveal_files = true;
     }
 

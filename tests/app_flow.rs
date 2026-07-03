@@ -2379,3 +2379,30 @@ fn filtering_focuses_files_and_arrows_navigate_the_results() {
     app.move_cursor(-1).unwrap(); // ↑
     assert_eq!(app.file_cursor, start, "up moves back, without leaving the search");
 }
+
+#[test]
+fn clearing_the_filter_keeps_the_same_file_selected() {
+    let r = Repo::init();
+    for f in ["aaa.rs", "readme.md", "zzz.rs"] {
+        r.write(f, "1\n");
+    }
+    r.commit_all("init");
+    for f in ["aaa.rs", "readme.md", "zzz.rs"] {
+        r.write(f, "2\n");
+    }
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    app.start_filter();
+    for c in "readme".chars() {
+        app.filter_push(c);
+    }
+    assert_eq!(app.diff_path.as_deref(), Some("readme.md"), "the match is loaded while filtering");
+
+    app.clear_filter();
+    assert_eq!(
+        app.diff_path.as_deref(),
+        Some("readme.md"),
+        "clearing the filter keeps the same file selected, not a different row"
+    );
+}
