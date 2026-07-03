@@ -26,6 +26,8 @@ use crate::turn::{Status, TurnTracker};
 const DEFAULT_LIST_PCT: u16 = 32;
 const MIN_LIST_PCT: u16 = 15;
 const MAX_LIST_PCT: u16 = 60;
+/// How many of this branch's most-recent commits the commit picker offers.
+const COMMIT_PICK_LIMIT: usize = 50;
 
 /// Which pane has the keyboard.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -96,6 +98,8 @@ pub enum Mode {
     },
     /// Browsing the comments-list overlay.
     List,
+    /// Choosing a commit to compare against in the commit-picker dropdown.
+    CommitPick,
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
@@ -118,6 +122,12 @@ pub enum FooterAction {
     Scope,
     /// Cycle the branch-scope diff base through recent branch tips (Branch scope only).
     Base,
+    /// Open the commit picker to choose/change the compared commit (Commit scope only).
+    Commit,
+    /// Commit-picker modal: compare against the highlighted commit.
+    PickCommit,
+    /// Commit-picker modal: close without changing the compared commit.
+    ClosePicker,
     Send,
     List,
     Copy,
@@ -219,6 +229,11 @@ pub struct App {
     pub select_anchor: Option<usize>,
     pub store: CommentStore,
     pub list_cursor: usize,
+    /// The commit chosen as the diff base in `Scope::Commit` (full SHA); `None` until one is
+    /// picked. The picker's choices, cursor row, and scroll offset while it is open.
+    pub selected_commit: Option<String>,
+    pub commit_choices: Vec<git::CommitRef>,
+    pub commit_cursor: usize,
     pub mode: Mode,
     pub input: String,
     /// The comment editor's caret: a char index into `input` (`0..=chars().count()`).
@@ -293,6 +308,9 @@ impl App {
             select_anchor: None,
             store: CommentStore::new(),
             list_cursor: 0,
+            selected_commit: None,
+            commit_choices: Vec::new(),
+            commit_cursor: 0,
             mode: Mode::Normal,
             input: String::new(),
             caret: 0,
@@ -481,11 +499,14 @@ impl App {
         // and comment staleness stay correct even while `All files` lists the whole worktree.
         // last-turn diffs the captured baseline; with none yet, it is empty until a turn start
         // is observed (specs/review-model.md).
-        // Resolve the branch-scope base once per reload; downstream calls (the changeset here,
-        // each file's old side in `content_sides`) short-circuit on the resolved ref.
-        if self.scope == Scope::Branch {
-            self.resolved_base = git::base_ref(&self.repo, self.base.as_deref());
-        }
+        // Resolve the diff's old-side base once per reload; downstream calls (the changeset here,
+        // each file's old side in `content_sides`) short-circuit on it. Branch auto-detects its
+        // base; Commit pins it to the chosen commit; the others diff against `HEAD`.
+        self.resolved_base = match self.scope {
+            Scope::Branch => git::base_ref(&self.repo, self.base.as_deref()),
+            Scope::Commit => self.selected_commit.clone(),
+            _ => None,
+        };
         let changed = match self.scope {
             Scope::LastTurn => match self.turn.baseline() {
                 Some(t) => git::changed_against_tree(&self.repo, t)?,
@@ -512,7 +533,7 @@ impl App {
         // While a modal is open — composing a comment, or the comments-list overlay — the
         // open diff is frozen, so a poll can't shift the anchor beneath the writer or reset
         // the scroll/selection under the overlay. The file list still updates above.
-        if !self.composing() && self.mode != Mode::List {
+        if !self.composing() && self.mode != Mode::List && self.mode != Mode::CommitPick {
             // A poll keeps the reader on the same file; only a different shown file resets
             // the diff view to the top.
             if self.shown_entry().map(|e| e.path) != self.diff_path {
@@ -670,6 +691,16 @@ impl App {
                     .turn
                     .baseline()
                     .map(|b| git::file_content(&self.repo, b, old_path))
+                    .unwrap_or_default();
+                (old, worktree_content(&self.repo, new_path))
+            }
+            Scope::Commit => {
+                // The chosen commit is the old side directly (no merge-base — it is already
+                // an ancestor of HEAD).
+                let old = self
+                    .resolved_base
+                    .as_deref()
+                    .map(|c| git::file_content(&self.repo, c, old_path))
                     .unwrap_or_default();
                 (old, worktree_content(&self.repo, new_path))
             }
@@ -837,8 +868,71 @@ impl App {
             self.reload()?;
             // An explicit switch reveals the cursor (a poll, which also calls reload, does not).
             self.reveal_files = true;
+            // Landing on the commit comparator with nothing chosen yet surfaces the picker, so the
+            // dropdown is right there; once a commit is pinned, the diff shows instead.
+            if scope == Scope::Commit && self.selected_commit.is_none() {
+                self.open_commit_picker();
+            }
         }
         Ok(())
+    }
+
+    /// Switch to the commit comparator. When already comparing against a commit, reopen the
+    /// picker to change it; otherwise `set_scope` surfaces the picker if nothing is chosen yet.
+    pub fn enter_commit_scope(&mut self) -> Result<()> {
+        if self.scope == Scope::Commit {
+            self.open_commit_picker();
+        } else {
+            self.set_scope(Scope::Commit)?;
+        }
+        Ok(())
+    }
+
+    /// Load this branch's commits (fork → HEAD) and open the picker, cursoring the currently
+    /// compared commit. A no-op while composing; reports instead of opening when there are none.
+    pub fn open_commit_picker(&mut self) {
+        if self.composing() {
+            return;
+        }
+        self.commit_choices =
+            git::commits_since_fork(&self.repo, self.base.as_deref(), COMMIT_PICK_LIMIT);
+        if self.commit_choices.is_empty() {
+            self.status = "no commits since the fork point".to_string();
+            return;
+        }
+        self.commit_cursor = self
+            .selected_commit
+            .as_deref()
+            .and_then(|sha| self.commit_choices.iter().position(|c| c.sha == sha))
+            .unwrap_or(0);
+        self.mode = Mode::CommitPick;
+    }
+
+    /// Move the picker cursor within the loaded choices.
+    pub fn commit_move(&mut self, delta: isize) {
+        if self.mode == Mode::CommitPick {
+            self.commit_cursor = step(self.commit_cursor, delta, self.commit_choices.len());
+        }
+    }
+
+    /// Compare against the commit at `idx`: pin it as the base, switch to Commit scope, close the
+    /// picker, and rebuild the diff.
+    pub fn pick_commit(&mut self, idx: usize) -> Result<()> {
+        let Some(commit) = self.commit_choices.get(idx) else { return Ok(()) };
+        self.selected_commit = Some(commit.sha.clone());
+        self.scope = Scope::Commit;
+        self.mode = Mode::Normal;
+        self.reset_changes_view();
+        self.reload()?;
+        self.reveal_files = true;
+        Ok(())
+    }
+
+    /// Close the picker without changing the compared commit.
+    pub fn close_commit_picker(&mut self) {
+        if self.mode == Mode::CommitPick {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// Reset the Changes tab's cursor/folds/scroll and drop cached diffs — required whenever
@@ -1508,7 +1602,7 @@ impl App {
                 };
                 Some(c.location())
             }
-            Mode::Normal | Mode::List => None,
+            Mode::Normal | Mode::List | Mode::CommitPick => None,
         }
     }
 
@@ -1660,6 +1754,9 @@ impl App {
                     (A::DeleteComment, Normal),
                 ];
             }
+            Mode::CommitPick => {
+                return vec![(A::PickCommit, Primary), (A::ClosePicker, Normal)];
+            }
             Mode::Normal => {}
         }
 
@@ -1733,6 +1830,11 @@ impl App {
         // the empty changeset that first surfaced it (the guard keeps that earlier push unique).
         if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
             out.push((A::Base, Normal));
+        }
+
+        // `C` reopens the commit picker to change the compared commit, in every Commit context.
+        if self.scope == Scope::Commit && !out.iter().any(|&(a, _)| a == A::Commit) {
+            out.push((A::Commit, Normal));
         }
 
         // Once a comment is written, sending is the next relevant move — just below the primary

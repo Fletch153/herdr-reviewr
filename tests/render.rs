@@ -687,3 +687,41 @@ fn renders_a_light_theme_without_panic() {
         .any(|(x, y)| buf.cell((x, y)).is_some_and(|c| c.fg == latte_lavender));
     assert!(painted, "the Latte palette reaches the painted buffer");
 }
+
+/// A repo on `feature` with two commits atop `main`, for commit-picker rendering.
+fn commit_render_app() -> (Repo, App) {
+    let r = Repo::init();
+    r.write("base.rs", "0\n");
+    r.commit_all("base");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("a.rs", "a\n");
+    r.commit_all("add alpha feature");
+    r.write("b.rs", "b\n");
+    r.commit_all("add beta feature");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    app.reload().unwrap();
+    (r, app)
+}
+
+#[test]
+fn the_commit_picker_lists_hashes_and_titles() {
+    let (_r, mut app) = commit_render_app();
+    app.open_commit_picker();
+    let out = render(&app);
+    assert!(out.contains("Compare with commit ("), "titled overlay with a count");
+    assert!(out.contains("add beta feature"), "a commit title is listed");
+    assert!(out.contains(&app.commit_choices[0].short), "its abbreviated hash is shown");
+}
+
+#[test]
+fn the_commit_chip_shows_the_selected_commit() {
+    let (_r, mut app) = commit_render_app();
+    app.open_commit_picker();
+    app.pick_commit(0).unwrap(); // newest: "add beta feature"
+    let out = render(&app);
+    assert!(
+        out.contains(&format!("[>{}", app.commit_choices[0].short)),
+        "the header chip shows the picked commit's hash"
+    );
+    assert!(out.contains("add beta feature"), "and its title");
+}

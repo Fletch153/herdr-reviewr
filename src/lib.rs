@@ -373,6 +373,17 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::CommitPick {
+        match key.code {
+            Esc | Char('q') => app.close_commit_picker(),
+            Char('j') | Down => app.commit_move(1),
+            Char('k') | Up => app.commit_move(-1),
+            Enter | Char('C' | 'l') => app.pick_commit(app.commit_cursor)?,
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match (key.code, ctrl) {
         // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
         // keys move the focused pane's cursor (the view follows), like `j`/`k`.
@@ -409,6 +420,8 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
         (Char('B'), false) => app.cycle_base()?,
+        // `C` (upper) is the commit comparator; lowercase `c` stays comment.
+        (Char('C'), false) => app.enter_commit_scope()?,
         (Char('v'), _) => app.toggle_select(),
         (Char('c'), _) => app.start_comment(),
         // `e`/`d` are diff-focused so they can't act on an off-screen cursor (`d` would silently
@@ -441,6 +454,22 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
     // keyboard-driven, so the mouse is inert while one is open — otherwise clicks and the
     // wheel would drive the panes drawn underneath it.
     if app.composing() || app.mode == Mode::List {
+        return Ok(());
+    }
+    // The commit picker owns the mouse while open: click a row to compare against it, wheel to
+    // move the cursor, click outside the list to dismiss.
+    if app.mode == Mode::CommitPick {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                match ui::hit_commit_pick(area, app, m.column, m.row) {
+                    Some(i) => app.pick_commit(i)?,
+                    None => app.close_commit_picker(),
+                }
+            }
+            MouseEventKind::ScrollDown => app.commit_move(3),
+            MouseEventKind::ScrollUp => app.commit_move(-3),
+            _ => {}
+        }
         return Ok(());
     }
     // The read-only PR tab: click a tab or the open button, click a row to read it, wheel the
@@ -480,6 +509,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                     ui::HeaderHit::Tab(tab) => app.set_tab(tab)?,
                     ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
                     ui::HeaderHit::Base => app.cycle_base()?,
+                    ui::HeaderHit::Commit => app.open_commit_picker(),
                     ui::HeaderHit::Send => app.export(&Agent),
                 }
             } else if let Some(i) = ui::hit_file(

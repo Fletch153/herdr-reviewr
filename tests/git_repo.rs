@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use common::Repo;
 use herdr_reviewr::git::{
-    all_files, changed_against_tree, changed_files, file_content, merge_base, read_baseline_ref,
-    snapshot_worktree, worktree_key, write_baseline_ref,
+    all_files, changed_against_tree, changed_files, commits_since_fork, file_content, merge_base,
+    read_baseline_ref, snapshot_worktree, worktree_key, write_baseline_ref,
 };
 use herdr_reviewr::model::{ChangeKind, ChangedFile, Scope};
 
@@ -442,4 +442,36 @@ fn recent_branches_excludes_origin_head_and_lists_tips() {
         "origin/HEAD short-name alias must be skipped"
     );
     assert!(!branches.iter().any(|b| b.ends_with("/HEAD")), "origin/HEAD alias must be skipped");
+}
+
+#[test]
+fn commits_since_fork_lists_only_this_branch_newest_first() {
+    let r = Repo::init(); // main
+    r.write("a.rs", "one\n");
+    r.commit_all("base commit"); // fork point, on main
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("b.rs", "two\n");
+    r.commit_all("add b");
+    r.write("c.rs", "three\n");
+    r.commit_all("add c");
+    r.write("d.rs", "four\n");
+    r.commit_all("add d");
+
+    let commits = commits_since_fork(r.path(), Some("main"), 50);
+    let titles: Vec<&str> = commits.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, vec!["add d", "add c", "add b"], "this branch's commits, newest first; fork excluded");
+    for c in &commits {
+        assert!(!c.short.is_empty(), "abbreviated hash present");
+        assert!(c.sha.starts_with(&c.short), "short is a prefix of the full sha");
+        assert_eq!(c.sha.len(), 40, "full sha");
+    }
+}
+
+#[test]
+fn commits_since_fork_is_empty_without_commits_ahead() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("only commit");
+    // On main with base=main the fork point is HEAD, so nothing is ahead.
+    assert!(commits_since_fork(r.path(), Some("main"), 50).is_empty());
 }

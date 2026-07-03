@@ -78,6 +78,7 @@ below are the full reference.
 | --- | --- |
 | `1` `2` `3` | Switch tab — Changes / All files / PR |
 | `u` `b` `t` | Switch scope — uncommitted / branch / last turn |
+| `C` | Compare against a commit — opens a picker of this branch's commits (fork → HEAD); diffs the worktree against the chosen one (also: click the commit chip) |
 | `B` | Cycle the branch-scope diff base through recent branch tips (also: click the base chip) |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
 | `PageUp` `PageDown` | Move a page · `Ctrl+U` `Ctrl+D` move a half-page |

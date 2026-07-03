@@ -184,6 +184,39 @@ pub fn recent_branches(repo: &Path, limit: usize) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// One commit on this branch, for the commit picker: full SHA (the diff base), an
+/// abbreviated hash and the subject line (both for display).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CommitRef {
+    pub sha: String,
+    pub short: String,
+    pub title: String,
+}
+
+/// This branch's commits from the fork point up to `HEAD`, newest first — the commit-picker
+/// choices. The fork point is the merge-base of `base` (the branch base) and `HEAD`, so only
+/// commits made on this branch are listed. Empty when there is no fork point or no such commits.
+pub fn commits_since_fork(repo: &Path, base: Option<&str>, limit: usize) -> Vec<CommitRef> {
+    let Some(fork) = merge_base(repo, base) else { return Vec::new() };
+    let range = format!("{fork}..HEAD");
+    let max = format!("--max-count={limit}");
+    // Unit separators (%x1f) delimit the fields so a subject with spaces stays intact.
+    git(repo, &["log", &range, "--format=%H%x1f%h%x1f%s", &max])
+        .map(|out| {
+            out.lines()
+                .filter_map(|line| {
+                    let mut f = line.split('\u{1f}');
+                    Some(CommitRef {
+                        sha: f.next()?.to_string(),
+                        short: f.next()?.to_string(),
+                        title: f.next().unwrap_or_default().to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The old side of a scope's diff against the worktree. `None` means `HEAD` (the
 /// uncommitted default).
 fn range(repo: &Path, scope: Scope, base: Option<&str>) -> Option<String> {
@@ -194,6 +227,9 @@ fn range(repo: &Path, scope: Scope, base: Option<&str>) -> Option<String> {
         // Branch diffs the worktree against the merge-base, so it shows committed branch
         // work and the working tree together — a superset of uncommitted (review-model.md).
         Scope::Branch => merge_base(repo, base),
+        // Commit diffs the worktree against the chosen commit directly — it is already an
+        // ancestor of HEAD, so no merge-base step is needed.
+        Scope::Commit => base.map(str::to_owned),
     }
 }
 
@@ -319,7 +355,9 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
                 git(repo, &["diff", &base, "--name-status", "-z"])?,
             )
         }
-        Scope::Branch => match range(repo, scope, base) {
+        // Branch diffs the worktree against the merge-base; Commit against the chosen commit.
+        // Both are a single revision on the diff's old side (`range` supplies which).
+        Scope::Branch | Scope::Commit => match range(repo, scope, base) {
             Some(r) => (
                 git(repo, &["diff", &r, "--numstat", "-z"])?,
                 git(repo, &["diff", &r, "--name-status", "-z"])?,
@@ -328,9 +366,9 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
         },
         Scope::LastTurn => return Ok(Vec::new()),
     };
-    // Branch diffs against the worktree, so like uncommitted it carries untracked files
+    // These diff against the worktree, so like uncommitted they carry untracked files
     // that `git diff` never reports.
-    let include_untracked = matches!(scope, Scope::Uncommitted | Scope::Branch);
+    let include_untracked = matches!(scope, Scope::Uncommitted | Scope::Branch | Scope::Commit);
     assemble(repo, &numstat, &name_status, include_untracked)
 }
 

@@ -41,6 +41,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     if app.mode == Mode::List {
         render_comments_list(frame, app, area);
+    } else if app.mode == Mode::CommitPick {
+        render_commit_picker(frame, app, area);
     }
 }
 
@@ -358,6 +360,7 @@ pub enum HeaderHit {
     Tab(Tab),
     Scope,
     Base,
+    Commit,
     Send,
 }
 
@@ -374,12 +377,17 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
     }
     let scope_start = header_prefix_len() as u16;
     let scope_end = scope_start + scope_chip(app).len() as u16;
+    // Base and commit chips share the slot after the scope chip; a scope shows at most one, so
+    // the empty one contributes zero width and the ranges don't overlap.
     let base_end = scope_end + base_chip(app).len() as u16;
+    let commit_end = base_end + commit_chip(app).len() as u16;
     let button_start = send_button_col(app, area.width as usize) as u16;
     if (scope_start..scope_end).contains(&col) {
         Some(HeaderHit::Scope)
     } else if (scope_end..base_end).contains(&col) {
         Some(HeaderHit::Base)
+    } else if (base_end..commit_end).contains(&col) {
+        Some(HeaderHit::Commit)
     } else if col >= button_start && col < area.width {
         Some(HeaderHit::Send)
     } else {
@@ -437,6 +445,28 @@ fn base_chip(app: &App) -> String {
     }
 }
 
+/// The clickable commit chip, shown only in Commit scope: the chosen commit's short hash and
+/// truncated title, or a prompt when nothing is chosen yet. Clicking it reopens the picker.
+/// Base and commit chips never show together (a scope has at most one), so they share the header
+/// slot. Byte-length column math, like the base chip.
+fn commit_chip(app: &App) -> String {
+    if app.scope != Scope::Commit {
+        return String::new();
+    }
+    match app
+        .selected_commit
+        .as_deref()
+        .and_then(|sha| app.commit_choices.iter().find(|c| c.sha == sha))
+    {
+        Some(c) => format!(" [>{} {}]", c.short, truncate_width(&c.title, 24)),
+        // A commit is pinned but not in the loaded choices — show its short SHA (hex, ASCII).
+        None => match app.selected_commit.as_deref() {
+            Some(sha) => format!(" [>{}]", &sha[..sha.len().min(8)]),
+            None => " [>pick commit]".to_string(),
+        },
+    }
+}
+
 fn send_button(app: &App) -> String {
     format!("[ Send ({}) ]", app.store.len())
 }
@@ -455,6 +485,7 @@ fn send_button_col(app: &App, width: usize) -> usize {
     let before = header_prefix_len()
         + scope_chip(app).len()
         + base_chip(app).len()
+        + commit_chip(app).len()
         + header_suffix(app).len();
     before + width.saturating_sub(before + send_button(app).len())
 }
@@ -484,9 +515,11 @@ fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
 fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let chip = scope_chip(app);
     let base = base_chip(app);
+    let commit = commit_chip(app);
     let suffix = header_suffix(app);
     let button = send_button(app);
-    let used = header_prefix_len() + chip.len() + base.len() + suffix.len() + button.len();
+    let used =
+        header_prefix_len() + chip.len() + base.len() + commit.len() + suffix.len() + button.len();
     let pad = (area.width as usize).saturating_sub(used);
 
     // A quiet surface bar: the active tab in bright lavender, the inactive one dimmed, the
@@ -496,6 +529,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = tab_bar_spans(app);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(base, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(commit, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(suffix, bar.fg(p.overlay0)));
 
     let send_fg = if app.store.is_empty() { p.overlay0 } else { p.green };
@@ -1137,15 +1171,17 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::TogglePane => {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }
-        A::Scope => ("u/b/t", "scope"),
+        A::Scope => ("u/b/t/C", "scope"),
         A::Base => ("B", "base"),
+        A::Commit => ("C", "commit"),
+        A::PickCommit => ("enter", "compare"),
         A::Send => return ("s".into(), format!("send {}", app.store.len())),
         A::List => ("l", "list"),
         A::Copy => ("y", "copy"),
         A::Save => ("enter", "save"),
         A::Newline => ("⇧⏎", "newline"),
         A::Cancel => ("esc", "cancel"),
-        A::CloseList => ("esc", "close"),
+        A::CloseList | A::ClosePicker => ("esc", "close"),
         A::OpenPr => ("o", "open ↗"),
         A::Refresh => ("r", "refresh"),
         A::Tabs => ("1·2·3", ""),
@@ -1293,6 +1329,69 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(List::new(items), inner);
+}
+
+/// The commit picker's popup rect — shared by the renderer and the click hit-test so they
+/// can't drift.
+fn commit_picker_rect(area: Rect) -> Rect {
+    centered(area, 80, 60)
+}
+
+/// The top row of a `height`-tall window that keeps `cursor` visible. Stateless: the renderer
+/// and the mouse hit-test both derive the scroll from the cursor, so no offset field is stored.
+fn commit_scroll(cursor: usize, height: usize) -> usize {
+    if height == 0 || cursor < height { 0 } else { cursor - height + 1 }
+}
+
+/// The commit-picker dropdown: this branch's commits (newest first) as `shorthash  title`,
+/// the cursor row highlighted, windowed to keep it visible.
+fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let popup = commit_picker_rect(area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.mauve))
+        .title(format!("Compare with commit ({})", app.commit_choices.len()));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let width = inner.width as usize;
+    let height = inner.height as usize;
+    let scroll = commit_scroll(app.commit_cursor, height);
+    let end = (scroll + height).min(app.commit_choices.len());
+    let items: Vec<ListItem> = app.commit_choices[scroll..end]
+        .iter()
+        .enumerate()
+        .map(|(row, c)| {
+            let i = scroll + row;
+            let hash =
+                Span::styled(c.short.clone(), Style::default().fg(p.mauve).add_modifier(Modifier::BOLD));
+            // Leave room for the hash and a two-space gap so titles never overrun the popup.
+            let title_max = width.saturating_sub(c.short.len() + 2);
+            let title =
+                Span::styled(format!("  {}", truncate_width(&c.title, title_max)), text_style(p));
+            selectable_row(vec![hash, title], width, (i == app.commit_cursor).then_some(p.surface2))
+        })
+        .collect();
+    frame.render_widget(List::new(items), inner);
+}
+
+/// The commit index a click at `(col, row)` lands on in the open picker, if any. Mirrors the
+/// renderer's rect and scroll so a click maps to exactly the row shown.
+#[must_use]
+pub fn hit_commit_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
+    let inner = Block::default().borders(Borders::ALL).inner(commit_picker_rect(area));
+    if col < inner.x
+        || col >= inner.x + inner.width
+        || row < inner.y
+        || row >= inner.y + inner.height
+    {
+        return None;
+    }
+    let scroll = commit_scroll(app.commit_cursor, inner.height as usize);
+    let idx = scroll + (row - inner.y) as usize;
+    (idx < app.commit_choices.len()).then_some(idx)
 }
 
 /// The default body text color.

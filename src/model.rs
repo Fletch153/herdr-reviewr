@@ -9,6 +9,8 @@ pub enum Scope {
     Uncommitted,
     Branch,
     LastTurn,
+    /// Diff the worktree against a specific commit chosen from the commit picker.
+    Commit,
 }
 
 impl Scope {
@@ -17,16 +19,19 @@ impl Scope {
             Scope::Uncommitted => "uncommitted",
             Scope::Branch => "branch",
             Scope::LastTurn => "last turn",
+            Scope::Commit => "commit",
         }
     }
 
-    /// Cycle to the next scope, for the header chip click: uncommitted → branch → last turn.
+    /// Cycle to the next scope, for the header chip click:
+    /// uncommitted → branch → last turn → commit → uncommitted.
     #[must_use]
     pub fn cycle(self) -> Self {
         match self {
             Scope::Uncommitted => Scope::Branch,
             Scope::Branch => Scope::LastTurn,
-            Scope::LastTurn => Scope::Uncommitted,
+            Scope::LastTurn => Scope::Commit,
+            Scope::Commit => Scope::Uncommitted,
         }
     }
 }
@@ -174,12 +179,14 @@ mod tests {
 
     #[test]
     fn scope_cycles_and_labels() {
-        // The chip click cycles through all three scopes and wraps.
+        // The chip click cycles through all four scopes and wraps.
         assert_eq!(Scope::Uncommitted.cycle(), Scope::Branch);
         assert_eq!(Scope::Branch.cycle(), Scope::LastTurn);
-        assert_eq!(Scope::LastTurn.cycle(), Scope::Uncommitted);
+        assert_eq!(Scope::LastTurn.cycle(), Scope::Commit);
+        assert_eq!(Scope::Commit.cycle(), Scope::Uncommitted);
         assert_eq!(Scope::Uncommitted.label(), "uncommitted");
         assert_eq!(Scope::LastTurn.label(), "last turn");
+        assert_eq!(Scope::Commit.label(), "commit");
     }
 
     #[test]

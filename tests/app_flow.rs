@@ -2206,3 +2206,83 @@ fn the_base_hint_shows_in_branch_scope_even_with_files_present() {
         "`B base` stays offered in branch scope with files present (regression: it only showed when empty)"
     );
 }
+
+/// A repo on `feature` with commits `add a`, `add b`, `add c` atop `main` (the fork point),
+/// plus one uncommitted (untracked) worktree edit.
+fn commit_repo() -> Repo {
+    let r = Repo::init(); // main
+    r.write("base.rs", "0\n");
+    r.commit_all("base"); // fork point on main
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("a.rs", "a\n");
+    r.commit_all("add a");
+    r.write("b.rs", "b\n");
+    r.commit_all("add b");
+    r.write("c.rs", "c\n");
+    r.commit_all("add c");
+    r.write("work.rs", "uncommitted\n"); // untracked worktree edit
+    r
+}
+
+#[test]
+fn picking_a_commit_diffs_the_worktree_against_it() {
+    let r = commit_repo();
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    app.reload().unwrap();
+
+    app.open_commit_picker();
+    assert_eq!(app.mode, Mode::CommitPick, "the dropdown opens");
+    let titles: Vec<&str> = app.commit_choices.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, vec!["add c", "add b", "add a"], "this branch's commits, newest first");
+
+    // Newest commit is HEAD: only the uncommitted edit differs from it.
+    app.pick_commit(0).unwrap();
+    assert_eq!(app.scope, Scope::Commit);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.changed_count(), 1, "vs HEAD: just the uncommitted work.rs");
+
+    // Oldest listed commit (`add a`): b.rs, c.rs, and the uncommitted edit all differ.
+    app.open_commit_picker();
+    app.pick_commit(2).unwrap();
+    assert_eq!(app.changed_count(), 3, "vs add a: b.rs, c.rs, and work.rs");
+}
+
+#[test]
+fn entering_commit_scope_opens_the_picker_when_nothing_is_selected() {
+    let r = commit_repo();
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    app.reload().unwrap();
+
+    app.enter_commit_scope().unwrap();
+    assert_eq!(app.scope, Scope::Commit);
+    assert_eq!(app.mode, Mode::CommitPick, "choosing the comparator surfaces the dropdown");
+}
+
+#[test]
+fn the_commit_picker_cursor_moves_and_clamps() {
+    let r = commit_repo();
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    app.reload().unwrap();
+    app.open_commit_picker();
+
+    assert_eq!(app.commit_cursor, 0);
+    app.commit_move(1);
+    assert_eq!(app.commit_cursor, 1);
+    app.commit_move(-5);
+    assert_eq!(app.commit_cursor, 0, "clamps at the top");
+    app.commit_move(100);
+    assert_eq!(app.commit_cursor, app.commit_choices.len() - 1, "clamps at the bottom");
+}
+
+#[test]
+fn the_commit_picker_reports_instead_of_opening_without_commits() {
+    let r = Repo::init(); // main, no feature branch, nothing ahead of the base
+    r.write("a.rs", "0\n");
+    r.commit_all("only");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    app.reload().unwrap();
+
+    app.open_commit_picker();
+    assert_eq!(app.mode, Mode::Normal, "no commits since fork → the picker does not open");
+    assert!(app.status.contains("no commits"), "and it explains why: {:?}", app.status);
+}
