@@ -124,8 +124,6 @@ pub enum FooterAction {
     Scope,
     /// Cycle the branch-scope diff base through recent branch tips (Branch scope only).
     Base,
-    /// Open the commit picker to choose/change the compared commit (Commit scope only).
-    Commit,
     /// Commit-picker modal: compare against the highlighted commit.
     PickCommit,
     /// Commit-picker modal: close without changing the compared commit.
@@ -1947,11 +1945,6 @@ impl App {
         // the empty changeset that first surfaced it (the guard keeps that earlier push unique).
         if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
             out.push((A::Base, Normal));
-        }
-
-        // `C` reopens the commit picker to change the compared commit, in every Commit context.
-        if self.scope == Scope::Commit && !out.iter().any(|&(a, _)| a == A::Commit) {
-            out.push((A::Commit, Normal));
         }
 
         // `/` filters the file tree — offered whenever there's a tree to filter.
