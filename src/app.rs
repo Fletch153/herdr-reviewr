@@ -105,6 +105,8 @@ pub enum FooterAction {
     /// Switch focus between the file list and the diff; the label names the destination pane.
     TogglePane,
     Scope,
+    /// Cycle the branch-scope diff base through recent branch tips (Branch scope only).
+    Base,
     Send,
     List,
     Copy,
@@ -135,6 +137,14 @@ pub enum Tier {
 pub struct App {
     pub repo: PathBuf,
     pub base: Option<String>,
+    /// The startup base (CLI/config, else `None` = auto) — the base cycle's wrap-around slot.
+    default_base: Option<String>,
+    /// Where the base cycle stands: `None` = the startup base ("home"), `Some(i)` = the i-th
+    /// cycle candidate. Positional, not by value — the startup base may itself appear among
+    /// the candidates, and value-matching would conflate the two and skip the tips after it.
+    base_cursor: Option<usize>,
+    /// What `base_ref` resolved on the last branch-scope reload — the header chip's label.
+    pub resolved_base: Option<String>,
     pub scope: Scope,
     /// The active tab; it drives both panes and selects the per-tab state in play.
     pub tab: Tab,
@@ -238,6 +248,9 @@ impl App {
         let theme = theme::resolve(None);
         Self {
             repo,
+            default_base: base.clone(),
+            base_cursor: None,
+            resolved_base: None,
             base,
             scope,
             tab: Tab::Changes,
@@ -453,12 +466,17 @@ impl App {
         // and comment staleness stay correct even while `All files` lists the whole worktree.
         // last-turn diffs the captured baseline; with none yet, it is empty until a turn start
         // is observed (specs/review-model.md).
+        // Resolve the branch-scope base once per reload; downstream calls (the changeset here,
+        // each file's old side in `content_sides`) short-circuit on the resolved ref.
+        if self.scope == Scope::Branch {
+            self.resolved_base = git::base_ref(&self.repo, self.base.as_deref());
+        }
         let changed = match self.scope {
             Scope::LastTurn => match self.turn.baseline() {
                 Some(t) => git::changed_against_tree(&self.repo, t)?,
                 None => Vec::new(),
             },
-            _ => git::changed_files(&self.repo, self.scope, self.base.as_deref())?,
+            _ => git::changed_files(&self.repo, self.scope, self.resolved_base.as_deref())?,
         };
         self.changed = changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
         self.entries = match self.tab {
@@ -627,7 +645,7 @@ impl App {
                 (old, new)
             }
             Scope::Branch => {
-                let mb = git::merge_base(&self.repo, self.base.as_deref());
+                let mb = git::merge_base(&self.repo, self.resolved_base.as_deref());
                 let old =
                     mb.map(|m| git::file_content(&self.repo, &m, old_path)).unwrap_or_default();
                 (old, worktree_content(&self.repo, new_path))
@@ -800,23 +818,61 @@ impl App {
             // The Changes state is the active one on `Changes` and the stashed one while `All
             // files` is shown — reset whichever holds it, so a return to Changes never lands on a
             // stale scroll or a pre-expanded fold.
-            self.cache = DiffCache::new();
-            if self.tab == Tab::Changes {
-                self.file_cursor = 0;
-                self.expanded_folds.clear();
-                self.reset_diff_view();
-            } else {
-                self.stash.file_cursor = 0;
-                self.stash.expanded_folds.clear();
-                self.stash.diff_cursor = 0;
-                self.stash.diff_scroll = 0;
-                self.stash.h_scroll = 0;
-                self.stash.select_anchor = None;
-            }
+            self.reset_changes_view();
             self.reload()?;
             // An explicit switch reveals the cursor (a poll, which also calls reload, does not).
             self.reveal_files = true;
         }
+        Ok(())
+    }
+
+    /// Reset the Changes tab's cursor/folds/scroll and drop cached diffs — required whenever
+    /// the changeset's identity shifts (scope switch, base repoint).
+    fn reset_changes_view(&mut self) {
+        self.cache = DiffCache::new();
+        if self.tab == Tab::Changes {
+            self.file_cursor = 0;
+            self.expanded_folds.clear();
+            self.reset_diff_view();
+        } else {
+            self.stash.file_cursor = 0;
+            self.stash.expanded_folds.clear();
+            self.stash.diff_cursor = 0;
+            self.stash.diff_scroll = 0;
+            self.stash.h_scroll = 0;
+            self.stash.select_anchor = None;
+        }
+    }
+
+    /// Repoint the branch-scope base to the next candidate: startup base → each recent branch
+    /// tip (newest first, minus the checked-out branch) → back to the startup base. No-op
+    /// outside Branch scope. The chip/footer only advertise it there.
+    pub fn cycle_base(&mut self) -> Result<()> {
+        if self.scope != Scope::Branch || self.composing() {
+            return Ok(());
+        }
+        let current = git::current_branch(&self.repo);
+        let candidates: Vec<String> = git::recent_branches(&self.repo, 20)
+            .into_iter()
+            .filter(|b| Some(b) != current.as_ref())
+            .collect();
+        // Advance the positional cursor; past the last candidate it wraps home. The list is
+        // re-read each press, so churn between presses at worst wraps early — never a stale
+        // index panic and never a skipped remainder.
+        let next_idx = self.base_cursor.map_or(0, |i| i + 1);
+        if next_idx >= candidates.len() {
+            if self.base_cursor.is_none() {
+                return Ok(()); // home with no candidates: nothing to cycle to
+            }
+            self.base_cursor = None;
+            self.base = self.default_base.clone();
+        } else {
+            self.base_cursor = Some(next_idx);
+            self.base = Some(candidates[next_idx].clone());
+        }
+        self.reset_changes_view();
+        self.reload()?;
+        self.reveal_files = true;
         Ok(())
     }
 
@@ -1594,8 +1650,11 @@ impl App {
         let mut pane_is_primary = false;
 
         if self.file_rows.is_empty() {
-            // Nothing in scope to review: only switching scope or refreshing is useful.
+            // Nothing in scope to review: only switching scope/base or refreshing is useful.
             out.push((A::Scope, Primary));
+            if self.scope == Scope::Branch {
+                out.push((A::Base, Normal));
+            }
             out.push((A::Refresh, Normal));
         } else if self.focus == Focus::Files {
             match self.file_rows.get(self.file_cursor).map(|r| &r.kind) {

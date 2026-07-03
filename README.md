@@ -78,6 +78,7 @@ below are the full reference.
 | --- | --- |
 | `1` `2` `3` | Switch tab — Changes / All files / PR |
 | `u` `b` `t` | Switch scope — uncommitted / branch / last turn |
+| `B` | Cycle the branch-scope diff base through recent branch tips (also: click the base chip) |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
 | `PageUp` `PageDown` | Move a page · `Ctrl+U` `Ctrl+D` move a half-page |
 | `Tab` | Switch focus between the file list and the diff |
@@ -139,9 +140,12 @@ button, and the scroll wheel all work too.
 ## Diff scopes
 
 - **uncommitted** — the working tree vs `HEAD` (staged, unstaged, and untracked).
-- **branch** — the working tree vs the merge-base with the base branch (`origin/main` →
-  `origin/master` → `main` → `master`, or `--base`); a superset of **uncommitted** that adds the
-  branch's committed work.
+- **branch** — the working tree vs the merge-base with the base branch: `--base` (or the
+  config `base` key) if set, else the remote's recorded default branch (`origin/HEAD`, e.g.
+  `origin/develop`), else `origin/main` → `origin/master` → `main` → `master`; a superset of
+  **uncommitted** that adds the branch's committed work. The header's base chip shows the
+  effective base; click it (or press `B`) to cycle through recent branch tips — handy for
+  stacked branches. Remote tips shadowed by a same-named local are skipped.
 - **last turn** — only what the agent changed since its most recent turn started (see
   [Limitations](#limitations)).
 
@@ -160,6 +164,16 @@ CLI flags on the pane command:
 | `--base <ref>` | auto | base branch for `branch` scope |
 | `--theme <name>` | `catppuccin` | UI + syntax theme (see below) |
 | `--wrap <on\|off>` | `on` | soft-wrap long diff lines (`w` toggles at runtime) |
+
+### Base
+
+The `branch`-scope base can also be pinned in reviewr's config file (read once at startup;
+the CLI flag wins):
+
+```toml
+# $HERDR_PLUGIN_CONFIG_DIR/config.toml
+base = "origin/develop"
+```
 
 ### Theme
 

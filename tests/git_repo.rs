@@ -397,3 +397,49 @@ fn list_ignored_dir_returns_immediate_children_only() {
     assert!(kids.iter().any(|e| e.path == "target/deep" && e.is_dir), "subdir as a placeholder");
     assert!(!kids.iter().any(|e| e.path == "target/deep/x.o"), "does not recurse past one level");
 }
+
+#[test]
+fn branch_scope_follows_origin_head_when_mainline_is_develop() {
+    let r = Repo::init();
+    r.write("base.rs", "1\n");
+    r.commit_all("base");
+    // A develop-mainline repo: no main/master anywhere, but the remote's default branch is
+    // recorded (as any clone records it). base_ref must follow origin/HEAD -> origin/develop.
+    r.git(&["branch", "-m", "main", "develop"]);
+    let develop_tip = r.git(&["rev-parse", "HEAD"]).trim().to_string();
+    r.git(&["update-ref", "refs/remotes/origin/develop", "HEAD"]);
+    r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"]);
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("feature.rs", "1\n");
+    r.commit_all("feature work");
+
+    assert_eq!(merge_base(r.path(), None), Some(develop_tip.clone()));
+    let files = changed_files(r.path(), Scope::Branch, None).expect("changed_files");
+    assert!(by_path(&files).contains_key("feature.rs"), "branch diff must see the branch commit");
+    // An explicit base still wins over origin/HEAD.
+    assert_eq!(merge_base(r.path(), Some("develop")), Some(develop_tip));
+}
+
+#[test]
+fn recent_branches_excludes_origin_head_and_lists_tips() {
+    let r = Repo::init();
+    r.write("base.rs", "1\n");
+    r.commit_all("base");
+    r.git(&["branch", "other"]);
+    r.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    r.git(&["update-ref", "refs/remotes/origin/remote-only", "HEAD"]);
+    r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+
+    let branches = herdr_reviewr::git::recent_branches(r.path(), 20);
+    assert!(branches.iter().any(|b| b == "main"));
+    assert!(branches.iter().any(|b| b == "other"));
+    // origin/main is shadowed by the local main; a remote-only branch survives.
+    assert!(!branches.iter().any(|b| b == "origin/main"), "remote twin of a local is noise");
+    assert!(branches.iter().any(|b| b == "origin/remote-only"));
+    // origin/HEAD's SHORT name is just "origin" — the alias must not leak in either form.
+    assert!(
+        !branches.iter().any(|b| b == "origin"),
+        "origin/HEAD short-name alias must be skipped"
+    );
+    assert!(!branches.iter().any(|b| b.ends_with("/HEAD")), "origin/HEAD alias must be skipped");
+}

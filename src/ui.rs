@@ -19,7 +19,7 @@ use crate::app::{App, Focus, FooterAction, Mode, Tab, Tier};
 use crate::diff::{FileDiff, FileState, Row};
 use crate::file_list::{Annotation, RowKind};
 use crate::forge;
-use crate::model::Comment;
+use crate::model::{Comment, Scope};
 use crate::theme::Palette;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -357,6 +357,7 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 pub enum HeaderHit {
     Tab(Tab),
     Scope,
+    Base,
     Send,
 }
 
@@ -373,9 +374,12 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
     }
     let scope_start = header_prefix_len() as u16;
     let scope_end = scope_start + scope_chip(app).len() as u16;
+    let base_end = scope_end + base_chip(app).len() as u16;
     let button_start = send_button_col(app, area.width as usize) as u16;
     if (scope_start..scope_end).contains(&col) {
         Some(HeaderHit::Scope)
+    } else if (scope_end..base_end).contains(&col) {
+        Some(HeaderHit::Base)
     } else if col >= button_start && col < area.width {
         Some(HeaderHit::Send)
     } else {
@@ -415,6 +419,25 @@ fn scope_chip(app: &App) -> String {
     format!("[{}]", app.scope.label())
 }
 
+/// The clickable base chip, shown only in Branch scope: the explicit base if one is set,
+/// else what auto-detection resolved on the last reload. Truncated on character boundaries
+/// (never mid-code-point); header column math uses byte length, so a non-ASCII name may pad
+/// the bar slightly off — a cosmetic drift, never a panic.
+fn base_chip(app: &App) -> String {
+    if app.scope != Scope::Branch {
+        return String::new();
+    }
+    // An explicit selection shows bare; the home slot is labeled `auto:` so cycling between
+    // auto-detected `origin/develop` and a local `develop` candidate doesn't read as a duplicate.
+    match app.base.as_deref() {
+        Some(name) => format!(" [>{}]", truncate_width(name, 24)),
+        None => {
+            let name = app.resolved_base.as_deref().unwrap_or("?");
+            format!(" [>auto:{}]", truncate_width(name, 19))
+        }
+    }
+}
+
 fn send_button(app: &App) -> String {
     format!("[ Send ({}) ]", app.store.len())
 }
@@ -430,7 +453,10 @@ fn header_suffix(app: &App) -> String {
 /// collapses to 0). `hit_header` must use this, not a bare right-alignment, or a `Send` click
 /// mis-fires (and on a narrow sidebar lands in a tab span) when the header overflows.
 fn send_button_col(app: &App, width: usize) -> usize {
-    let before = header_prefix_len() + scope_chip(app).len() + header_suffix(app).len();
+    let before = header_prefix_len()
+        + scope_chip(app).len()
+        + base_chip(app).len()
+        + header_suffix(app).len();
     before + width.saturating_sub(before + send_button(app).len())
 }
 
@@ -458,17 +484,19 @@ fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
 
 fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let chip = scope_chip(app);
+    let base = base_chip(app);
     let suffix = header_suffix(app);
     let button = send_button(app);
-    let used = header_prefix_len() + chip.len() + suffix.len() + button.len();
+    let used = header_prefix_len() + chip.len() + base.len() + suffix.len() + button.len();
     let pad = (area.width as usize).saturating_sub(used);
 
     // A quiet surface bar: the active tab in bright lavender, the inactive one dimmed, the
-    // clickable scope and Send controls accented so they read as buttons.
+    // clickable scope/base and Send controls accented so they read as buttons.
     let p = app.palette();
     let bar = Style::default().bg(p.surface0);
     let mut spans = tab_bar_spans(app);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(base, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(suffix, bar.fg(p.overlay0)));
 
     let send_fg = if app.store.is_empty() { p.overlay0 } else { p.green };
@@ -1110,6 +1138,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }
         A::Scope => ("u/b/t", "scope"),
+        A::Base => ("B", "base"),
         A::Send => return ("s".into(), format!("send {}", app.store.len())),
         A::List => ("l", "list"),
         A::Copy => ("y", "copy"),

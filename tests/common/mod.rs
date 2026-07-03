@@ -21,6 +21,9 @@ impl Repo {
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "test@herdr.test"]);
         repo.git(&["config", "user.name", "Test"]);
+        // Hermetic against host-global signing config (a machine-wide gpgsign=true with an
+        // unavailable signer would hang every fixture commit).
+        repo.git(&["config", "commit.gpgsign", "false"]);
         repo
     }
 

@@ -55,7 +55,10 @@ pub fn run() -> Result<()> {
     // starts showing changes if the directory becomes a repo (specs/herdr-host.md).
     let repo = git::toplevel(&cfg.repo).unwrap_or_else(|| cfg.repo.clone());
     logln!("start repo={} poll={:?} base={:?}", repo.display(), cfg.poll, cfg.base);
-    let mut app = App::new(repo, Scope::Uncommitted, cfg.base.clone());
+    // CLI --base wins; else the config file's `base` key (read once — a per-poll re-read
+    // would clobber an in-panel base selection two seconds after every press).
+    let base = cfg.base.clone().or_else(config::config_file_base);
+    let mut app = App::new(repo, Scope::Uncommitted, base);
     app.set_cli_theme(cfg.theme.clone());
     if let Some(wrap) = cfg.wrap {
         app.wrap = wrap;
@@ -367,6 +370,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('u'), false) => app.set_scope(Scope::Uncommitted)?,
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
+        (Char('B'), false) => app.cycle_base()?,
         (Char('v'), _) => app.toggle_select(),
         (Char('c'), _) => app.start_comment(),
         // `e`/`d` act on the comment under the diff cursor, so they only fire with the diff
@@ -429,6 +433,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 match hit {
                     ui::HeaderHit::Tab(tab) => app.set_tab(tab)?,
                     ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
+                    ui::HeaderHit::Base => app.cycle_base()?,
                     ui::HeaderHit::Send => app.export(&Agent),
                 }
             } else if let Some(i) = ui::hit_file(

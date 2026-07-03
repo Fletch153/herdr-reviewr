@@ -124,19 +124,64 @@ fn ref_exists(repo: &Path, git_ref: &str) -> bool {
     git_ok(repo, &["rev-parse", "--verify", "--quiet", git_ref])
 }
 
-/// The base ref for branch scope: `base` if it resolves, otherwise the first of
+/// The base ref for branch scope: `base` if it resolves, then the remote's recorded default
+/// branch (`refs/remotes/origin/HEAD`, e.g. `origin/develop`), then the first of
 /// `origin/main`, `origin/master`, `main`, `master`.
-fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
+pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
     if let Some(b) = base
         && !b.is_empty()
         && ref_exists(repo, b)
     {
         return Some(b.to_string());
     }
+    // Guard with ref_exists: a stale origin/HEAD symref can outlive a deleted branch.
+    if let Some(head) =
+        git_line(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+        && ref_exists(repo, &head)
+    {
+        return Some(head);
+    }
     ["origin/main", "origin/master", "main", "master"]
         .into_iter()
         .find(|cand| ref_exists(repo, cand))
         .map(String::from)
+}
+
+/// Local and remote branch tips, most recently committed first — the base-cycle candidates.
+/// Skips the `origin/HEAD` symref alias (it duplicates the branch it points at).
+pub fn recent_branches(repo: &Path, limit: usize) -> Vec<String> {
+    // Full refnames, shortened by hand: %(refname:short) names the origin/HEAD symref alias
+    // just "origin", which the /HEAD filter can't see.
+    let count = format!("--count={limit}");
+    git(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname)",
+            &count,
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .map(|out| {
+        let refs: Vec<&str> = out.lines().filter(|r| !r.ends_with("/HEAD")).collect();
+        let locals: HashSet<&str> =
+            refs.iter().filter_map(|r| r.strip_prefix("refs/heads/")).collect();
+        refs.iter()
+            .filter_map(|r| {
+                if let Some(local) = r.strip_prefix("refs/heads/") {
+                    return Some(local.to_string());
+                }
+                // A remote twin of an existing local is noise (the local is the user's copy);
+                // remote-only refs stay — often the only route to the mainline.
+                let remote = r.strip_prefix("refs/remotes/")?;
+                let branch = remote.split_once('/').map_or(remote, |(_, b)| b);
+                (!locals.contains(branch)).then(|| remote.to_string())
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// The old side of a scope's diff against the worktree. `None` means `HEAD` (the
