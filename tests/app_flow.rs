@@ -2509,3 +2509,25 @@ fn preview_mode_toggles_only_for_markdown_files() {
     assert_eq!(app.mode, Mode::Normal, "preview is refused for non-markdown files");
     assert!(app.status.contains("markdown"), "and it says why: {:?}", app.status);
 }
+
+#[test]
+fn sending_a_path_requires_a_highlighted_file() {
+    let r = Repo::init();
+    r.write("dir/a.rs", "1\n");
+    r.commit_all("init");
+    r.write("dir/a.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    goto_file(&mut app, "dir/a.rs");
+    let has_send =
+        |app: &App| app.footer_actions().iter().any(|&(a, _)| a == FooterAction::SendPath);
+    assert!(has_send(&app), "the send hint shows while a file is highlighted");
+
+    // Land the cursor on the `dir` row (no file under cursor): sending is refused.
+    let dir = app.file_rows.iter().position(|row| row.dir_path() == Some("dir")).unwrap();
+    app.file_cursor = dir;
+    assert!(!has_send(&app), "no send hint on a directory row");
+    app.send_path_to_agent();
+    assert!(app.status.contains("highlight a file"), "refuses without a file: {:?}", app.status);
+}

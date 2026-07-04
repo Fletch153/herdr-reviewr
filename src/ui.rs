@@ -1283,6 +1283,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::CollapseTree => ("enter", "collapse tree"),
         A::Preview => ("p", "preview"),
         A::ExitPreview => ("p", "diff"),
+        A::SendPath => ("+", "→ chat"),
         A::TogglePane => {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }

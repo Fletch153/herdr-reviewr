@@ -81,6 +81,7 @@ below are the full reference.
 | `C` | Compare against a commit — defaults to the tip (the working-tree / uncommitted view, shown as `[commit] [uncommitted]`); click the commit chip to pick an older commit and diff the worktree against it |
 | `B` | Pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (also: click the base chip) |
 | `p` | On a markdown file, toggle a rendered preview (headings, tables, lists) instead of the diff; `p` / `esc` returns to the diff to comment |
+| `+` | Send the highlighted file's `@path` into the agent's chat input (numpad or top-row `+`), ready to submit |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
 | `PageUp` `PageDown` | Move a page · `Ctrl+U` `Ctrl+D` move a half-page |
 | `Tab` | Switch focus between the file list and the diff |

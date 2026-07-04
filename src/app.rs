@@ -143,6 +143,7 @@ pub enum FooterAction {
     ClearFilter,
     Preview,
     ExitPreview,
+    SendPath,
     Send,
     List,
     Copy,
@@ -981,6 +982,20 @@ impl App {
 
     pub fn enter_commit_scope(&mut self) -> Result<()> {
         self.set_scope(Scope::Commit)
+    }
+
+    pub fn send_path_to_agent(&mut self) {
+        let Some(path) = self.current_entry().map(|e| e.path.clone()) else {
+            self.status = "highlight a file to send its path".to_string();
+            return;
+        };
+        match crate::herdr::resolve_agent_pane() {
+            Ok(pane) => match crate::herdr::send_text(&pane, &format!("@{path} ")) {
+                Ok(()) => self.status = format!("sent @{path} to chat"),
+                Err(e) => self.status = format!("send failed: {e}"),
+            },
+            Err(e) => self.status = format!("no agent to send to: {e}"),
+        }
     }
 
     pub fn comparing_tip(&self) -> bool {
@@ -1994,6 +2009,10 @@ impl App {
 
         if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
             out.push((A::Base, Normal));
+        }
+
+        if self.current_entry().is_some() {
+            out.push((A::SendPath, Normal));
         }
 
         if self.cursor_is_markdown() {
