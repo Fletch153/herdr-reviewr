@@ -1517,10 +1517,11 @@ fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let popup = commit_picker_rect(area);
     frame.render_widget(Clear, popup);
+    let count = app.branch_choices.iter().filter(|r| matches!(r, BranchRow::Item(_))).count();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(p.mauve))
-        .title(format!("Compare with branch ({})", app.branch_choices.len()));
+        .title(format!("Compare with branch ({count})"));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 

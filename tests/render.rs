@@ -875,3 +875,21 @@ fn the_markdown_preview_renders_the_document() {
     assert!(!out.contains("# Heading"), "the '#' marker is rendered away, not shown raw");
     assert!(out.contains("preview \u{b7}"), "the pane titles itself a preview");
 }
+
+#[test]
+fn the_branch_picker_title_counts_only_selectable_branches() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.commit_all("base");
+    r.git(&["update-ref", "refs/remotes/origin/main", "main"]);
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("b.rs", "2\n");
+    r.commit_all("work");
+    let mut app = App::new(r.path_buf(), Scope::Branch, None);
+    app.reload().unwrap();
+    app.open_branch_picker();
+
+    assert_eq!(app.branch_choices.len(), 3, "main + divider + origin/main");
+    let out = render(&app);
+    assert!(out.contains("Compare with branch (2)"), "the count excludes the divider: {out}");
+}
