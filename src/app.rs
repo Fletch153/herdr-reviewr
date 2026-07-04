@@ -2173,12 +2173,13 @@ impl App {
         })
     }
 
-    /// Drop reviewed marks whose file left the changeset or whose content changed since — so an
-    /// agent edit to a reviewed file re-surfaces it for another look.
+    /// Drop reviewed marks whose file was deleted or whose content changed since review — so an
+    /// agent edit to a reviewed file re-surfaces it. Keyed on the file's own content, not the
+    /// changeset, so a mark on an unchanged file (the `All files` tab) survives a poll.
     fn prune_reviewed(&mut self) {
-        let (repo, changed) = (&self.repo, &self.changed);
+        let repo = &self.repo;
         self.reviewed.retain(|path, hash| {
-            changed.contains_key(path) && content_hash(repo, path) == *hash
+            repo.join(path).exists() && content_hash(repo, path) == *hash
         });
     }
 

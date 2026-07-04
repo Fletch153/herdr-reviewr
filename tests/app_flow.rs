@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use anyhow::{Result, bail};
 use common::Repo;
-use herdr_reviewr::app::{Addressed, App, BranchRow, Focus, FooterAction, Mode};
+use herdr_reviewr::app::{Addressed, App, BranchRow, Focus, FooterAction, Mode, Tab};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
@@ -2579,4 +2579,20 @@ fn comment_addressed_flips_when_the_commented_lines_change() {
     r.write("f.rs", "fn main() { let y = 2; }\n"); // agent addresses it
     app.reload().unwrap();
     assert_eq!(app.comment_addressed(&c), Addressed::Done, "the commented line changed");
+}
+
+#[test]
+fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
+    let r = Repo::init();
+    r.write("keep.rs", "1\n");
+    r.commit_all("init"); // committed, unchanged — not in the changeset
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::AllFiles).unwrap();
+
+    goto_file(&mut app, "keep.rs");
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("keep.rs"), "marked reviewed");
+    app.reload().unwrap(); // a poll must not strip an unchanged file's mark
+    assert!(app.is_reviewed("keep.rs"), "the mark survives a poll for an unchanged file");
 }
