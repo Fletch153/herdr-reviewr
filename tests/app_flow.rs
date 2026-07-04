@@ -2483,8 +2483,12 @@ fn preview_mode_toggles_only_for_markdown_files() {
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
     app.reload().unwrap();
 
+    let has_preview =
+        |app: &App| app.footer_actions().iter().any(|&(a, _)| a == FooterAction::Preview);
+
     goto_file(&mut app, "README.md");
-    assert!(app.is_markdown_open());
+    assert!(app.cursor_is_markdown());
+    assert!(has_preview(&app), "the preview hint shows while highlighting a markdown file");
     app.open_preview();
     assert_eq!(app.mode, Mode::Preview, "a markdown file opens the preview");
     app.preview_scroll_by(3);
@@ -2493,7 +2497,8 @@ fn preview_mode_toggles_only_for_markdown_files() {
     assert_eq!(app.mode, Mode::Normal);
 
     goto_file(&mut app, "code.rs");
-    assert!(!app.is_markdown_open());
+    assert!(!app.cursor_is_markdown());
+    assert!(!has_preview(&app), "no preview hint while highlighting a non-markdown file");
     app.open_preview();
     assert_eq!(app.mode, Mode::Normal, "preview is refused for non-markdown files");
     assert!(app.status.contains("markdown"), "and it says why: {:?}", app.status);

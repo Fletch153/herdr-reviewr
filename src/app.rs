@@ -457,17 +457,18 @@ impl App {
     }
 
     pub fn is_markdown_open(&self) -> bool {
-        std::path::Path::new(self.diff_path.as_deref().unwrap_or(""))
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+        self.diff_path.as_deref().is_some_and(is_markdown_path)
+    }
+
+    pub fn cursor_is_markdown(&self) -> bool {
+        self.current_entry().is_some_and(|e| is_markdown_path(&e.path))
     }
 
     pub fn open_preview(&mut self) {
         if self.composing() || self.mode != Mode::Normal {
             return;
         }
-        if !self.is_markdown_open() {
+        if !self.cursor_is_markdown() {
             self.status = "preview is for markdown files".to_string();
             return;
         }
@@ -640,6 +641,9 @@ impl App {
                 self.reset_diff_view();
             }
             self.load_left();
+        }
+        if self.mode == Mode::Preview && !self.is_markdown_open() {
+            self.close_preview();
         }
         Ok(())
     }
@@ -1990,7 +1994,7 @@ impl App {
             out.push((A::Base, Normal));
         }
 
-        if self.is_markdown_open() {
+        if self.cursor_is_markdown() {
             out.push((A::Preview, Normal));
         }
 
@@ -2166,6 +2170,13 @@ fn worktree_content(repo: &std::path::Path, path: &str) -> String {
     std::fs::read(repo.join(path))
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
+}
+
+fn is_markdown_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
 }
 
 fn line_in(c: &Comment, row: &Row) -> bool {
