@@ -289,7 +289,6 @@ fn derive(a: Anchors, appearance: Appearance) -> Palette {
         peach: a.peach,
         mauve: a.mauve,
         lavender: a.lavender,
-        // Other themes have no dedicated blue anchor; their lavender slot is the closest.
         blue: a.lavender,
         del_bg: readable_tint(a.red, a.base, a.text, appearance, false),
         ins_bg: readable_tint(a.green, a.base, a.text, appearance, false),

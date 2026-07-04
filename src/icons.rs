@@ -1,15 +1,7 @@
-//! Nerd Font icons for the file tree (opt-in; see [`crate::app::App`]'s `icons` flag).
-//!
-//! Terminals can't draw an image icon pack, so these are Nerd Font glyphs — characters in the
-//! font's Private Use Area, the same set eza/lsd/nvim-tree use. They render only on a Nerd Font
-//! terminal, so the feature is off by default. This module is the one place that maps a name to a
-//! glyph and a palette-tinted colour; the renderer (`ui.rs`) just paints what it returns.
-
 use ratatui::style::Color;
 
 use crate::theme::Palette;
 
-/// A palette-relative colour, so the glyph tints follow the active theme.
 #[derive(Clone, Copy)]
 enum Hue {
     Peach,
@@ -33,8 +25,6 @@ fn tint(hue: Hue, p: &Palette) -> Color {
     }
 }
 
-/// Whole-filename matches, tried before the extension so `Cargo.toml` gets the rust icon rather
-/// than the generic TOML one.
 const SPECIAL: &[(&str, &str, Hue)] = &[
     ("Cargo.toml", "\u{e7a8}", Hue::Peach),
     ("Cargo.lock", "\u{f023}", Hue::Red),
@@ -47,8 +37,6 @@ const SPECIAL: &[(&str, &str, Hue)] = &[
     (".gitignore", "\u{e702}", Hue::Peach),
 ];
 
-/// Extension matches (case-insensitive). Colours are grouped by category — systems, scripts,
-/// config/web, docs, assets — because the palette has only six accents.
 const EXT: &[(&str, &str, Hue)] = &[
     ("rs", "\u{e7a8}", Hue::Peach),
     ("go", "\u{e627}", Hue::Peach),
@@ -93,19 +81,14 @@ const EXT: &[(&str, &str, Hue)] = &[
     ("ico", "\u{f1c5}", Hue::Green),
 ];
 
-/// The fallback for an unrecognised file.
 const GENERIC: (&str, Hue) = ("\u{f15b}", Hue::Neutral);
 
-/// The folder glyph and colour, by expansion state (open vs closed).
 #[must_use]
 pub fn folder_icon(expanded: bool, p: &Palette) -> (&'static str, Color) {
     let glyph = if expanded { "\u{f07c}" } else { "\u{f07b}" };
     (glyph, tint(Hue::Yellow, p))
 }
 
-/// The filetype glyph and colour for a file. `name` may be a collapsed `dir/dir/base` chain —
-/// only the basename matters. Special filenames win over the extension; an unknown type falls
-/// back to a generic file glyph.
 #[must_use]
 pub fn file_icon(name: &str, p: &Palette) -> (&'static str, Color) {
     let base = name.rsplit('/').next().unwrap_or(name);
@@ -133,7 +116,6 @@ mod tests {
         let p = palette();
         assert_eq!(file_icon("src/main.rs", &p).0, "\u{e7a8}", "extension from a path chain");
         assert_eq!(file_icon("data.json", &p).0, "\u{e60b}");
-        // A special filename beats its extension.
         assert_eq!(file_icon("Cargo.toml", &p).0, "\u{e7a8}");
         assert_ne!(file_icon("Cargo.toml", &p).0, file_icon("other.toml", &p).0);
     }

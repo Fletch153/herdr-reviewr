@@ -1,34 +1,15 @@
-//! Launching the user's `$EDITOR` on the file under review.
-//!
-//! The diff pane is read-only; pressing `e` there hands the current file to a real editor so a
-//! change can be made without leaving the review. The terminal hand-off (suspend the TUI, run the
-//! editor on the inherited stdio, re-init) lives in [`crate::run`] because it owns the terminal;
-//! this module only resolves which editor to run and builds its command line — kept terminal-free
-//! and pure (no env read in [`command`]) so it is unit-testable.
-
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 
-/// The editor to launch: `$VISUAL`, then `$EDITOR`, then `vi` — the conventional unix precedence
-/// (`VISUAL` is the full-screen editor, `EDITOR` the line-editor fallback).
 fn editor_spec() -> String {
     pick(std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok())
 }
 
-/// Choose between `$VISUAL` and `$EDITOR`, skipping blank values so an exported-but-empty var
-/// doesn't win, and falling back to `vi`. Split from the env read so it's testable without the
-/// (crate-forbidden) `unsafe` env mutation.
 fn pick(visual: Option<String>, editor: Option<String>) -> String {
     let nonblank = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
     nonblank(visual).or_else(|| nonblank(editor)).unwrap_or_else(|| "vi".to_string())
 }
 
-/// Build the editor invocation `<program> [spec args…] [+<line>] <path>`, run from `repo`.
-///
-/// `spec` is split on whitespace so a configured `EDITOR="emacsclient -t"` or `"code -w"` keeps its
-/// flags; the first token is the program. `+<line>` is the cursor-position convention understood by
-/// the vi family, emacs, and nano — an editor that doesn't parse it simply opens at the top.
-/// Pure (no env access) so tests can assert the argv without touching process env.
 #[must_use]
 pub fn command(spec: &str, repo: &Path, path: &Path, line: Option<u32>) -> Command {
     let mut parts = spec.split_whitespace();
@@ -43,8 +24,6 @@ pub fn command(spec: &str, repo: &Path, path: &Path, line: Option<u32>) -> Comma
     cmd
 }
 
-/// Resolve `$EDITOR` and run it on `path` (at `line` when known), inheriting the terminal. Blocks
-/// until the editor exits; the caller suspends/restores the TUI around this call.
 pub fn open(repo: &Path, path: &Path, line: Option<u32>) -> std::io::Result<ExitStatus> {
     command(&editor_spec(), repo, path, line).status()
 }
@@ -73,7 +52,6 @@ mod tests {
         let cmd = command("code -w", Path::new("/repo"), Path::new("/repo/a.rs"), None);
         let (program, args) = argv(&cmd);
         assert_eq!(program, "code");
-        // Flags preserved, no `+line`, path last.
         assert_eq!(args, vec!["-w".to_string(), "/repo/a.rs".to_string()]);
     }
 

@@ -15,7 +15,6 @@ pub struct Config {
     pub theme: Option<String>,
     /// `Some(false)` when `--wrap off` is passed; `None` keeps the default (wrap on).
     pub wrap: Option<bool>,
-    /// `--icons on|off`; `None` falls back to the config file, then off (Nerd Font required).
     pub icons: Option<bool>,
 }
 
@@ -66,28 +65,20 @@ pub fn config_file_theme() -> Option<String> {
     config_key_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?, "theme")
 }
 
-/// The `base` value from reviewr's config file, read once at startup. `None` when the dir is
-/// unset, the file is absent or unparseable, or it has no `base` key.
 pub fn config_file_base() -> Option<String> {
     config_key_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?, "base")
 }
 
-/// The `icons` boolean from reviewr's config file, read once at startup. `None` when the dir is
-/// unset, the file is absent or unparseable, or it has no `icons` key.
 pub fn config_file_icons() -> Option<bool> {
     config_icons_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?)
 }
 
-/// A string key from `<dir>/config.toml`, or `None` if the file is absent, unparseable,
-/// or lacks the key. Split from the env lookup so it is testable.
 fn config_key_in(dir: impl AsRef<std::path::Path>, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(dir.as_ref().join("config.toml")).ok()?;
     let table: toml::Table = text.parse().ok()?;
     table.get(key).and_then(toml::Value::as_str).map(str::to_owned)
 }
 
-/// The `icons` boolean from `<dir>/config.toml`, or `None` if absent/unparseable/missing.
-/// Split from the env lookup so it is testable.
 fn config_icons_in(dir: impl AsRef<std::path::Path>) -> Option<bool> {
     let text = std::fs::read_to_string(dir.as_ref().join("config.toml")).ok()?;
     let table: toml::Table = text.parse().ok()?;

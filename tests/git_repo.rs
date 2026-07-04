@@ -170,7 +170,11 @@ fn branch_scope_auto_base_is_the_nearest_fork_not_mainline() {
     r.write("c.rs", "1\n");
     r.commit_all("C");
 
-    assert_eq!(base_ref(r.path(), None).as_deref(), Some("parent"), "auto base is the nearest fork");
+    assert_eq!(
+        base_ref(r.path(), None).as_deref(),
+        Some("parent"),
+        "auto base is the nearest fork"
+    );
     let changed = changed_files(r.path(), Scope::Branch, None).unwrap();
     let files = by_path(&changed);
     assert!(files.contains_key("c.rs"), "feature's own change is shown");
@@ -181,7 +185,11 @@ fn branch_scope_auto_base_is_the_nearest_fork_not_mainline() {
 
     // On the trunk branch itself nothing forks below HEAD, so auto falls back to trunk (`main`).
     r.git(&["checkout", "-q", "main"]);
-    assert_eq!(base_ref(r.path(), None).as_deref(), Some("main"), "no nearer fork → trunk fallback");
+    assert_eq!(
+        base_ref(r.path(), None).as_deref(),
+        Some("main"),
+        "no nearer fork → trunk fallback"
+    );
 }
 
 #[test]

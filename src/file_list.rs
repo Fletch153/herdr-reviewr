@@ -15,8 +15,6 @@ use crate::model::{ChangeKind, ChangedFile};
 pub struct Row {
     /// Nesting level, for indentation.
     pub depth: usize,
-    /// The segment shown — a single directory name or a file basename. Each directory level is
-    /// its own row (no single-child folding).
     pub name: String,
     pub kind: RowKind,
     /// Whether git ignores this row's path — rendered dimmed in `All files` (file-list.md).
@@ -108,9 +106,6 @@ struct Dir {
 /// Flatten `entries` into the visible tree rows. `default_expanded` sets a directory's
 /// resting state — `true` for `Changes` (expanded unless toggled), `false` for `All files`
 /// (collapsed unless toggled); `toggled` holds the paths flipped from that default.
-/// Each directory level is its own row; directories sort before files, alphabetically within
-/// a parent. `filter` (lowercased) keeps only entries whose path contains it, pruning the
-/// folders that end up empty.
 pub fn build<S: BuildHasher>(
     entries: &[Entry],
     toggled: &HashSet<String, S>,
@@ -119,9 +114,6 @@ pub fn build<S: BuildHasher>(
 ) -> Vec<Row> {
     let mut root = Dir::default();
     for (i, e) in entries.iter().enumerate() {
-        // When filtering, keep only entries whose path contains the (lowercased) query; the
-        // folders that hold them survive because the tree is derived from the surviving paths.
-        // `i` stays the entry's original index, so `RowKind::File.index` still indexes `entries`.
         if filter.is_some_and(|q| !e.path.to_lowercase().contains(q)) {
             continue;
         }
@@ -242,7 +234,6 @@ mod tests {
 
     #[test]
     fn each_directory_level_in_a_chain_is_its_own_row() {
-        // A chain of one-child directories is not folded — every level shows.
         let files = [file("docs/plans/2026/plan.md")];
         assert_eq!(
             shape(&files, &HashSet::new()),
@@ -254,10 +245,7 @@ mod tests {
     fn a_branching_tree_nests_every_directory() {
         let files = [file("a/b/c/one.rs"), file("a/b/c/two.rs")];
         let rows = shape(&files, &HashSet::new());
-        assert_eq!(
-            rows,
-            ["0:dir:a", "1:dir:b", "2:dir:c", "3:file:one.rs", "3:file:two.rs"]
-        );
+        assert_eq!(rows, ["0:dir:a", "1:dir:b", "2:dir:c", "3:file:one.rs", "3:file:two.rs"]);
     }
 
     #[test]
@@ -284,7 +272,10 @@ mod tests {
     fn all_files_collapses_directories_by_default() {
         // default_expanded = false: src/ is collapsed unless toggled, so its children hide.
         let files = [file("src/app.rs"), file("src/ui.rs")];
-        assert_eq!(shape_rows(&build(&entries(&files), &HashSet::new(), false, None)), ["0:dir:src"]);
+        assert_eq!(
+            shape_rows(&build(&entries(&files), &HashSet::new(), false, None)),
+            ["0:dir:src"]
+        );
         // Toggling src/ into the set expands it under the collapse-default policy.
         let toggled: HashSet<String> = ["src".to_string()].into_iter().collect();
         assert_eq!(
@@ -349,12 +340,8 @@ mod tests {
             file("evm/x.rs"),
             file("docs/readme.md"),
         ];
-        // Matches the file name (`evm_pool.rs`) and the folder name (`evm/`); prunes the rest.
         let rows = shape_rows(&build(&entries(&files), &HashSet::new(), true, Some("evm")));
-        assert_eq!(
-            rows,
-            ["0:dir:contracts", "1:file:evm_pool.rs", "0:dir:evm", "1:file:x.rs"]
-        );
+        assert_eq!(rows, ["0:dir:contracts", "1:file:evm_pool.rs", "0:dir:evm", "1:file:x.rs"]);
     }
 
     #[test]

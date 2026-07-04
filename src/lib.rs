@@ -57,16 +57,12 @@ pub fn run() -> Result<()> {
     // starts showing changes if the directory becomes a repo (specs/herdr-host.md).
     let repo = git::toplevel(&cfg.repo).unwrap_or_else(|| cfg.repo.clone());
     logln!("start repo={} poll={:?} base={:?}", repo.display(), cfg.poll, cfg.base);
-    // CLI --base wins; else the config file's `base` key (read once — a per-poll re-read
-    // would clobber an in-panel base selection two seconds after every press).
     let base = cfg.base.clone().or_else(config::config_file_base);
     let mut app = App::new(repo, Scope::Uncommitted, base);
     app.set_cli_theme(cfg.theme.clone());
     if let Some(wrap) = cfg.wrap {
         app.wrap = wrap;
     }
-    // CLI --icons wins; else the config file's `icons` key. Read once at startup — a terminal's
-    // Nerd Font capability doesn't change mid-session.
     if let Some(icons) = cfg.icons.or_else(config::config_file_icons) {
         app.icons = icons;
     }
@@ -78,12 +74,6 @@ pub fn run() -> Result<()> {
     result
 }
 
-/// Enter the alternate screen in raw mode with mouse capture and bracketed paste, enabling the
-/// kitty keyboard protocol when the terminal supports it (so Ctrl/Alt+arrows report modifiers the
-/// legacy encoding drops). Bracketed paste keeps a multi-line paste one event, so its embedded
-/// newlines don't submit a comment early. Returns whether the keyboard flags were pushed, so
-/// `leave_tui` pops exactly what was set. Reused around an external editor so the panel's terminal
-/// state and the editor's can't drift out of sync.
 fn enter_tui() -> (DefaultTerminal, bool) {
     let terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
@@ -98,8 +88,6 @@ fn enter_tui() -> (DefaultTerminal, bool) {
     (terminal, kbd)
 }
 
-/// Restore the terminal to the shell: undo `enter_tui` in reverse — pop the keyboard flags,
-/// disable mouse capture and bracketed paste, then leave the alternate screen.
 fn leave_tui(kbd: bool) {
     if kbd {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
@@ -223,10 +211,6 @@ fn event_loop(
                         app.diff_scroll,
                         app.store.len()
                     );
-                    // `e` in the diff pane asks to open the file in $EDITOR. Service it here,
-                    // where we own the terminal: drop back to the shell, run the editor on the
-                    // inherited stdio, then re-enter and repaint. Reload after so the edit shows;
-                    // the same file stays open (App::reload only resets the view if it changed).
                     if let Some(req) = app.take_pending_editor() {
                         leave_tui(kbd);
                         let status = editor::open(&app.repo, &req.path, req.line);
@@ -404,12 +388,8 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
     if app.mode == Mode::Filter {
         match key.code {
             Esc => app.clear_filter(),
-            // Keep the filter applied but hand control back to normal keys (u/b/t/C/…); `/`
-            // re-enters to edit it, `esc` clears it.
             Enter => app.confirm_filter(),
             Backspace => app.filter_backspace(),
-            // Arrows navigate the filtered results without leaving the search (the letters go
-            // into the query, so `j`/`k` can't be the nav keys here).
             Up => app.move_cursor(-1)?,
             Down => app.move_cursor(1)?,
             PageUp => app.move_cursor(-PAGE)?,
@@ -444,7 +424,6 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         // `←`/`→` expand/collapse the collapsible under the cursor — a directory in the file
         // list, a fold in the diff (expand-only); otherwise they scroll the diff sideways
         // (`scroll_h` is a no-op while wrapping, so it only acts when h-scroll is meaningful).
-        // `enter` on a folder expands it and its direct child folders (one level); again collapses.
         (Enter, _) if app.on_folder() => app.toggle_dir_children(),
         (Right, _) if app.on_folder() => app.expand_dir(),
         (Left, _) if app.on_folder() => app.collapse_dir(),
@@ -458,15 +437,9 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
         (Char('B'), false) => app.open_branch_picker(),
-        // `C` (upper) is the commit comparator; lowercase `c` stays comment.
         (Char('C'), false) => app.enter_commit_scope()?,
         (Char('v'), _) => app.toggle_select(),
         (Char('c'), _) => app.start_comment(),
-        // `e`/`d` are diff-focused so they can't act on an off-screen cursor (`d` would silently
-        // delete a comment under it). On a commented line `e` edits that comment; anywhere else in
-        // the diff it opens the file in $EDITOR — mutually exclusive, so the footer shows `e edit`
-        // vs `e editor`. (The comments-list overlay has its own `e`/`d`, targeting the highlighted
-        // row.)
         (Char('e'), _) if app.focus == Focus::Diff => {
             if app.comment_under_cursor().is_some() {
                 app.start_edit();
@@ -481,7 +454,6 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('N'), _) => app.jump_comment(-1),
         (Char('l'), _) => app.open_list(),
         (Char('/'), false) => app.start_filter(),
-        // `esc` clears an active file filter first, else an in-progress line selection.
         (Esc, _) => {
             if app.filter.is_empty() {
                 app.clear_selection();
@@ -501,8 +473,6 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
     if app.composing() || app.mode == Mode::List {
         return Ok(());
     }
-    // The commit picker owns the mouse while open: click a row to compare against it, wheel to
-    // move the cursor, click outside the list to dismiss.
     if app.mode == Mode::CommitPick {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -522,8 +492,6 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
             MouseEventKind::Down(MouseButton::Left) => {
                 match ui::hit_branch_pick(area, app, m.column, m.row) {
                     Some(i) => app.pick_branch(i)?,
-                    // A click outside the popup closes it; a click on the divider (inside the
-                    // popup, no target) is ignored so it can't dismiss the picker.
                     None if !ui::in_picker_popup(area, m.column, m.row) => {
                         app.close_branch_picker();
                     }

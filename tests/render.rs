@@ -785,8 +785,14 @@ fn icons_replace_the_folder_arrows() {
     app.icons = true;
 
     let out = render(&app);
-    assert!(!out.contains("\u{25be} src") && !out.contains("\u{25b8} src"), "no arrow before the folder");
-    assert!(out.contains('\u{f07c}') || out.contains('\u{f07b}'), "the folder glyph conveys expansion");
+    assert!(
+        !out.contains("\u{25be} src") && !out.contains("\u{25b8} src"),
+        "no arrow before the folder"
+    );
+    assert!(
+        out.contains('\u{f07c}') || out.contains('\u{f07b}'),
+        "the folder glyph conveys expansion"
+    );
 }
 
 #[test]

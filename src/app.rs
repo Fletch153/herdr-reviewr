@@ -26,7 +26,6 @@ use crate::turn::{Status, TurnTracker};
 const DEFAULT_LIST_PCT: u16 = 32;
 const MIN_LIST_PCT: u16 = 15;
 const MAX_LIST_PCT: u16 = 60;
-/// How many of this branch's most-recent commits the commit picker offers.
 const COMMIT_PICK_LIMIT: usize = 50;
 
 /// Which pane has the keyboard.
@@ -36,9 +35,6 @@ pub enum Focus {
     Diff,
 }
 
-/// A pending request to open a file in `$EDITOR`, produced by [`App::request_editor`] and drained
-/// by the event loop. `path` is absolute (repo-joined); `line` is the worktree line under the
-/// cursor, or `None` when the cursor is on a fold/deletion row with no new-side line.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EditorRequest {
     pub path: PathBuf,
@@ -88,10 +84,6 @@ struct TabStash {
     select_anchor: Option<usize>,
 }
 
-/// A row in the branch picker: a selectable branch tip, or the non-selectable rule that
-/// separates the local section from the `origin/*` section. Modelling the divider as a row
-/// (rather than a second list) keeps one cursor over the whole picker; the cursor and the click
-/// hit-test both skip `Divider`, so it never becomes a selection.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum BranchRow {
     Item(String),
@@ -99,7 +91,6 @@ pub enum BranchRow {
 }
 
 impl BranchRow {
-    /// The branch name, or `None` for the divider — the one place selectability is decided.
     pub fn name(&self) -> Option<&str> {
         match self {
             BranchRow::Item(name) => Some(name),
@@ -118,11 +109,8 @@ pub enum Mode {
     },
     /// Browsing the comments-list overlay.
     List,
-    /// Choosing a commit to compare against in the commit-picker dropdown.
     CommitPick,
-    /// Choosing a branch to compare against in the branch-picker dropdown.
     BranchPick,
-    /// Typing a file-tree filter query.
     Filter,
 }
 
@@ -134,35 +122,23 @@ pub enum FooterAction {
     Select,
     ClearSelection,
     EditComment,
-    /// Open the file under review in `$EDITOR` — diff pane, when no comment is under the cursor.
     OpenEditor,
     DeleteComment,
     JumpComment,
     ExpandFold,
-    /// `→` on a folder: open it one level.
     ExpandDir,
-    /// `←` on a folder: close it.
     CollapseDir,
-    /// `⏎` on a folder: open it and its direct child folders (finishing a partial `→` open).
     ExpandTree,
-    /// `⏎` on a fully-open folder: close it and its child folders back up.
     CollapseTree,
     /// Switch focus between the file list and the diff; the label names the destination pane.
     TogglePane,
     Scope,
-    /// Cycle the branch-scope diff base through recent branch tips (Branch scope only).
     Base,
-    /// Commit-picker modal: compare against the highlighted commit.
     PickCommit,
-    /// Branch-picker modal: compare against the highlighted branch.
     PickBranch,
-    /// Commit-picker modal: close without changing the compared commit.
     ClosePicker,
-    /// Start filtering the file tree.
     Filter,
-    /// Filter modal: keep the filter and return to navigation.
     ApplyFilter,
-    /// Filter modal: clear the query and show the full tree.
     ClearFilter,
     Send,
     List,
@@ -194,11 +170,8 @@ pub enum Tier {
 pub struct App {
     pub repo: PathBuf,
     pub base: Option<String>,
-    /// The branch picker's rows (lineage ancestors: local, a divider, then `origin/*`) and the
-    /// cursor row, while it is open. The cursor never rests on the divider (see [`branch_move`]).
     pub branch_choices: Vec<BranchRow>,
     pub branch_cursor: usize,
-    /// What `base_ref` resolved on the last branch-scope reload — the header chip's label.
     pub resolved_base: Option<String>,
     pub scope: Scope,
     /// The active tab; it drives both panes and selects the per-tab state in play.
@@ -214,7 +187,6 @@ pub struct App {
     /// The flattened directory tree over `entries` — the rows the navigator paints. The
     /// `file_cursor` indexes this, not `entries`.
     pub file_rows: Vec<file_list::Row>,
-    /// The file-tree filter query (case-insensitive substring of the path); empty when inactive.
     pub filter: String,
     pub file_cursor: usize,
     /// Top visible row of the file list, kept so `file_cursor` stays on screen when the
@@ -257,7 +229,6 @@ pub struct App {
     pub h_scroll: usize,
     /// Whether long diff lines wrap (default) or are scrolled horizontally.
     pub wrap: bool,
-    /// Whether the file tree shows Nerd Font filetype/folder icons (opt-in; needs a Nerd Font).
     pub icons: bool,
     /// The file-list pane's width as a percent of the body; the diff takes the rest. The
     /// reviewer resizes it by dragging the divider or with `[` / `]`.
@@ -267,8 +238,6 @@ pub struct App {
     pub select_anchor: Option<usize>,
     pub store: CommentStore,
     pub list_cursor: usize,
-    /// The commit chosen as the diff base in `Scope::Commit` (full SHA); `None` until one is
-    /// picked. The picker's choices, cursor row, and scroll offset while it is open.
     pub selected_commit: Option<String>,
     pub commit_choices: Vec<git::CommitRef>,
     pub commit_cursor: usize,
@@ -287,8 +256,6 @@ pub struct App {
     /// Set when the PR view needs a (re)fetch; the event loop services it after drawing, so a
     /// `loading` frame shows before the blocking `gh` calls run.
     pub pr_pending: bool,
-    /// Set when `e` asks to open the current file in `$EDITOR`; the event loop takes it after
-    /// key handling, suspends the TUI, and runs the editor (it owns the terminal, this doesn't).
     pending_editor: Option<EditorRequest>,
     highlighter: Highlighter,
     /// The active palette every renderer paints from (`specs/theme.md`).
@@ -443,9 +410,6 @@ impl App {
         self.file_rows.iter().position(|r| r.file_index().is_some())
     }
 
-    /// Rebuild the flattened tree from `entries` and the toggled-directory set. When a filter is
-    /// active, keep only matching paths and force every surviving directory expanded so the
-    /// matches are visible regardless of the collapse state.
     fn rebuild_file_rows(&mut self) {
         let query = self.filter.trim().to_lowercase();
         self.file_rows = if query.is_empty() {
@@ -455,16 +419,11 @@ impl App {
         };
     }
 
-    /// Enter filter-input mode, editing the current query. Focuses the file list so it's clear
-    /// the filter applies there (not the diff pane) and so ↑/↓ navigate the results.
     pub fn start_filter(&mut self) {
         self.focus = Focus::Files;
         self.mode = Mode::Filter;
     }
 
-    /// Append a character to the filter and re-apply it live. A leading `/` is ignored: `/`
-    /// opens the filter, so pressing it again on an empty query (the "restart the search"
-    /// reflex) must not insert a literal slash — and no git path starts with one anyway.
     pub fn filter_push(&mut self, c: char) {
         if c == '/' && self.filter.is_empty() {
             return;
@@ -473,13 +432,11 @@ impl App {
         self.apply_filter();
     }
 
-    /// Delete the last filter character and re-apply.
     pub fn filter_backspace(&mut self) {
         self.filter.pop();
         self.apply_filter();
     }
 
-    /// Clear the filter (show the full tree) and leave filter-input mode.
     pub fn clear_filter(&mut self) {
         self.filter.clear();
         if self.mode == Mode::Filter {
@@ -488,17 +445,12 @@ impl App {
         self.apply_filter();
     }
 
-    /// Keep the filter applied but leave input mode, handing control back to normal navigation
-    /// and command keys. `/` re-enters to edit the query; `esc` clears it.
     pub fn confirm_filter(&mut self) {
         if self.mode == Mode::Filter {
             self.mode = Mode::Normal;
         }
     }
 
-    /// Rebuild the filtered tree, keeping the same file selected across the change (so clearing
-    /// the filter doesn't jump to a different row) and loading its content so the diff follows
-    /// the highlight instead of waiting for the next poll.
     fn apply_filter(&mut self) {
         let anchor = self.cursor_anchor();
         self.rebuild_file_rows();
@@ -601,20 +553,13 @@ impl App {
         // and comment staleness stay correct even while `All files` lists the whole worktree.
         // last-turn diffs the captured baseline; with none yet, it is empty until a turn start
         // is observed (specs/review-model.md).
-        // Resolve the diff's old-side base once per reload; downstream calls (the changeset here,
-        // each file's old side in `content_sides`) short-circuit on it. Branch auto-detects its
-        // base; Commit pins it to the chosen commit; the others diff against `HEAD`.
         self.resolved_base = match self.scope {
             Scope::Branch => git::base_ref(&self.repo, self.base.as_deref()),
             Scope::Commit => self.selected_commit.clone(),
             _ => None,
         };
-        // Keep the pickable commits current in Commit scope so the header chip can tell "pick a
-        // commit" from "no commits since the fork". Skipped while the picker is open, so a poll
-        // can't shuffle the list under the cursor (the picker loads its own copy on open).
         if self.scope == Scope::Commit && self.mode != Mode::CommitPick {
-            self.commit_choices =
-                git::recent_commits(&self.repo, COMMIT_PICK_LIMIT);
+            self.commit_choices = git::recent_commits(&self.repo, COMMIT_PICK_LIMIT);
         }
         let changed = match self.scope {
             Scope::LastTurn => match self.turn.baseline() {
@@ -804,8 +749,6 @@ impl App {
                 (old, worktree_content(&self.repo, new_path))
             }
             Scope::Commit => {
-                // The chosen commit is the old side directly (no merge-base — it is already
-                // an ancestor of HEAD).
                 let old = self
                     .resolved_base
                     .as_deref()
@@ -977,8 +920,6 @@ impl App {
             self.reload()?;
             // An explicit switch reveals the cursor (a poll, which also calls reload, does not).
             self.reveal_files = true;
-            // Landing on the commit comparator with nothing chosen yet surfaces the picker, so the
-            // dropdown is right there; once a commit is pinned, the diff shows instead.
             if scope == Scope::Commit && self.selected_commit.is_none() {
                 self.open_commit_picker();
             }
@@ -986,8 +927,6 @@ impl App {
         Ok(())
     }
 
-    /// Switch to the commit comparator. When already comparing against a commit, reopen the
-    /// picker to change it; otherwise `set_scope` surfaces the picker if nothing is chosen yet.
     pub fn enter_commit_scope(&mut self) -> Result<()> {
         if self.scope == Scope::Commit {
             self.open_commit_picker();
@@ -997,9 +936,6 @@ impl App {
         Ok(())
     }
 
-    /// Load the branch's commit history (newest first) and open the picker, cursoring the
-    /// currently compared commit. A no-op while composing; reports instead of opening when there
-    /// are no commits at all.
     pub fn open_commit_picker(&mut self) {
         if self.composing() {
             return;
@@ -1017,15 +953,12 @@ impl App {
         self.mode = Mode::CommitPick;
     }
 
-    /// Move the picker cursor within the loaded choices.
     pub fn commit_move(&mut self, delta: isize) {
         if self.mode == Mode::CommitPick {
             self.commit_cursor = step(self.commit_cursor, delta, self.commit_choices.len());
         }
     }
 
-    /// Compare against the commit at `idx`: pin it as the base, switch to Commit scope, close the
-    /// picker, and rebuild the diff.
     pub fn pick_commit(&mut self, idx: usize) -> Result<()> {
         let Some(commit) = self.commit_choices.get(idx) else { return Ok(()) };
         self.selected_commit = Some(commit.sha.clone());
@@ -1037,15 +970,12 @@ impl App {
         Ok(())
     }
 
-    /// Close the picker without changing the compared commit.
     pub fn close_commit_picker(&mut self) {
         if self.mode == Mode::CommitPick {
             self.mode = Mode::Normal;
         }
     }
 
-    /// Reset the Changes tab's cursor/folds/scroll and drop cached diffs — required whenever
-    /// the changeset's identity shifts (scope switch, base repoint).
     fn reset_changes_view(&mut self) {
         self.cache = DiffCache::new();
         if self.tab == Tab::Changes {
@@ -1062,10 +992,6 @@ impl App {
         }
     }
 
-    /// Load this checkout's fork-lineage branches and open the picker, cursoring the current base.
-    /// Local ancestors come first, then a divider, then `origin/*` ancestors — each nearest fork
-    /// first (`git::ancestor_branches`). Branch scope only; reports instead of opening when the
-    /// lineage is empty.
     pub fn open_branch_picker(&mut self) {
         if self.scope != Scope::Branch || self.composing() {
             return;
@@ -1073,8 +999,6 @@ impl App {
         let git::AncestorBranches { local, remote } = git::ancestor_branches(&self.repo);
         let mut rows: Vec<BranchRow> = local.into_iter().map(BranchRow::Item).collect();
         if !remote.is_empty() {
-            // The divider only exists between two populated sections, so it is never at an edge —
-            // which is what lets `branch_move` hop it with a single extra step.
             if !rows.is_empty() {
                 rows.push(BranchRow::Divider);
             }
@@ -1085,8 +1009,6 @@ impl App {
             self.status = "no ancestor branches to compare against".to_string();
             return;
         }
-        // Start on the current base if it is one of the choices, else the first row (always an
-        // Item — a leading section is never empty when it precedes the divider).
         self.branch_cursor = self
             .base
             .as_deref()
@@ -1095,9 +1017,6 @@ impl App {
         self.mode = Mode::BranchPick;
     }
 
-    /// Move the branch-picker cursor by `delta` rows, stepping over the divider so the cursor
-    /// only ever lands on a selectable branch. There is at most one divider and it is interior,
-    /// so a single extra step always clears it.
     pub fn branch_move(&mut self, delta: isize) {
         if self.mode != Mode::BranchPick {
             return;
@@ -1113,8 +1032,6 @@ impl App {
         }
     }
 
-    /// Compare against the branch at `idx`: set it as the base, close the picker, rebuild the
-    /// diff. A no-op on the divider (or an out-of-range index), so a divider click changes nothing.
     pub fn pick_branch(&mut self, idx: usize) -> Result<()> {
         let Some(name) = self.branch_choices.get(idx).and_then(BranchRow::name) else {
             return Ok(());
@@ -1127,7 +1044,6 @@ impl App {
         Ok(())
     }
 
-    /// Close the branch picker without changing the base.
     pub fn close_branch_picker(&mut self) {
         if self.mode == Mode::BranchPick {
             self.mode = Mode::Normal;
@@ -1388,15 +1304,9 @@ impl App {
         }
     }
 
-    /// `Enter` on a folder: expand it and its direct child folders (one level, not recursive).
-    /// If the folder was only partly open — e.g. opened with `→` so its child folders are still
-    /// shut — this *completes* the expansion rather than collapsing; only once everything is open
-    /// does another `Enter` collapse it all back.
     pub fn toggle_dir_children(&mut self) {
         let Some(folder) = self.dir_under_cursor() else { return };
         let kids = self.direct_child_dirs(&folder);
-        // Collapse only when the folder and every child folder are already open; otherwise
-        // expand, filling in whatever `→` left shut.
         let want = !self.tree_fully_open(&folder, &kids);
         let mut changed = self.set_dir_expanded(&folder, want);
         for kid in &kids {
@@ -1407,9 +1317,6 @@ impl App {
         }
     }
 
-    /// The direct child directories of `folder`: a path under it with a further `/`. Kept in one
-    /// place so [`toggle_dir_children`](Self::toggle_dir_children) and the footer hint agree on
-    /// what `Enter` acts on.
     fn direct_child_dirs(&self, folder: &str) -> Vec<String> {
         let prefix = format!("{folder}/");
         self.entries
@@ -1423,15 +1330,10 @@ impl App {
             .collect()
     }
 
-    /// Whether `folder` and all its direct child folders are expanded — the state in which `Enter`
-    /// collapses the subtree rather than completing its expansion.
     fn tree_fully_open(&self, folder: &str, kids: &[String]) -> bool {
         self.dir_expanded(folder) && kids.iter().all(|k| self.dir_expanded(k))
     }
 
-    /// For the folder under the cursor: `Some(true)` when `Enter` would collapse its subtree (all
-    /// already open), `Some(false)` when it would expand, `None` off a folder row. Drives the
-    /// footer's `⏎` hint so the label matches the effect.
     fn dir_enter_collapses(&self) -> Option<bool> {
         let folder = self.dir_under_cursor()?;
         let kids = self.direct_child_dirs(&folder);
@@ -1863,9 +1765,6 @@ impl App {
         self.store.iter().position(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
     }
 
-    /// Ask the event loop to open the file under review in `$EDITOR`. No-op unless the diff pane
-    /// is focused with a file open and no comment is being composed. The line is the worktree line
-    /// under the cursor when the row has one (fold/deletion rows open the file at the top).
     pub fn request_editor(&mut self) {
         if self.focus != Focus::Diff || self.composing() {
             return;
@@ -1875,7 +1774,6 @@ impl App {
         self.pending_editor = Some(EditorRequest { path: self.repo.join(rel), line });
     }
 
-    /// Take the pending editor request, if any — drained by the event loop after key handling.
     pub fn take_pending_editor(&mut self) -> Option<EditorRequest> {
         self.pending_editor.take()
     }
@@ -1984,7 +1882,6 @@ impl App {
         let mut pane_is_primary = false;
 
         if self.file_rows.is_empty() {
-            // Nothing in scope to review: only switching scope/base or refreshing is useful.
             out.push((A::Scope, Primary));
             if self.scope == Scope::Branch {
                 out.push((A::Base, Normal));
@@ -1994,8 +1891,6 @@ impl App {
             if let Some(RowKind::Dir { expanded, .. }) =
                 self.file_rows.get(self.file_cursor).map(|r| &r.kind)
             {
-                // `→`/`←` toggles this folder one level (primary); `⏎` opens or closes it
-                // together with its child folders (the deeper move, offered alongside).
                 out.push((if *expanded { A::CollapseDir } else { A::ExpandDir }, Primary));
                 let enter = if self.dir_enter_collapses().unwrap_or(false) {
                     A::CollapseTree
@@ -2004,7 +1899,7 @@ impl App {
                 };
                 out.push((enter, Normal));
             } else {
-                out.push((A::TogglePane, Primary)); // ⇥ into the diff to review
+                out.push((A::TogglePane, Primary));
                 pane_is_primary = true;
             }
         } else if self.visible.is_empty() {
@@ -2030,8 +1925,6 @@ impl App {
             out.push((A::Scope, Normal));
         }
 
-        // `e` opens the file in $EDITOR whenever the diff is focused and no comment sits under the
-        // cursor (there `e` edits the comment — same key, so only ever one of them shows).
         if self.focus == Focus::Diff
             && !self.visible.is_empty()
             && self.comment_under_cursor().is_none()
@@ -2039,13 +1932,10 @@ impl App {
             out.push((A::OpenEditor, Normal));
         }
 
-        // `B` cycles the branch-scope base, so the hint belongs in every Branch context — not only
-        // the empty changeset that first surfaced it (the guard keeps that earlier push unique).
         if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
             out.push((A::Base, Normal));
         }
 
-        // `/` filters the file tree — offered whenever there's a tree to filter.
         if !self.file_rows.is_empty() || !self.filter.is_empty() {
             out.push((A::Filter, Normal));
         }
@@ -2107,12 +1997,8 @@ impl App {
         self.changed.len()
     }
 
-    /// Whether any changed file lives under the directory at `path` (a strict descendant, so the
-    /// `/` boundary is respected — `src` is not a parent of `src2`). Drives the folder highlight.
     pub fn dir_has_changes(&self, path: &str) -> bool {
-        self.changed
-            .keys()
-            .any(|p| p.strip_prefix(path).is_some_and(|rest| rest.starts_with('/')))
+        self.changed.keys().any(|p| p.strip_prefix(path).is_some_and(|rest| rest.starts_with('/')))
     }
 
     /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves

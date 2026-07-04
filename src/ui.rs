@@ -379,8 +379,6 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
     }
     let scope_start = header_prefix_len() as u16;
     let scope_end = scope_start + scope_chip(app).len() as u16;
-    // Base and commit chips share the slot after the scope chip; a scope shows at most one, so
-    // the empty one contributes zero width and the ranges don't overlap.
     let base_end = scope_end + base_chip(app).len() as u16;
     let commit_end = base_end + commit_chip(app).len() as u16;
     let button_start = send_button_col(app, area.width as usize) as u16;
@@ -429,16 +427,10 @@ fn scope_chip(app: &App) -> String {
     format!("[{}]", app.scope.label())
 }
 
-/// The clickable base chip, shown only in Branch scope: the explicit base if one is set,
-/// else what auto-detection resolved on the last reload. Truncated on character boundaries
-/// (never mid-code-point); header column math uses byte length, so a non-ASCII name may pad
-/// the bar slightly off — a cosmetic drift, never a panic.
 fn base_chip(app: &App) -> String {
     if app.scope != Scope::Branch {
         return String::new();
     }
-    // An explicit selection shows bare; the home slot is labeled `auto:` so cycling between
-    // auto-detected `origin/develop` and a local `develop` candidate doesn't read as a duplicate.
     if let Some(name) = app.base.as_deref() {
         format!(" [>{}]", truncate_width(name, 24))
     } else {
@@ -447,10 +439,6 @@ fn base_chip(app: &App) -> String {
     }
 }
 
-/// The clickable commit chip, shown only in Commit scope: the chosen commit's short hash and
-/// truncated title, or a prompt when nothing is chosen yet. Clicking it reopens the picker.
-/// Base and commit chips never show together (a scope has at most one), so they share the header
-/// slot. Byte-length column math, like the base chip.
 fn commit_chip(app: &App) -> String {
     if app.scope != Scope::Commit {
         return String::new();
@@ -461,10 +449,8 @@ fn commit_chip(app: &App) -> String {
         .and_then(|sha| app.commit_choices.iter().find(|c| c.sha == sha))
     {
         Some(c) => format!(" [>{} {}]", c.short, truncate_width(&c.title, 24)),
-        // A commit is pinned but not in the loaded choices — show its short SHA (hex, ASCII).
         None => match app.selected_commit.as_deref() {
             Some(sha) => format!(" [>{}]", &sha[..sha.len().min(8)]),
-            // Nothing pinned yet: prompt to pick, or say so when the fork point has nothing ahead.
             None if app.commit_choices.is_empty() => " [no commits]".to_string(),
             None => " [>pick commit]".to_string(),
         },
@@ -527,7 +513,6 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let pad = (area.width as usize).saturating_sub(used);
 
     // A quiet surface bar: the active tab in bright lavender, the inactive one dimmed, the
-    // clickable scope/base and Send controls accented so they read as buttons.
     let p = app.palette();
     let bar = Style::default().bg(p.surface0);
     let mut spans = tab_bar_spans(app);
@@ -544,8 +529,6 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
-    // While filtering, the title carries the query (with a caret in input mode) so the active
-    // filter is visible.
     let title = if app.filter.is_empty() {
         "Files".to_string()
     } else if app.mode == Mode::Filter {
@@ -585,8 +568,6 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let indent = "  ".repeat(row.depth);
             match &row.kind {
                 RowKind::Dir { expanded, path } => {
-                    // A directory holding a change anywhere below is flagged blue on both its
-                    // name and (when shown) its icon.
                     let changed = app.dir_has_changes(path);
                     let name_style = if row.ignored {
                         Style::default().fg(p.overlay0)
@@ -595,12 +576,8 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     } else {
                         Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
                     };
-                    // A blank status gutter (a directory has no single git status) keeps the
-                    // `│` rule continuous and directories aligned with the files.
                     let mut spans = gutter_spans(' ', p.text, p);
                     if app.icons {
-                        // The open/closed folder glyph already conveys expansion, so the
-                        // `▾`/`▸` arrow is dropped. A changed folder's glyph turns blue.
                         let (glyph, folder_color) = crate::icons::folder_icon(*expanded, p);
                         let color = if changed { p.blue } else { folder_color };
                         spans.push(Span::styled(indent.clone(), Style::default().fg(p.overlay0)));
@@ -631,12 +608,8 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// Width of the status gutter: a status letter and a `│` rule.
 const GUTTER_WIDTH: usize = 2;
 
-/// The status-gutter spans shared by file and directory rows: the colored status letter (a
-/// space when there's none) followed by a dim `│` rule. Rendered on every row, the rule forms
-/// one continuous vertical line delimiting the gutter from the tree.
 fn gutter_spans(marker: char, marker_color: Color, p: &Palette) -> Vec<Span<'static>> {
     vec![
         Span::styled(marker.to_string(), Style::default().fg(marker_color)),
@@ -644,10 +617,6 @@ fn gutter_spans(marker: char, marker_color: Color, p: &Palette) -> Vec<Span<'sta
     ]
 }
 
-/// A file row: `<status gutter><indent><icon><name> <stats>` — the gutter holds the git-status
-/// marker (colored by kind; blank when unchanged) behind a `│` rule so every row's tree content
-/// aligns, the basename is bright with its parent directories dimmed, and the `+a −d` stats are
-/// right-aligned against the pane edge. A name too wide for the row is truncated at the end.
 #[derive(Clone, Copy)]
 struct FileRow<'a> {
     indent: &'a str,
@@ -662,9 +631,6 @@ struct FileRow<'a> {
 
 fn file_row_item(row: FileRow) -> ListItem<'static> {
     let FileRow { indent, annotation, name, width, fill, ignored, icons, p } = row;
-    // Git-status gutter: a colored status letter, a dim `│` rule, then a space. Every row has
-    // it (blank letter when unchanged), so the rule forms a continuous vertical line that reads
-    // as a deliberate status column rather than stray indentation. Fixed 3 cols wide.
     let (marker, marker_color) = match annotation {
         Some(a) => (a.change.marker(), kind_color(p, a.change.marker())),
         None => (' ', p.text),
@@ -672,12 +638,9 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
     let gap = if stats.is_empty() { 0 } else { 2 };
-    // Optional filetype icon, measured (a glyph + trailing space) so the name still truncates
-    // to fit — the width self-accounts even for an ambiguous-width glyph.
     let icon = icons.then(|| crate::icons::file_icon(name, p));
     let icon_w = icon.map_or(0, |(g, _)| format!("{g} ").width());
     let fixed = GUTTER_WIDTH + indent.width() + icon_w + stats.width() + gap;
-    // Truncate a too-long name at the end (trailing `…`) rather than eliding the head.
     let shown = truncate_width(name, width.saturating_sub(fixed).max(1));
     // Dim the parent directories of a collapsed-chain name; keep the basename bright.
     let (dim, base) = match shown.rfind('/') {
@@ -815,8 +778,6 @@ fn truncate_width(s: &str, max: usize) -> String {
     out
 }
 
-/// Right-pad `s` with spaces to a display width of `width` (a no-op if it is already that wide),
-/// so fixed-width columns line up. Pair with [`truncate_width`] to also cap the upper bound.
 fn pad_width(s: &str, width: usize) -> String {
     let pad = width.saturating_sub(s.width());
     format!("{s}{}", " ".repeat(pad))
@@ -1240,8 +1201,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::ExpandFold => ("→", "expand fold"),
         A::ExpandDir => ("→", "expand"),
         A::CollapseDir => ("←", "collapse"),
-        A::ExpandTree => ("⏎", "expand tree"),
-        A::CollapseTree => ("⏎", "collapse tree"),
+        A::ExpandTree => ("enter", "expand tree"),
+        A::CollapseTree => ("enter", "collapse tree"),
         A::TogglePane => {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }
@@ -1406,20 +1367,14 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// The commit picker's popup rect — shared by the renderer and the click hit-test so they
-/// can't drift.
 fn commit_picker_rect(area: Rect) -> Rect {
     centered(area, 80, 60)
 }
 
-/// The top row of a `height`-tall window that keeps `cursor` visible. Stateless: the renderer
-/// and the mouse hit-test both derive the scroll from the cursor, so no offset field is stored.
 fn commit_scroll(cursor: usize, height: usize) -> usize {
     if height == 0 || cursor < height { 0 } else { cursor - height + 1 }
 }
 
-/// The commit-picker dropdown: this branch's commits (newest first) as `shorthash  title`,
-/// the cursor row highlighted, windowed to keep it visible.
 fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let popup = commit_picker_rect(area);
@@ -1440,9 +1395,6 @@ fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(row, c)| {
             let i = scroll + row;
-            // Columns, each with a trailing two-space gap: date, hash, author, then the subject.
-            // Author is padded to a fixed width so subjects line up, but capped at a quarter of the
-            // popup so it can't crowd out the subject; the subject takes whatever remains.
             let date = Span::styled(format!("{}  ", c.date), Style::default().fg(p.overlay1));
             let hash = Span::styled(
                 format!("{}  ", c.short),
@@ -1466,8 +1418,6 @@ fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// The commit index a click at `(col, row)` lands on in the open picker, if any. Mirrors the
-/// renderer's rect and scroll so a click maps to exactly the row shown.
 #[must_use]
 pub fn hit_commit_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     let inner = Block::default().borders(Borders::ALL).inner(commit_picker_rect(area));
@@ -1483,9 +1433,6 @@ pub fn hit_commit_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usiz
     (idx < app.commit_choices.len()).then_some(idx)
 }
 
-/// The branch-picker dropdown: the fork lineage's branch tips (local, a dim divider, then
-/// `origin/*`), the cursor row highlighted, windowed to keep it visible — the same popup as the
-/// commit picker. The divider paints as a rule and never highlights, matching its non-selectability.
 fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let popup = commit_picker_rect(area);
@@ -1519,9 +1466,6 @@ fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
-/// The branch index a click at `(col, row)` lands on in the open picker — `None` on the divider,
-/// the border, or outside the popup, so those clicks select nothing. The caller distinguishes a
-/// click-away (which closes the picker) from a divider click (a no-op) via [`in_picker_popup`].
 #[must_use]
 pub fn hit_branch_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     let inner = Block::default().borders(Borders::ALL).inner(commit_picker_rect(area));
@@ -1534,16 +1478,12 @@ pub fn hit_branch_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usiz
     }
     let scroll = commit_scroll(app.branch_cursor, inner.height as usize);
     let idx = scroll + (row - inner.y) as usize;
-    // Only an Item is a target; the divider (and any padding past the last row) selects nothing.
     match app.branch_choices.get(idx) {
         Some(BranchRow::Item(_)) => Some(idx),
         _ => None,
     }
 }
 
-/// Whether `(col, row)` falls within the shared picker popup (border included). Lets the event
-/// loop tell a click-away — which closes the picker — from a click on a non-selectable row inside
-/// it (the branch-picker divider), which is a no-op.
 #[must_use]
 pub fn in_picker_popup(area: Rect, col: u16, row: u16) -> bool {
     let r = commit_picker_rect(area);
@@ -1896,8 +1836,6 @@ fn dim_paragraph<'a>(text: &'a str, p: &Palette) -> Paragraph<'a> {
 
 /// The theme accent for a change marker, matched to the diff's add/remove hues.
 fn kind_color(p: &Palette, marker: char) -> Color {
-    // Traffic-light semantics: added is go/green, modified & renamed are caution/amber, deleted &
-    // untracked are stop/red. `peach` is the palette's amber-toned accent.
     match marker {
         'A' => p.green,
         'M' | 'R' => p.peach,

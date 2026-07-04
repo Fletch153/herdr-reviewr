@@ -2131,7 +2131,10 @@ fn the_editor_hint_shows_in_the_diff_and_yields_to_edit_on_a_comment() {
     // never advertised twice.
     comment_on(&mut app, '+', "note");
     let acts = app.footer_actions();
-    assert!(acts.iter().any(|&(a, _)| a == FooterAction::EditComment), "commented line offers edit");
+    assert!(
+        acts.iter().any(|&(a, _)| a == FooterAction::EditComment),
+        "commented line offers edit"
+    );
     assert!(
         !acts.iter().any(|&(a, _)| a == FooterAction::OpenEditor),
         "and does not also show the editor hint on the same key"
@@ -2377,7 +2380,10 @@ fn enter_expands_a_folder_and_its_child_folders_one_level() {
     let names: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(names.iter().any(|n| n == "mod.rs"), "child folder app/ expanded: {names:?}");
     assert!(names.iter().any(|n| n == "view.rs"), "child folder ui/ expanded: {names:?}");
-    assert!(!names.iter().any(|n| n == "x.rs"), "the deeper deep/ folder stays collapsed: {names:?}");
+    assert!(
+        !names.iter().any(|n| n == "x.rs"),
+        "the deeper deep/ folder stays collapsed: {names:?}"
+    );
 
     app.toggle_dir_children(); // enter again reverses
     let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();

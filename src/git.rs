@@ -124,11 +124,6 @@ fn ref_exists(repo: &Path, git_ref: &str) -> bool {
     git_ok(repo, &["rev-parse", "--verify", "--quiet", git_ref])
 }
 
-/// The base ref for branch scope, resolved in order: an explicit `base` if it resolves; then the
-/// nearest ancestor branch — the closest branch you forked from — so the default diff shows the
-/// work added *since this branch last forked*, not everything inherited from mainline; then the
-/// repository trunk (`refs/remotes/origin/HEAD`, e.g. `origin/develop`, then the first of
-/// `origin/main`, `origin/master`, `main`, `master`) as the fallback when nothing forks below HEAD.
 pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
     if let Some(b) = base
         && !b.is_empty()
@@ -136,12 +131,9 @@ pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
     {
         return Some(b.to_string());
     }
-    // Default to the fork point of this branch, not the mainline, so the diff is the branch's own
-    // additions. Falls through to trunk only when no branch label forks below HEAD.
     if let Some(near) = nearest_ancestor_branch(repo) {
         return Some(near);
     }
-    // Guard with ref_exists: a stale origin/HEAD symref can outlive a deleted branch.
     if let Some(head) =
         git_line(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
         && ref_exists(repo, &head)
@@ -154,11 +146,6 @@ pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
         .map(String::from)
 }
 
-/// The nearest ancestor branch to diff against by default: the branch label closest below `HEAD`
-/// (fewest commits away), so the auto base is where this branch forked. Excludes the current
-/// branch and its own `origin/<branch>` twin (diffing against those reduces the view to unpushed
-/// commits, not the branch's work) and any branch coincident with `HEAD` (distance 0 → empty
-/// diff). `None` when nothing forks below `HEAD`, so [`base_ref`] can fall back to trunk.
 pub fn nearest_ancestor_branch(repo: &Path) -> Option<String> {
     let own_twin = current_branch(repo).map(|b| format!("origin/{b}"));
     lineage_branches(repo)
@@ -167,73 +154,57 @@ pub fn nearest_ancestor_branch(repo: &Path) -> Option<String> {
         .map(|(_, name, _)| name)
 }
 
-/// Branch tips in this checkout's fork lineage — those whose tip is an ancestor of `HEAD` —
-/// split into local and `origin/*` sections, each ordered nearest fork first (fewest commits
-/// between the tip and `HEAD`). The base-picker choices (`specs/review-model.md`).
-///
-/// Only lineage ancestors appear: on `D→C→B→A`, `D` lists `C, B, A`; a sibling `C1` that forks
-/// off `B` but isn't reachable from `HEAD` is left out. Both a local branch and its `origin/*`
-/// twin can appear (in their own sections) — picking the remote keeps the `origin/` label, which
-/// is how the base chip and the picked base stay consistent with what auto-detection resolves.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AncestorBranches {
     pub local: Vec<String>,
     pub remote: Vec<String>,
 }
 
-/// The ancestor branches split into the picker's two sections (see [`AncestorBranches`]), each
-/// already ordered nearest fork first.
 pub fn ancestor_branches(repo: &Path) -> AncestorBranches {
     let rows = lineage_branches(repo);
-    // `rows` is globally sorted by (distance, name), so filtering by section preserves that order.
     let names = |local: bool| {
         rows.iter().filter(|(_, _, l)| *l == local).map(|(_, n, _)| n.clone()).collect()
     };
     AncestorBranches { local: names(true), remote: names(false) }
 }
 
-/// Every branch tip in this checkout's fork lineage — those reachable from `HEAD` — as
-/// `(distance-to-HEAD, short name, is_local)`, sorted nearest fork first (ties by name). The
-/// shared enumeration behind [`ancestor_branches`] and [`nearest_ancestor_branch`].
-///
-/// `--merged HEAD` does the ancestry filter in one call (only refs whose tip is reachable from
-/// `HEAD`), so the per-ref distance query runs over a handful of survivors, not the whole
-/// (possibly huge) remote-ref set. The `origin/HEAD` symref alias and the current branch are
-/// dropped. Errors degrade to an empty list.
 fn lineage_branches(repo: &Path) -> Vec<(usize, String, bool)> {
     let current = current_branch(repo);
     let out = git(
         repo,
-        &["for-each-ref", "--merged", "HEAD", "--format=%(refname)", "refs/heads", "refs/remotes/origin"],
+        &[
+            "for-each-ref",
+            "--merged",
+            "HEAD",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
     )
     .unwrap_or_default();
     let mut rows: Vec<(usize, String, bool)> = Vec::new();
     for refname in out.lines() {
         if refname.ends_with("/HEAD") {
-            continue; // origin/HEAD symref alias — duplicates the branch it points at
+            continue;
         }
         let Some(dist) = commit_distance(repo, refname) else { continue };
         if let Some(name) = refname.strip_prefix("refs/heads/") {
             if current.as_deref() == Some(name) {
-                continue; // the checked-out branch is the thing we diff against, not a choice
+                continue;
             }
             rows.push((dist, name.to_string(), true));
         } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
-            rows.push((dist, name.to_string(), false)); // `name` keeps the `origin/` prefix
+            rows.push((dist, name.to_string(), false));
         }
     }
     rows.sort();
     rows
 }
 
-/// Commits between `git_ref`'s tip and `HEAD` (`git rev-list --count <ref>..HEAD`) — how far the
-/// fork point sits below `HEAD`, the picker's ordering key. `None` if the ref can't be counted.
 fn commit_distance(repo: &Path, git_ref: &str) -> Option<usize> {
     git_line(repo, &["rev-list", "--count", &format!("{git_ref}..HEAD")])?.parse().ok()
 }
 
-/// One commit in the history, for the commit picker: the full SHA (the diff base) plus its
-/// abbreviated hash, author date (`YYYY-MM-DD`), author name, and subject — all for display.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CommitRef {
     pub sha: String,
@@ -243,13 +214,8 @@ pub struct CommitRef {
     pub title: String,
 }
 
-/// The commits reachable from `HEAD`, newest first, capped at `limit` — the commit-picker choices.
-/// This is the branch's full history (every ancestor of `HEAD`), so any past commit can be chosen
-/// as the diff base and the reviewer judges relevance from the history itself. Empty on error or
-/// an unborn branch.
 pub fn recent_commits(repo: &Path, limit: usize) -> Vec<CommitRef> {
     let max = format!("--max-count={limit}");
-    // Unit separators (%x1f) delimit the fields so a subject with spaces stays intact.
     git(repo, &["log", "HEAD", "--date=short", "--format=%H%x1f%h%x1f%ad%x1f%an%x1f%s", &max])
         .map(|out| {
             out.lines()
@@ -278,8 +244,6 @@ fn range(repo: &Path, scope: Scope, base: Option<&str>) -> Option<String> {
         // Branch diffs the worktree against the merge-base, so it shows committed branch
         // work and the working tree together — a superset of uncommitted (review-model.md).
         Scope::Branch => merge_base(repo, base),
-        // Commit diffs the worktree against the chosen commit directly — it is already an
-        // ancestor of HEAD, so no merge-base step is needed.
         Scope::Commit => base.map(str::to_owned),
     }
 }
@@ -406,8 +370,6 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
                 git(repo, &["diff", &base, "--name-status", "-z"])?,
             )
         }
-        // Branch diffs the worktree against the merge-base; Commit against the chosen commit.
-        // Both are a single revision on the diff's old side (`range` supplies which).
         Scope::Branch | Scope::Commit => match range(repo, scope, base) {
             Some(r) => (
                 git(repo, &["diff", &r, "--numstat", "-z"])?,
@@ -417,7 +379,6 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
         },
         Scope::LastTurn => return Ok(Vec::new()),
     };
-    // These diff against the worktree, so like uncommitted they carry untracked files
     // that `git diff` never reports.
     let include_untracked = matches!(scope, Scope::Uncommitted | Scope::Branch | Scope::Commit);
     assemble(repo, &numstat, &name_status, include_untracked)
