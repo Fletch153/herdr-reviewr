@@ -762,7 +762,7 @@ fn a_refresh_while_composing_freezes_input_and_diff() {
 }
 
 #[test]
-fn a_failed_export_keeps_comments_and_success_consumes_them() {
+fn export_keeps_comments_so_the_round_trip_can_track_them() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "one");
@@ -774,7 +774,7 @@ fn a_failed_export_keeps_comments_and_success_consumes_them() {
 
     let target = FakeTarget::ok();
     app.export(&target);
-    assert!(app.store.is_empty(), "a successful export consumes the comments");
+    assert_eq!(app.store.len(), 2, "a successful send keeps the comments to track as addressed");
 
     // The sent text is the real export block format, end to end through App::export.
     let sent = target.last();
@@ -788,14 +788,16 @@ fn a_failed_export_keeps_comments_and_success_consumes_them() {
 }
 
 #[test]
-fn send_consumes_the_whole_set() {
+fn send_dispatches_the_whole_set_at_once() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "first");
     comment_on(&mut app, '-', "second");
 
-    app.export(&FakeTarget::ok());
-    assert!(app.store.is_empty(), "send takes every comment, not just one");
+    let target = FakeTarget::ok();
+    app.export(&target);
+    assert_eq!(app.store.len(), 2, "the set stays after sending");
+    assert!(target.last().contains("first") && target.last().contains("second"), "both sent");
 }
 
 #[test]

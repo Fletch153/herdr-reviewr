@@ -2078,8 +2078,10 @@ impl App {
         logln!("export ({n}) -> {} ::\n{text}", target.label());
         match target.export(&text) {
             Ok(()) => {
-                self.store.take_all();
-                self.status = format!("sent {n} comment(s) to {}", target.label());
+                // Keep the comments after sending: they are a review checklist the round-trip
+                // status (`○` pending / `✓` addressed) tracks as the agent edits. Dismiss a
+                // finished one with `d` in the comments list.
+                self.status = format!("sent {n} comment(s) to {} — tracking in the list", target.label());
                 logln!("export OK");
             }
             Err(e) => {
@@ -2088,9 +2090,6 @@ impl App {
             }
         }
         self.clamp_list_cursor();
-        if self.store.is_empty() {
-            self.close_list();
-        }
     }
 
     /// The number of files changed in the active scope — the header count, the same on both
