@@ -448,6 +448,9 @@ fn commit_chip(app: &App) -> String {
     if app.scope != Scope::Commit {
         return String::new();
     }
+    if app.comparing_tip() {
+        return " [uncommitted]".to_string();
+    }
     match app
         .selected_commit
         .as_deref()
@@ -1283,7 +1286,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::TogglePane => {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }
-        A::Scope => ("u/b/t/C", "scope"),
+        A::Scope => ("b/t/C", "scope"),
         A::Base => ("B", "base"),
         A::Filter => ("/", "filter"),
         A::ApplyFilter => ("enter", "apply"),

@@ -284,6 +284,10 @@ impl App {
         let turn_key = git::worktree_key(&repo);
         let turn = TurnTracker::with_baseline(git::read_baseline_ref(&repo, &turn_key));
         let theme = theme::resolve(None);
+        // Commit scope defaults to the tip (HEAD) — the uncommitted view — so building straight
+        // into it shows a diff without a later `set_scope` call.
+        let selected_commit =
+            (scope == Scope::Commit).then(|| git::head_commit(&repo)).flatten();
         Self {
             repo,
             branch_choices: Vec::new(),
@@ -320,7 +324,7 @@ impl App {
             select_anchor: None,
             store: CommentStore::new(),
             list_cursor: 0,
-            selected_commit: None,
+            selected_commit,
             commit_choices: Vec::new(),
             commit_cursor: 0,
             mode: Mode::Normal,
@@ -603,7 +607,7 @@ impl App {
         self.resolved_base = match self.scope {
             Scope::Branch => git::base_ref(&self.repo, self.base.as_deref()),
             Scope::Commit => self.selected_commit.clone(),
-            _ => None,
+            Scope::LastTurn => None,
         };
         if self.scope == Scope::Commit && self.mode != Mode::CommitPick {
             self.commit_choices = git::recent_commits(&self.repo, COMMIT_PICK_LIMIT);
@@ -779,11 +783,6 @@ impl App {
         let new_path = path;
         let old_path = previous_path.unwrap_or(new_path);
         match self.scope {
-            Scope::Uncommitted => {
-                let old = git::file_content(&self.repo, "HEAD", old_path);
-                let new = worktree_content(&self.repo, new_path);
-                (old, new)
-            }
             Scope::Branch => {
                 let mb = git::merge_base(&self.repo, self.resolved_base.as_deref());
                 let old =
@@ -982,6 +981,11 @@ impl App {
 
     pub fn enter_commit_scope(&mut self) -> Result<()> {
         self.set_scope(Scope::Commit)
+    }
+
+    pub fn comparing_tip(&self) -> bool {
+        self.scope == Scope::Commit
+            && self.selected_commit.as_deref() == self.commit_choices.first().map(|c| c.sha.as_str())
     }
 
     pub fn open_commit_picker(&mut self) {

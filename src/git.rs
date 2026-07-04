@@ -243,9 +243,9 @@ pub fn recent_commits(repo: &Path, limit: usize) -> Vec<CommitRef> {
 /// uncommitted default).
 fn range(repo: &Path, scope: Scope, base: Option<&str>) -> Option<String> {
     match scope {
-        // Uncommitted diffs the worktree vs `HEAD`; last-turn diffs vs a snapshot tree
-        // (resolved by `changed_against_tree`). Neither is a committed range.
-        Scope::Uncommitted | Scope::LastTurn => None,
+        // Last-turn diffs vs a snapshot tree (resolved by `changed_against_tree`), not a
+        // committed range.
+        Scope::LastTurn => None,
         // Branch diffs the worktree against the merge-base, so it shows committed branch
         // work and the working tree together — a superset of uncommitted (review-model.md).
         Scope::Branch => merge_base(repo, base),
@@ -366,16 +366,17 @@ fn diff_base(repo: &Path) -> String {
 /// `last-turn` is resolved separately by [`changed_against_tree`], so it lists nothing here.
 pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Vec<ChangedFile>> {
     let (numstat, name_status) = match scope {
-        Scope::Uncommitted => {
-            // A repo with no commits has no HEAD; diff against the empty tree so a fresh
-            // `git init` lists its files instead of erroring (which would kill the process).
-            let base = diff_base(repo);
+        // Commit compares the worktree against the chosen commit. With none (an unborn repo has
+        // no HEAD to default to), fall back to the empty tree so a fresh `git init` lists its
+        // files instead of erroring — the old uncommitted-scope behavior, now the tip default.
+        Scope::Commit => {
+            let r = range(repo, scope, base).unwrap_or_else(|| diff_base(repo));
             (
-                git(repo, &["diff", &base, "--numstat", "-z"])?,
-                git(repo, &["diff", &base, "--name-status", "-z"])?,
+                git(repo, &["diff", &r, "--numstat", "-z"])?,
+                git(repo, &["diff", &r, "--name-status", "-z"])?,
             )
         }
-        Scope::Branch | Scope::Commit => match range(repo, scope, base) {
+        Scope::Branch => match range(repo, scope, base) {
             Some(r) => (
                 git(repo, &["diff", &r, "--numstat", "-z"])?,
                 git(repo, &["diff", &r, "--name-status", "-z"])?,
@@ -385,7 +386,7 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
         Scope::LastTurn => return Ok(Vec::new()),
     };
     // that `git diff` never reports.
-    let include_untracked = matches!(scope, Scope::Uncommitted | Scope::Branch | Scope::Commit);
+    let include_untracked = matches!(scope, Scope::Branch | Scope::Commit);
     assemble(repo, &numstat, &name_status, include_untracked)
 }
 

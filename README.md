@@ -8,8 +8,8 @@ leaving the terminal.
 
 What you get, in one persistent pane pointed at a git worktree:
 
-- **A diff to review** — the agent's changed files, syntax-highlighted, scoped to *uncommitted*,
-  *branch*, or *last turn*.
+- **A diff to review** — the agent's changed files, syntax-highlighted, scoped to a *commit*
+  (defaulting to the tip — the uncommitted view), a *branch*, or the *last turn*.
 - **Line comments that stay put** — select a range, write a note; it renders as a card under the
   code instead of hiding behind a marker.
 - **One keystroke back to the agent** — **Send** drops every comment into the agent's input as
@@ -77,8 +77,8 @@ below are the full reference.
 | Key | Action |
 | --- | --- |
 | `1` `2` `3` | Switch tab — Changes / All files / PR |
-| `u` `b` `t` | Switch scope — uncommitted / branch / last turn |
-| `C` | Compare against a commit — opens a picker of this branch's commits (fork → HEAD); diffs the worktree against the chosen one (also: click the commit chip) |
+| `b` `t` | Switch scope — branch / last turn |
+| `C` | Compare against a commit — defaults to the tip (the working-tree / uncommitted view, shown as `[commit] [uncommitted]`); click the commit chip to pick an older commit and diff the worktree against it |
 | `B` | Pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (also: click the base chip) |
 | `p` | On a markdown file, toggle a rendered preview (headings, tables, lists) instead of the diff; `p` / `esc` returns to the diff to comment |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
@@ -143,13 +143,16 @@ button, and the scroll wheel all work too.
 
 ## Diff scopes
 
-- **uncommitted** — the working tree vs `HEAD` (staged, unstaged, and untracked).
+- **commit** (the default) — the working tree vs a chosen commit. It opens at the **tip** (`HEAD`),
+  which is the working-tree / uncommitted view (staged, unstaged, and untracked) — shown in the
+  header as `[commit] [uncommitted]`. Click the commit chip to pick an older commit and compare the
+  working tree against it.
 - **branch** — the working tree vs the merge-base with the base branch: `--base` (or the config
   `base` key) if set, else the **nearest ancestor branch** — the branch this one forked from — so
   the default diff is this branch's own work, not everything inherited from mainline; else the
   repository trunk (`origin/HEAD`, e.g. `origin/develop`, then `origin/main` → `origin/master` →
-  `main` → `master`) when nothing forks below `HEAD`. A superset of **uncommitted** that adds the
-  branch's committed work. The header's base chip shows the effective base; click it (or press `B`)
+  `main` → `master`) when nothing forks below `HEAD`. A superset of the uncommitted view that adds
+  the branch's committed work. The header's base chip shows the effective base; click it (or press `B`)
   to pick a different base from this checkout's fork lineage — handy for stacked branches. The
   picker lists only ancestors of `HEAD`, nearest fork first, local branches then `origin/*`
   (picking the remote keeps its `origin/` label).

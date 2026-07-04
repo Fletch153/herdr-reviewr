@@ -49,7 +49,7 @@ fn edited_repo() -> Repo {
 }
 
 fn app_on(r: &Repo) -> App {
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app
 }
@@ -826,7 +826,7 @@ fn the_composer_reserve_keeps_the_anchored_line_visible() {
     r.commit_all("init");
     r.write("big.rs", &original.replace("line", "LINE"));
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = 30;
@@ -1078,7 +1078,7 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     r.commit_all("init");
     r.write("a.rs", "alpha\nBETA\n");
     r.write("b.rs", "one\nTWO\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     // Comment on b.rs, then move the view to a.rs.
@@ -1130,7 +1130,7 @@ fn switching_scope_swaps_the_changeset() {
     r.commit_all("feature work");
     r.write("dirty.rs", "d\n"); // uncommitted, untracked
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
     assert!(app.entries.iter().any(|f| f.path == "dirty.rs"));
     assert!(app.entries.iter().all(|f| f.path != "committed.rs"), "uncommitted omits commits");
@@ -1184,7 +1184,7 @@ fn scope_cannot_change_while_composing() {
     app.input_push('x');
 
     app.set_scope(Scope::Branch).unwrap();
-    assert_eq!(app.scope, Scope::Uncommitted, "scope is frozen mid-comment");
+    assert_eq!(app.scope, Scope::Commit, "scope is frozen mid-comment");
     assert!(app.composing(), "still composing");
     assert_eq!(app.input, "x", "input untouched");
 }
@@ -1246,7 +1246,7 @@ fn the_diff_scroll_is_sticky_and_only_follows_the_cursor_off_screen() {
     let edited = original.replace("line", "LINE");
     r.write("big.rs", &edited);
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     let height = 10;
@@ -1288,7 +1288,7 @@ fn a_refresh_keeps_the_diff_scroll_position() {
     r.commit_all("init");
     r.write("big.rs", &original.replace("line", "LINE"));
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = 25;
@@ -1366,7 +1366,7 @@ fn deleting_the_last_listed_comment_clamps_the_list_cursor() {
 #[test]
 fn a_non_repo_path_yields_an_empty_state_not_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    let mut app = App::new(dir.path().to_path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(dir.path().to_path_buf(), Scope::Commit, None);
     assert!(app.reload().is_ok(), "a non-repo reload is graceful, not an error");
     assert!(app.entries.is_empty());
     assert!(app.diff.rows.is_empty());
@@ -2069,7 +2069,7 @@ fn apply_pr_follows_the_selected_comment_across_a_refresh() {
 fn theme_selection_swaps_the_palette_and_falls_back() {
     use herdr_reviewr::theme;
     let repo = Repo::init();
-    let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(repo.path_buf(), Scope::Commit, None);
 
     // The default theme is catppuccin (Mocha).
     assert_eq!(*app.palette(), theme::resolve(Some("catppuccin")).palette);
@@ -2180,7 +2180,7 @@ fn commit_repo() -> Repo {
 #[test]
 fn picking_a_commit_diffs_the_worktree_against_it() {
     let r = commit_repo();
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
 
     app.open_commit_picker();
@@ -2204,7 +2204,7 @@ fn picking_a_commit_diffs_the_worktree_against_it() {
 fn entering_commit_scope_defaults_to_the_latest_commit() {
     let r = commit_repo();
     let head = r.git(&["rev-parse", "HEAD"]).trim().to_string();
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
 
     app.enter_commit_scope().unwrap();
@@ -2220,7 +2220,7 @@ fn entering_commit_scope_defaults_to_the_latest_commit() {
 #[test]
 fn the_commit_picker_cursor_moves_and_clamps() {
     let r = commit_repo();
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
     app.open_commit_picker();
 
@@ -2238,7 +2238,7 @@ fn the_commit_picker_lists_history_even_with_nothing_ahead_of_the_base() {
     let r = Repo::init(); // main, no feature branch — nothing "ahead", but a history exists
     r.write("a.rs", "0\n");
     r.commit_all("only");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
 
     app.open_commit_picker();
@@ -2254,7 +2254,7 @@ fn dir_has_changes_detects_a_nested_change_respecting_boundaries() {
     r.write("other/b.rs", "1\n");
     r.commit_all("init");
     r.write("src/deep/a.rs", "2\n"); // change only under src/deep
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     assert!(app.dir_has_changes("src"), "an ancestor of the changed file");
@@ -2273,7 +2273,7 @@ fn filtering_narrows_the_tree_and_clearing_restores() {
     for f in ["contracts/evm_pool.rs", "contracts/sol_pool.rs", "docs/readme.md"] {
         r.write(f, "2\n"); // modify all three so Changes shows them expanded
     }
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     let full = app.file_rows.len();
 
@@ -2300,7 +2300,7 @@ fn a_leading_slash_is_ignored_when_filtering() {
     r.write("src/evm.rs", "1\n");
     r.commit_all("init");
     r.write("src/evm.rs", "2\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     app.start_filter();
@@ -2324,7 +2324,7 @@ fn filtering_focuses_files_and_arrows_navigate_the_results() {
     for f in ["evm_a.rs", "evm_b.rs", "evm_c.rs"] {
         r.write(f, "2\n");
     }
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff; // pretend we were reviewing the diff
 
@@ -2350,7 +2350,7 @@ fn clearing_the_filter_keeps_the_same_file_selected() {
     for f in ["aaa.rs", "readme.md", "zzz.rs"] {
         r.write(f, "2\n");
     }
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     app.start_filter();
@@ -2378,7 +2378,7 @@ fn enter_expands_a_folder_and_its_child_folders_one_level() {
     for f in ["src/app/mod.rs", "src/ui/view.rs", "src/app/deep/x.rs"] {
         r.write(f, "2\n");
     }
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.set_tab(Tab::AllFiles).unwrap(); // dirs start collapsed
     app.file_cursor = 0; // the lone top-level `src` row
 
@@ -2407,7 +2407,7 @@ fn enter_completes_a_partial_expand_before_collapsing() {
     for f in ["src/app/mod.rs", "src/ui/view.rs"] {
         r.write(f, "2\n");
     }
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.set_tab(Tab::AllFiles).unwrap();
     app.file_cursor = 0; // the `src` row
 
@@ -2486,7 +2486,7 @@ fn preview_mode_toggles_only_for_markdown_files() {
     r.commit_all("init");
     r.write("README.md", "# Title\n\nmore body\n");
     r.write("code.rs", "fn main() { let x = 1; }\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     let has_preview =

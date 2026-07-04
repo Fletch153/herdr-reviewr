@@ -102,7 +102,7 @@ fn the_fold_hint_names_the_arrow_key() {
     r.write("f.rs", &body);
     r.commit_all("init");
     r.write("f.rs", &body.replace("line 15", "LINE 15")); // one change, long runs fold
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).expect("a fold row");
@@ -117,7 +117,7 @@ fn edited_app() -> App {
     r.write("hello.rs", "alpha\nbeta\n");
     r.commit_all("init");
     r.write("hello.rs", "alpha\nBETA\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     // The repo is only needed through reload(); rendering reads cached state, so
     // `r` can drop here and clean up its tempdir.
@@ -134,7 +134,7 @@ fn the_file_list_renders_as_a_directory_tree() {
     r.write("src/app.rs", "x2\n");
     r.write("src/ui.rs", "y2\n");
     r.write("Cargo.toml", "[package]\nname='z'\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     // Scan only the file-list pane (the right third) so the diff header — which does show
@@ -156,7 +156,7 @@ fn a_saved_comment_renders_inline_as_a_card() {
     r.write("a.rs", "alpha\nbeta\n");
     r.commit_all("init");
     r.write("a.rs", "alpha\nBETA\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     app.focus = Focus::Diff;
@@ -179,7 +179,7 @@ fn a_renamed_file_shows_old_arrow_new_in_the_header() {
     r.commit_all("init");
     r.git(&["mv", "old_name.rs", "new_name.rs"]);
     r.write("new_name.rs", "stable contents that survive the move\nplus an edited line\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     let out = render(&app);
@@ -192,7 +192,7 @@ fn tabs_expand_to_spaces_in_the_diff() {
     r.write("t.rs", "x\n");
     r.commit_all("init");
     r.write("t.rs", "x\n\tindented\n"); // a tab-indented added line
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     let out = render(&app);
     let line = out.lines().find(|l| l.contains("indented")).expect("the added line renders");
@@ -208,7 +208,7 @@ fn a_long_line_wraps_across_display_rows() {
     r.write("w.rs", "x\n");
     r.commit_all("init");
     r.write("w.rs", &format!("x\n{long}\n"));
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap(); // wrap defaults on
 
     // The whole long line is visible (no truncation): every chunk renders.
@@ -230,7 +230,7 @@ fn wrapping_breaks_at_word_boundaries() {
     r.write("w.rs", "x\n");
     r.commit_all("init");
     r.write("w.rs", &format!("x\n{words}\n"));
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap(); // wrap defaults on
 
     let heights = ui::diff_row_heights(&app, AREA);
@@ -254,7 +254,7 @@ fn wide_glyphs_wrap_by_column_width_not_char_count() {
     r.write("w.rs", "x\n");
     r.commit_all("init");
     r.write("w.rs", &format!("x\n{ascii}\n{cjk}\n"));
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap(); // wrap defaults on
 
     let heights = ui::diff_row_heights(&app, AREA);
@@ -269,7 +269,7 @@ fn horizontal_scroll_shifts_the_diff_left() {
     r.write("w.rs", "x\n");
     r.commit_all("init");
     r.write("w.rs", "x\nAAAABBBBCCCCDDDD_marker\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.wrap = false; // horizontal scroll applies only with wrap off
     app.reload().unwrap();
     assert!(render(&app).contains("AAAABBBB"), "the line head shows before scrolling");
@@ -287,7 +287,7 @@ fn a_changed_word_gets_the_emphasis_background() {
     r.write("e.rs", "let x = foo(a);\n");
     r.commit_all("init");
     r.write("e.rs", "let x = bar(a, b);\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Files; // no diff cursor, so the emphasis bg shows
     let buf = render_buffer(&app);
@@ -375,7 +375,7 @@ fn the_pr_footer_keeps_the_open_action_when_the_state_line_is_long() {
     let r = Repo::init();
     r.write("x.rs", "y\n");
     r.commit_all("init");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.set_tab(Tab::Pr).unwrap();
     app.pr = PrView::Pr(Box::new(PrSnapshot {
@@ -415,7 +415,7 @@ fn empty_repo_shows_empty_states() {
     let r = Repo::init();
     r.write("seed.rs", "x\n");
     r.commit_all("init");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     let out = render(&app);
@@ -448,7 +448,7 @@ fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible() {
     r.write("mid.rs", "a\nb\nc\nd\ne\n");
     r.commit_all("init");
     r.write("mid.rs", "a\nB\nc\nd\ne\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor =
@@ -473,7 +473,7 @@ fn the_box_is_inserted_under_the_selected_line() {
     r.write("mid.rs", "alpha\nbeta\ngamma\n");
     r.commit_all("init");
     r.write("mid.rs", "alpha\nBETA\ngamma\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = app.diff.rows.iter().position(|r| r.text().contains("BETA")).unwrap();
@@ -493,7 +493,8 @@ const AREA: Rect = Rect { x: 0, y: 0, width: 140, height: 40 };
 
 #[test]
 fn header_clicks_map_to_scope_and_send() {
-    let app = edited_app(); // scope uncommitted, no comments
+    let mut app = edited_app();
+    app.scope = Scope::LastTurn; // a chip-less scope, so the header is scope + send only
     // Scan the header row instead of hardcoding columns, so the test survives changes
     // to the label/button text.
     let scope: Vec<u16> = (0..AREA.width)
@@ -546,7 +547,7 @@ fn a_binary_file_shows_the_no_line_comments_message() {
     r.write("logo.bin", "\0\0\0\0seed\0\0");
     r.commit_all("init");
     r.write("logo.bin", "\0\0\0\0changed\0\0\0");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     let idx = app.entries.iter().position(|f| f.path == "logo.bin").expect("binary file listed");
     app.select_file(idx).unwrap();
@@ -561,7 +562,7 @@ fn the_comments_list_flags_a_stale_comment() {
     r.write("a.rs", "alpha\nbeta\n");
     r.commit_all("init");
     r.write("a.rs", "alpha\nBETA\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
@@ -616,7 +617,7 @@ fn all_files_tab_bar_footer_and_count_read_for_the_tab() {
     r.write("a.rs", "one\n");
     r.commit_all("init");
     r.write("a.rs", "ONE\n"); // one change
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.set_tab(Tab::AllFiles).unwrap();
 
@@ -641,7 +642,7 @@ fn a_narrow_overflowing_header_does_not_mis_map_a_click_to_send() {
     r.write("a.rs", "x\n");
     r.commit_all("init");
     r.write("a.rs", "y\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     // At a narrow sidebar width the two-tab header overflows and the Send button is off-screen.
@@ -665,7 +666,7 @@ fn all_files_empty_pane_reads_select_a_file() {
     r.write("src/a.rs", "x\n");
     r.write("src/b.rs", "y\n"); // two children so src/ is a real collapsed dir, not a folded file
     r.commit_all("init");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.set_tab(Tab::AllFiles).unwrap(); // clean repo: no seed; cursor rests on collapsed src/
 
@@ -698,7 +699,7 @@ fn commit_render_app() -> (Repo, App) {
     r.commit_all("add alpha feature");
     r.write("b.rs", "b\n");
     r.commit_all("add beta feature");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
     (r, app)
 }
@@ -717,13 +718,13 @@ fn the_commit_picker_lists_hashes_and_titles() {
 fn the_commit_chip_shows_the_selected_commit() {
     let (_r, mut app) = commit_render_app();
     app.open_commit_picker();
-    app.pick_commit(0).unwrap(); // newest: "add beta feature"
+    app.pick_commit(1).unwrap(); // a historical commit (not the tip): "add alpha feature"
     let out = render(&app);
     assert!(
-        out.contains(&format!("[>{}", app.commit_choices[0].short)),
+        out.contains(&format!("[>{}", app.commit_choices[1].short)),
         "the header chip shows the picked commit's hash"
     );
-    assert!(out.contains("add beta feature"), "and its title");
+    assert!(out.contains("add alpha feature"), "and its title");
 }
 
 #[test]
@@ -731,14 +732,14 @@ fn entering_commit_scope_defaults_to_the_tip_without_the_picker() {
     let r = Repo::init();
     r.write("a.rs", "0\n");
     r.commit_all("only");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
+    let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
 
     app.enter_commit_scope().unwrap();
     let out = render(&app);
     assert_eq!(app.mode, Mode::Normal, "cycling in does not open the picker");
     assert!(!out.contains("Compare with commit ("), "no picker popup on entry: {out}");
-    assert!(out.contains("only"), "the base chip shows the tip commit");
+    assert!(out.contains("[uncommitted]"), "the tip is labelled uncommitted: {out}");
 }
 
 #[test]
@@ -750,7 +751,7 @@ fn icons_show_folder_and_file_glyphs_when_enabled() {
     r.commit_all("init");
     r.write("src/a.rs", "11\n");
     r.write("src/b.rs", "22\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.icons = true;
 
@@ -765,7 +766,7 @@ fn icons_are_absent_by_default() {
     r.write("a.rs", "1\n");
     r.commit_all("init");
     r.write("a.rs", "2\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     let out = render(&app);
@@ -780,7 +781,7 @@ fn icons_replace_the_folder_arrows() {
     r.commit_all("init");
     r.write("src/a.rs", "11\n");
     r.write("src/b.rs", "22\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.icons = true;
 
@@ -802,7 +803,7 @@ fn a_long_file_name_truncates_at_the_end() {
     r.write(long, "1\n");
     r.commit_all("init");
     r.write(long, "2\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     let out = render(&app);
@@ -819,7 +820,7 @@ fn the_status_marker_sits_in_a_left_gutter_that_aligns_rows() {
     r.write("bbb.rs", "1\n");
     r.commit_all("init");
     r.write("aaa.rs", "2\n"); // aaa.rs modified; bbb.rs unchanged
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.set_tab(Tab::AllFiles).unwrap(); // shows changed and unchanged files together
 
     let out = render(&app);
@@ -849,7 +850,7 @@ fn the_filter_query_shows_in_the_pane_title() {
     r.write("evm.rs", "1\n");
     r.commit_all("init");
     r.write("evm.rs", "2\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.start_filter();
     for c in "evm".chars() {
@@ -864,7 +865,7 @@ fn the_markdown_preview_renders_the_document() {
     r.write("doc.md", "# Heading\n\nsome text\n");
     r.commit_all("init");
     r.write("doc.md", "# Heading\n\nsome more text\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
     app.open_preview();

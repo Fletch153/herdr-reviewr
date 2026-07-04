@@ -6,7 +6,6 @@
 /// Which set of changes the Changes view shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scope {
-    Uncommitted,
     Branch,
     LastTurn,
     Commit,
@@ -15,7 +14,6 @@ pub enum Scope {
 impl Scope {
     pub fn label(self) -> &'static str {
         match self {
-            Scope::Uncommitted => "uncommitted",
             Scope::Branch => "branch",
             Scope::LastTurn => "last turn",
             Scope::Commit => "commit",
@@ -25,10 +23,9 @@ impl Scope {
     #[must_use]
     pub fn cycle(self) -> Self {
         match self {
-            Scope::Uncommitted => Scope::Branch,
             Scope::Branch => Scope::LastTurn,
             Scope::LastTurn => Scope::Commit,
-            Scope::Commit => Scope::Uncommitted,
+            Scope::Commit => Scope::Branch,
         }
     }
 }
@@ -176,11 +173,10 @@ mod tests {
 
     #[test]
     fn scope_cycles_and_labels() {
-        assert_eq!(Scope::Uncommitted.cycle(), Scope::Branch);
         assert_eq!(Scope::Branch.cycle(), Scope::LastTurn);
         assert_eq!(Scope::LastTurn.cycle(), Scope::Commit);
-        assert_eq!(Scope::Commit.cycle(), Scope::Uncommitted);
-        assert_eq!(Scope::Uncommitted.label(), "uncommitted");
+        assert_eq!(Scope::Commit.cycle(), Scope::Branch);
+        assert_eq!(Scope::Branch.label(), "branch");
         assert_eq!(Scope::LastTurn.label(), "last turn");
         assert_eq!(Scope::Commit.label(), "commit");
     }

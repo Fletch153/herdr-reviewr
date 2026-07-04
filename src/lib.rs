@@ -58,7 +58,7 @@ pub fn run() -> Result<()> {
     let repo = git::toplevel(&cfg.repo).unwrap_or_else(|| cfg.repo.clone());
     logln!("start repo={} poll={:?} base={:?}", repo.display(), cfg.poll, cfg.base);
     let base = cfg.base.clone().or_else(config::config_file_base);
-    let mut app = App::new(repo, Scope::Uncommitted, base);
+    let mut app = App::new(repo, Scope::Commit, base);
     app.set_cli_theme(cfg.theme.clone());
     if let Some(wrap) = cfg.wrap {
         app.wrap = wrap;
@@ -451,7 +451,6 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         }
         (Right, _) => app.scroll_h(8),
         (Left, _) => app.scroll_h(-8),
-        (Char('u'), false) => app.set_scope(Scope::Uncommitted)?,
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
         (Char('B'), false) => app.open_branch_picker(),
