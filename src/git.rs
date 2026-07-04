@@ -124,15 +124,22 @@ fn ref_exists(repo: &Path, git_ref: &str) -> bool {
     git_ok(repo, &["rev-parse", "--verify", "--quiet", git_ref])
 }
 
-/// The base ref for branch scope: `base` if it resolves, then the remote's recorded default
-/// branch (`refs/remotes/origin/HEAD`, e.g. `origin/develop`), then the first of
-/// `origin/main`, `origin/master`, `main`, `master`.
+/// The base ref for branch scope, resolved in order: an explicit `base` if it resolves; then the
+/// nearest ancestor branch — the closest branch you forked from — so the default diff shows the
+/// work added *since this branch last forked*, not everything inherited from mainline; then the
+/// repository trunk (`refs/remotes/origin/HEAD`, e.g. `origin/develop`, then the first of
+/// `origin/main`, `origin/master`, `main`, `master`) as the fallback when nothing forks below HEAD.
 pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
     if let Some(b) = base
         && !b.is_empty()
         && ref_exists(repo, b)
     {
         return Some(b.to_string());
+    }
+    // Default to the fork point of this branch, not the mainline, so the diff is the branch's own
+    // additions. Falls through to trunk only when no branch label forks below HEAD.
+    if let Some(near) = nearest_ancestor_branch(repo) {
+        return Some(near);
     }
     // Guard with ref_exists: a stale origin/HEAD symref can outlive a deleted branch.
     if let Some(head) =
@@ -145,6 +152,19 @@ pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
         .into_iter()
         .find(|cand| ref_exists(repo, cand))
         .map(String::from)
+}
+
+/// The nearest ancestor branch to diff against by default: the branch label closest below `HEAD`
+/// (fewest commits away), so the auto base is where this branch forked. Excludes the current
+/// branch and its own `origin/<branch>` twin (diffing against those reduces the view to unpushed
+/// commits, not the branch's work) and any branch coincident with `HEAD` (distance 0 → empty
+/// diff). `None` when nothing forks below `HEAD`, so [`base_ref`] can fall back to trunk.
+pub fn nearest_ancestor_branch(repo: &Path) -> Option<String> {
+    let own_twin = current_branch(repo).map(|b| format!("origin/{b}"));
+    lineage_branches(repo)
+        .into_iter()
+        .find(|(dist, name, _)| *dist >= 1 && Some(name.as_str()) != own_twin.as_deref())
+        .map(|(_, name, _)| name)
 }
 
 /// Branch tips in this checkout's fork lineage — those whose tip is an ancestor of `HEAD` —
@@ -161,20 +181,33 @@ pub struct AncestorBranches {
     pub remote: Vec<String>,
 }
 
-/// Enumerate the ancestor branches (see [`AncestorBranches`]). `--merged HEAD` does the ancestry
-/// filter in one call — it lists only refs whose tip is reachable from `HEAD` — so the per-ref
-/// distance query runs over a handful of survivors, never the whole (possibly huge) remote-ref set.
-/// The `origin/HEAD` symref alias and the current branch are dropped. Errors degrade to empty.
+/// The ancestor branches split into the picker's two sections (see [`AncestorBranches`]), each
+/// already ordered nearest fork first.
 pub fn ancestor_branches(repo: &Path) -> AncestorBranches {
+    let rows = lineage_branches(repo);
+    // `rows` is globally sorted by (distance, name), so filtering by section preserves that order.
+    let names = |local: bool| {
+        rows.iter().filter(|(_, _, l)| *l == local).map(|(_, n, _)| n.clone()).collect()
+    };
+    AncestorBranches { local: names(true), remote: names(false) }
+}
+
+/// Every branch tip in this checkout's fork lineage — those reachable from `HEAD` — as
+/// `(distance-to-HEAD, short name, is_local)`, sorted nearest fork first (ties by name). The
+/// shared enumeration behind [`ancestor_branches`] and [`nearest_ancestor_branch`].
+///
+/// `--merged HEAD` does the ancestry filter in one call (only refs whose tip is reachable from
+/// `HEAD`), so the per-ref distance query runs over a handful of survivors, not the whole
+/// (possibly huge) remote-ref set. The `origin/HEAD` symref alias and the current branch are
+/// dropped. Errors degrade to an empty list.
+fn lineage_branches(repo: &Path) -> Vec<(usize, String, bool)> {
     let current = current_branch(repo);
     let out = git(
         repo,
         &["for-each-ref", "--merged", "HEAD", "--format=%(refname)", "refs/heads", "refs/remotes/origin"],
     )
     .unwrap_or_default();
-    // (distance-to-HEAD, short name) so a plain sort orders nearest fork first, ties by name.
-    let mut local: Vec<(usize, String)> = Vec::new();
-    let mut remote: Vec<(usize, String)> = Vec::new();
+    let mut rows: Vec<(usize, String, bool)> = Vec::new();
     for refname in out.lines() {
         if refname.ends_with("/HEAD") {
             continue; // origin/HEAD symref alias — duplicates the branch it points at
@@ -184,15 +217,13 @@ pub fn ancestor_branches(repo: &Path) -> AncestorBranches {
             if current.as_deref() == Some(name) {
                 continue; // the checked-out branch is the thing we diff against, not a choice
             }
-            local.push((dist, name.to_string()));
+            rows.push((dist, name.to_string(), true));
         } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
-            remote.push((dist, name.to_string())); // `name` keeps the `origin/` prefix
+            rows.push((dist, name.to_string(), false)); // `name` keeps the `origin/` prefix
         }
     }
-    local.sort();
-    remote.sort();
-    let names = |v: Vec<(usize, String)>| v.into_iter().map(|(_, n)| n).collect();
-    AncestorBranches { local: names(local), remote: names(remote) }
+    rows.sort();
+    rows
 }
 
 /// Commits between `git_ref`'s tip and `HEAD` (`git rev-list --count <ref>..HEAD`) — how far the

@@ -143,13 +143,15 @@ button, and the scroll wheel all work too.
 ## Diff scopes
 
 - **uncommitted** — the working tree vs `HEAD` (staged, unstaged, and untracked).
-- **branch** — the working tree vs the merge-base with the base branch: `--base` (or the
-  config `base` key) if set, else the remote's recorded default branch (`origin/HEAD`, e.g.
-  `origin/develop`), else `origin/main` → `origin/master` → `main` → `master`; a superset of
-  **uncommitted** that adds the branch's committed work. The header's base chip shows the
-  effective base; click it (or press `B`) to pick from the branch tips in this checkout's fork
-  lineage — handy for stacked branches. The picker lists only ancestors of `HEAD`, nearest fork
-  first, local branches then `origin/*` (picking the remote keeps its `origin/` label).
+- **branch** — the working tree vs the merge-base with the base branch: `--base` (or the config
+  `base` key) if set, else the **nearest ancestor branch** — the branch this one forked from — so
+  the default diff is this branch's own work, not everything inherited from mainline; else the
+  repository trunk (`origin/HEAD`, e.g. `origin/develop`, then `origin/main` → `origin/master` →
+  `main` → `master`) when nothing forks below `HEAD`. A superset of **uncommitted** that adds the
+  branch's committed work. The header's base chip shows the effective base; click it (or press `B`)
+  to pick a different base from this checkout's fork lineage — handy for stacked branches. The
+  picker lists only ancestors of `HEAD`, nearest fork first, local branches then `origin/*`
+  (picking the remote keeps its `origin/` label).
 - **last turn** — only what the agent changed since its most recent turn started (see
   [Limitations](#limitations)).
 

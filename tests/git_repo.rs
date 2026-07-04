@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use common::Repo;
 use herdr_reviewr::git::{
-    all_files, changed_against_tree, changed_files, commits_since_fork, file_content, merge_base,
-    read_baseline_ref, snapshot_worktree, worktree_key, write_baseline_ref,
+    all_files, base_ref, changed_against_tree, changed_files, commits_since_fork, file_content,
+    merge_base, read_baseline_ref, snapshot_worktree, worktree_key, write_baseline_ref,
 };
 use herdr_reviewr::model::{ChangeKind, ChangedFile, Scope};
 
@@ -150,9 +150,38 @@ fn branch_scope_falls_back_to_master_when_main_is_absent() {
     r.write("feature.rs", "x\n");
     r.commit_all("feature work");
 
-    // base = None → the fallback chain (origin/main, origin/master, main, master) finds master.
+    // base = None → master is the nearest ancestor branch (feature forked from it), so it resolves
+    // as the base even though `main` is gone.
     let files = changed_files(r.path(), Scope::Branch, None).unwrap();
     assert!(files.iter().any(|f| f.path == "feature.rs"), "resolved master as the base ref");
+}
+
+#[test]
+fn branch_scope_auto_base_is_the_nearest_fork_not_mainline() {
+    // Lineage main(A) → parent(B) → feature(C): the auto base is `parent`, the fork point, so the
+    // default diff is feature's own work — not everything inherited since main.
+    let r = Repo::init(); // main @ A
+    r.write("a.rs", "1\n");
+    r.commit_all("A");
+    r.git(&["checkout", "-q", "-b", "parent"]);
+    r.write("b.rs", "1\n");
+    r.commit_all("B");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("c.rs", "1\n");
+    r.commit_all("C");
+
+    assert_eq!(base_ref(r.path(), None).as_deref(), Some("parent"), "auto base is the nearest fork");
+    let changed = changed_files(r.path(), Scope::Branch, None).unwrap();
+    let files = by_path(&changed);
+    assert!(files.contains_key("c.rs"), "feature's own change is shown");
+    assert!(!files.contains_key("b.rs"), "parent's inherited change is not in the diff");
+
+    // An explicit base still overrides the nearest-fork default.
+    assert_eq!(base_ref(r.path(), Some("main")).as_deref(), Some("main"), "explicit base wins");
+
+    // On the trunk branch itself nothing forks below HEAD, so auto falls back to trunk (`main`).
+    r.git(&["checkout", "-q", "main"]);
+    assert_eq!(base_ref(r.path(), None).as_deref(), Some("main"), "no nearer fork → trunk fallback");
 }
 
 #[test]
@@ -403,8 +432,9 @@ fn branch_scope_follows_origin_head_when_mainline_is_develop() {
     let r = Repo::init();
     r.write("base.rs", "1\n");
     r.commit_all("base");
-    // A develop-mainline repo: no main/master anywhere, but the remote's default branch is
-    // recorded (as any clone records it). base_ref must follow origin/HEAD -> origin/develop.
+    // A develop-mainline repo: no main/master anywhere, the remote's default branch recorded as
+    // any clone records it. feature forks from develop, so develop is the nearest ancestor and
+    // resolves as the base; its tip is origin/develop's, the mainline the diff is taken against.
     r.git(&["branch", "-m", "main", "develop"]);
     let develop_tip = r.git(&["rev-parse", "HEAD"]).trim().to_string();
     r.git(&["update-ref", "refs/remotes/origin/develop", "HEAD"]);
