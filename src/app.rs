@@ -608,7 +608,7 @@ impl App {
         // can't shuffle the list under the cursor (the picker loads its own copy on open).
         if self.scope == Scope::Commit && self.mode != Mode::CommitPick {
             self.commit_choices =
-                git::commits_since_fork(&self.repo, self.base.as_deref(), COMMIT_PICK_LIMIT);
+                git::recent_commits(&self.repo, COMMIT_PICK_LIMIT);
         }
         let changed = match self.scope {
             Scope::LastTurn => match self.turn.baseline() {
@@ -991,16 +991,16 @@ impl App {
         Ok(())
     }
 
-    /// Load this branch's commits (fork → HEAD) and open the picker, cursoring the currently
-    /// compared commit. A no-op while composing; reports instead of opening when there are none.
+    /// Load the branch's commit history (newest first) and open the picker, cursoring the
+    /// currently compared commit. A no-op while composing; reports instead of opening when there
+    /// are no commits at all.
     pub fn open_commit_picker(&mut self) {
         if self.composing() {
             return;
         }
-        self.commit_choices =
-            git::commits_since_fork(&self.repo, self.base.as_deref(), COMMIT_PICK_LIMIT);
+        self.commit_choices = git::recent_commits(&self.repo, COMMIT_PICK_LIMIT);
         if self.commit_choices.is_empty() {
-            self.status = "no commits since the fork point".to_string();
+            self.status = "no commits in history".to_string();
             return;
         }
         self.commit_cursor = self

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use common::Repo;
 use herdr_reviewr::git::{
-    all_files, base_ref, changed_against_tree, changed_files, commits_since_fork, file_content,
-    merge_base, read_baseline_ref, snapshot_worktree, worktree_key, write_baseline_ref,
+    all_files, base_ref, changed_against_tree, changed_files, file_content, merge_base,
+    read_baseline_ref, recent_commits, snapshot_worktree, worktree_key, write_baseline_ref,
 };
 use herdr_reviewr::model::{ChangeKind, ChangedFile, Scope};
 
@@ -489,33 +489,37 @@ fn ancestor_branches_lists_the_lineage_nearest_first_and_excludes_siblings() {
 }
 
 #[test]
-fn commits_since_fork_lists_only_this_branch_newest_first() {
+fn recent_commits_lists_full_history_newest_first() {
     let r = Repo::init(); // main
     r.write("a.rs", "one\n");
-    r.commit_all("base commit"); // fork point, on main
+    r.commit_all("base commit"); // on main — part of the history now, not excluded
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("b.rs", "two\n");
     r.commit_all("add b");
     r.write("c.rs", "three\n");
     r.commit_all("add c");
-    r.write("d.rs", "four\n");
-    r.commit_all("add d");
 
-    let commits = commits_since_fork(r.path(), Some("main"), 50);
+    let commits = recent_commits(r.path(), 50);
     let titles: Vec<&str> = commits.iter().map(|c| c.title.as_str()).collect();
-    assert_eq!(titles, vec!["add d", "add c", "add b"], "this branch's commits, newest first; fork excluded");
+    assert_eq!(titles, vec!["add c", "add b", "base commit"], "full history, newest first");
     for c in &commits {
         assert!(!c.short.is_empty(), "abbreviated hash present");
         assert!(c.sha.starts_with(&c.short), "short is a prefix of the full sha");
         assert_eq!(c.sha.len(), 40, "full sha");
+        assert!(!c.author.is_empty(), "author name present");
+        assert_eq!(c.date.len(), 10, "author date is YYYY-MM-DD"); // e.g. 2026-07-04
     }
 }
 
 #[test]
-fn commits_since_fork_is_empty_without_commits_ahead() {
+fn recent_commits_lists_history_even_on_the_base_branch() {
     let r = Repo::init();
     r.write("a.rs", "one\n");
     r.commit_all("only commit");
-    // On main with base=main the fork point is HEAD, so nothing is ahead.
-    assert!(commits_since_fork(r.path(), Some("main"), 50).is_empty());
+    // No fork restriction: the branch's own commits are the history, so the list is not empty.
+    let commits = recent_commits(r.path(), 50);
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].title, "only commit");
+
+    assert!(recent_commits(r.path(), 0).is_empty(), "the limit is honoured");
 }

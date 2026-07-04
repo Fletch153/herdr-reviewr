@@ -815,6 +815,13 @@ fn truncate_width(s: &str, max: usize) -> String {
     out
 }
 
+/// Right-pad `s` with spaces to a display width of `width` (a no-op if it is already that wide),
+/// so fixed-width columns line up. Pair with [`truncate_width`] to also cap the upper bound.
+fn pad_width(s: &str, width: usize) -> String {
+    let pad = width.saturating_sub(s.width());
+    format!("{s}{}", " ".repeat(pad))
+}
+
 fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let title = match (&app.diff_path, &app.diff.previous_path) {
@@ -1431,13 +1438,27 @@ fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(row, c)| {
             let i = scroll + row;
-            let hash =
-                Span::styled(c.short.clone(), Style::default().fg(p.mauve).add_modifier(Modifier::BOLD));
-            // Leave room for the hash and a two-space gap so titles never overrun the popup.
-            let title_max = width.saturating_sub(c.short.len() + 2);
-            let title =
-                Span::styled(format!("  {}", truncate_width(&c.title, title_max)), text_style(p));
-            selectable_row(vec![hash, title], width, (i == app.commit_cursor).then_some(p.surface2))
+            // Columns, each with a trailing two-space gap: date, hash, author, then the subject.
+            // Author is padded to a fixed width so subjects line up, but capped at a quarter of the
+            // popup so it can't crowd out the subject; the subject takes whatever remains.
+            let date = Span::styled(format!("{}  ", c.date), Style::default().fg(p.overlay1));
+            let hash = Span::styled(
+                format!("{}  ", c.short),
+                Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
+            );
+            let author_w = 20.min(width / 4);
+            let author_txt = pad_width(&truncate_width(&c.author, author_w), author_w);
+            let author = Span::styled(format!("{author_txt}  "), Style::default().fg(p.blue));
+            let used = c.date.len() + 2 + c.short.len() + 2 + author_w + 2;
+            let title = Span::styled(
+                truncate_width(&c.title, width.saturating_sub(used).max(1)),
+                text_style(p),
+            );
+            selectable_row(
+                vec![date, hash, author, title],
+                width,
+                (i == app.commit_cursor).then_some(p.surface2),
+            )
         })
         .collect();
     frame.render_widget(List::new(items), inner);

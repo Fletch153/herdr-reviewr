@@ -232,24 +232,25 @@ fn commit_distance(repo: &Path, git_ref: &str) -> Option<usize> {
     git_line(repo, &["rev-list", "--count", &format!("{git_ref}..HEAD")])?.parse().ok()
 }
 
-/// One commit on this branch, for the commit picker: full SHA (the diff base), an
-/// abbreviated hash and the subject line (both for display).
+/// One commit in the history, for the commit picker: the full SHA (the diff base) plus its
+/// abbreviated hash, author date (`YYYY-MM-DD`), author name, and subject — all for display.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CommitRef {
     pub sha: String,
     pub short: String,
+    pub date: String,
+    pub author: String,
     pub title: String,
 }
 
-/// This branch's commits from the fork point up to `HEAD`, newest first — the commit-picker
-/// choices. The fork point is the merge-base of `base` (the branch base) and `HEAD`, so only
-/// commits made on this branch are listed. Empty when there is no fork point or no such commits.
-pub fn commits_since_fork(repo: &Path, base: Option<&str>, limit: usize) -> Vec<CommitRef> {
-    let Some(fork) = merge_base(repo, base) else { return Vec::new() };
-    let range = format!("{fork}..HEAD");
+/// The commits reachable from `HEAD`, newest first, capped at `limit` — the commit-picker choices.
+/// This is the branch's full history (every ancestor of `HEAD`), so any past commit can be chosen
+/// as the diff base and the reviewer judges relevance from the history itself. Empty on error or
+/// an unborn branch.
+pub fn recent_commits(repo: &Path, limit: usize) -> Vec<CommitRef> {
     let max = format!("--max-count={limit}");
     // Unit separators (%x1f) delimit the fields so a subject with spaces stays intact.
-    git(repo, &["log", &range, "--format=%H%x1f%h%x1f%s", &max])
+    git(repo, &["log", "HEAD", "--date=short", "--format=%H%x1f%h%x1f%ad%x1f%an%x1f%s", &max])
         .map(|out| {
             out.lines()
                 .filter_map(|line| {
@@ -257,6 +258,8 @@ pub fn commits_since_fork(repo: &Path, base: Option<&str>, limit: usize) -> Vec<
                     Some(CommitRef {
                         sha: f.next()?.to_string(),
                         short: f.next()?.to_string(),
+                        date: f.next().unwrap_or_default().to_string(),
+                        author: f.next().unwrap_or_default().to_string(),
                         title: f.next().unwrap_or_default().to_string(),
                     })
                 })

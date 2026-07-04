@@ -2156,7 +2156,7 @@ fn picking_a_commit_diffs_the_worktree_against_it() {
     app.open_commit_picker();
     assert_eq!(app.mode, Mode::CommitPick, "the dropdown opens");
     let titles: Vec<&str> = app.commit_choices.iter().map(|c| c.title.as_str()).collect();
-    assert_eq!(titles, vec!["add c", "add b", "add a"], "this branch's commits, newest first");
+    assert_eq!(titles, vec!["add c", "add b", "add a", "base"], "full history, newest first");
 
     // Newest commit is HEAD: only the uncommitted edit differs from it.
     app.pick_commit(0).unwrap();
@@ -2198,16 +2198,17 @@ fn the_commit_picker_cursor_moves_and_clamps() {
 }
 
 #[test]
-fn the_commit_picker_reports_instead_of_opening_without_commits() {
-    let r = Repo::init(); // main, no feature branch, nothing ahead of the base
+fn the_commit_picker_lists_history_even_with_nothing_ahead_of_the_base() {
+    let r = Repo::init(); // main, no feature branch — nothing "ahead", but a history exists
     r.write("a.rs", "0\n");
     r.commit_all("only");
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
     app.reload().unwrap();
 
     app.open_commit_picker();
-    assert_eq!(app.mode, Mode::Normal, "no commits since fork → the picker does not open");
-    assert!(app.status.contains("no commits"), "and it explains why: {:?}", app.status);
+    assert_eq!(app.mode, Mode::CommitPick, "the picker shows the full history, not just fork→HEAD");
+    let titles: Vec<&str> = app.commit_choices.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, vec!["only"], "the base branch's own commit is listed");
 }
 
 #[test]
