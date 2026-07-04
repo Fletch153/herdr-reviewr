@@ -959,6 +959,12 @@ impl App {
     pub fn set_scope(&mut self, scope: Scope) -> Result<()> {
         if self.scope != scope && !self.composing() {
             self.scope = scope;
+            // Entering the commit comparator with nothing chosen defaults the base to the newest
+            // commit (HEAD), so cycling in shows a diff rather than the picker; the picker opens
+            // only from the commit chip. Set before the reload so the diff uses it at once.
+            if scope == Scope::Commit && self.selected_commit.is_none() {
+                self.selected_commit = git::head_commit(&self.repo);
+            }
             // A scope switch changes the Changes changeset (and each file's old side), so the
             // Changes tab snaps to the top of the new scope: reset its cursor, folds, and diff
             // scroll, and drop cached diffs. The `All files` listing and File view are
@@ -970,20 +976,12 @@ impl App {
             self.reload()?;
             // An explicit switch reveals the cursor (a poll, which also calls reload, does not).
             self.reveal_files = true;
-            if scope == Scope::Commit && self.selected_commit.is_none() {
-                self.open_commit_picker();
-            }
         }
         Ok(())
     }
 
     pub fn enter_commit_scope(&mut self) -> Result<()> {
-        if self.scope == Scope::Commit {
-            self.open_commit_picker();
-        } else {
-            self.set_scope(Scope::Commit)?;
-        }
-        Ok(())
+        self.set_scope(Scope::Commit)
     }
 
     pub fn open_commit_picker(&mut self) {

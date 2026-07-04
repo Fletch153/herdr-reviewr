@@ -70,6 +70,11 @@ pub fn current_branch(repo: &Path) -> Option<String> {
     git_line(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD")
 }
 
+/// The full SHA of `HEAD` (the newest commit), or `None` on an unborn branch or non-repo.
+pub fn head_commit(repo: &Path) -> Option<String> {
+    git_line(repo, &["rev-parse", "HEAD"])
+}
+
 /// The `(owner, name)` of the worktree's `origin` if it is a GitHub remote, else `None`. Read
 /// locally so the PR fetch needs no `gh repo view` round-trip (`specs/forge-host.md`).
 pub fn github_slug(repo: &Path) -> Option<(String, String)> {

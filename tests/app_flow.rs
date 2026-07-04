@@ -2201,14 +2201,20 @@ fn picking_a_commit_diffs_the_worktree_against_it() {
 }
 
 #[test]
-fn entering_commit_scope_opens_the_picker_when_nothing_is_selected() {
+fn entering_commit_scope_defaults_to_the_latest_commit() {
     let r = commit_repo();
+    let head = r.git(&["rev-parse", "HEAD"]).trim().to_string();
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
     app.reload().unwrap();
 
     app.enter_commit_scope().unwrap();
     assert_eq!(app.scope, Scope::Commit);
-    assert_eq!(app.mode, Mode::CommitPick, "choosing the comparator surfaces the dropdown");
+    assert_eq!(app.mode, Mode::Normal, "cycling in shows the diff, not the picker");
+    assert_eq!(
+        app.selected_commit.as_deref(),
+        Some(head.as_str()),
+        "the base defaults to the newest commit (HEAD)"
+    );
 }
 
 #[test]

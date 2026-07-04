@@ -727,18 +727,18 @@ fn the_commit_chip_shows_the_selected_commit() {
 }
 
 #[test]
-fn entering_commit_scope_opens_the_picker_over_the_full_history() {
-    let r = Repo::init(); // main, a single commit — the whole history
+fn entering_commit_scope_defaults_to_the_tip_without_the_picker() {
+    let r = Repo::init();
     r.write("a.rs", "0\n");
     r.commit_all("only");
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
     app.reload().unwrap();
 
-    // No fork restriction: the history is never empty here, so the picker opens over it.
     app.enter_commit_scope().unwrap();
     let out = render(&app);
-    assert!(out.contains("Compare with commit ("), "the picker opens over the history: {out}");
-    assert!(out.contains("only"), "and lists the branch's commit");
+    assert_eq!(app.mode, Mode::Normal, "cycling in does not open the picker");
+    assert!(!out.contains("Compare with commit ("), "no picker popup on entry: {out}");
+    assert!(out.contains("only"), "the base chip shows the tip commit");
 }
 
 #[test]
