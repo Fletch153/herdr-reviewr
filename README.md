@@ -79,7 +79,7 @@ below are the full reference.
 | `1` `2` `3` | Switch tab — Changes / All files / PR |
 | `u` `b` `t` | Switch scope — uncommitted / branch / last turn |
 | `C` | Compare against a commit — opens a picker of this branch's commits (fork → HEAD); diffs the worktree against the chosen one (also: click the commit chip) |
-| `B` | Cycle the branch-scope diff base through recent branch tips (also: click the base chip) |
+| `B` | Pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (also: click the base chip) |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
 | `PageUp` `PageDown` | Move a page · `Ctrl+U` `Ctrl+D` move a half-page |
 | `Tab` | Switch focus between the file list and the diff |
@@ -147,8 +147,9 @@ button, and the scroll wheel all work too.
   config `base` key) if set, else the remote's recorded default branch (`origin/HEAD`, e.g.
   `origin/develop`), else `origin/main` → `origin/master` → `main` → `master`; a superset of
   **uncommitted** that adds the branch's committed work. The header's base chip shows the
-  effective base; click it (or press `B`) to cycle through recent branch tips — handy for
-  stacked branches. Remote tips shadowed by a same-named local are skipped.
+  effective base; click it (or press `B`) to pick from the branch tips in this checkout's fork
+  lineage — handy for stacked branches. The picker lists only ancestors of `HEAD`, nearest fork
+  first, local branches then `origin/*` (picking the remote keeps its `origin/` label).
 - **last turn** — only what the agent changed since its most recent turn started (see
   [Limitations](#limitations)).
 

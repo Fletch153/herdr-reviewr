@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Focus, FooterAction, Mode, Tab, Tier};
+use crate::app::{App, BranchRow, Focus, FooterAction, Mode, Tab, Tier};
 use crate::diff::{FileDiff, FileState, Row};
 use crate::file_list::{Annotation, RowKind};
 use crate::forge;
@@ -1460,8 +1460,9 @@ pub fn hit_commit_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usiz
     (idx < app.commit_choices.len()).then_some(idx)
 }
 
-/// The branch-picker dropdown: recent branch tips, the cursor row highlighted, windowed to keep
-/// it visible — the same popup as the commit picker.
+/// The branch-picker dropdown: the fork lineage's branch tips (local, a dim divider, then
+/// `origin/*`), the cursor row highlighted, windowed to keep it visible — the same popup as the
+/// commit picker. The divider paints as a rule and never highlights, matching its non-selectability.
 fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let popup = commit_picker_rect(area);
@@ -1480,16 +1481,24 @@ fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app.branch_choices[scroll..end]
         .iter()
         .enumerate()
-        .map(|(row, name)| {
-            let i = scroll + row;
-            let span = Span::styled(truncate_width(name, width), Style::default().fg(p.mauve));
-            selectable_row(vec![span], width, (i == app.branch_cursor).then_some(p.surface2))
+        .map(|(row, br)| match br {
+            BranchRow::Item(name) => {
+                let i = scroll + row;
+                let span = Span::styled(truncate_width(name, width), Style::default().fg(p.mauve));
+                selectable_row(vec![span], width, (i == app.branch_cursor).then_some(p.surface2))
+            }
+            BranchRow::Divider => {
+                let rule = Span::styled("─".repeat(width), Style::default().fg(p.surface2));
+                ListItem::new(Line::from(rule))
+            }
         })
         .collect();
     frame.render_widget(List::new(items), inner);
 }
 
-/// The branch index a click at `(col, row)` lands on in the open picker, if any.
+/// The branch index a click at `(col, row)` lands on in the open picker — `None` on the divider,
+/// the border, or outside the popup, so those clicks select nothing. The caller distinguishes a
+/// click-away (which closes the picker) from a divider click (a no-op) via [`in_picker_popup`].
 #[must_use]
 pub fn hit_branch_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     let inner = Block::default().borders(Borders::ALL).inner(commit_picker_rect(area));
@@ -1502,7 +1511,20 @@ pub fn hit_branch_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usiz
     }
     let scroll = commit_scroll(app.branch_cursor, inner.height as usize);
     let idx = scroll + (row - inner.y) as usize;
-    (idx < app.branch_choices.len()).then_some(idx)
+    // Only an Item is a target; the divider (and any padding past the last row) selects nothing.
+    match app.branch_choices.get(idx) {
+        Some(BranchRow::Item(_)) => Some(idx),
+        _ => None,
+    }
+}
+
+/// Whether `(col, row)` falls within the shared picker popup (border included). Lets the event
+/// loop tell a click-away — which closes the picker — from a click on a non-selectable row inside
+/// it (the branch-picker divider), which is a no-op.
+#[must_use]
+pub fn in_picker_popup(area: Rect, col: u16, row: u16) -> bool {
+    let r = commit_picker_rect(area);
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
 }
 
 /// The default body text color.

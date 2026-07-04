@@ -421,27 +421,41 @@ fn branch_scope_follows_origin_head_when_mainline_is_develop() {
 }
 
 #[test]
-fn recent_branches_excludes_origin_head_and_lists_tips() {
-    let r = Repo::init();
-    r.write("base.rs", "1\n");
-    r.commit_all("base");
-    r.git(&["branch", "other"]);
-    r.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    r.git(&["update-ref", "refs/remotes/origin/remote-only", "HEAD"]);
-    r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+fn ancestor_branches_lists_the_lineage_nearest_first_and_excludes_siblings() {
+    // Lineage main(A) → b(B) → c(C), current branch `feature`(F) forked off c. A sibling `sib`
+    // forks off b and diverges, so it is NOT reachable from feature and must be excluded.
+    let r = Repo::init(); // main @ A
+    r.write("a.rs", "1\n");
+    r.commit_all("A");
+    r.git(&["checkout", "-q", "-b", "b"]);
+    r.write("b.rs", "1\n");
+    r.commit_all("B");
+    r.git(&["checkout", "-q", "-b", "c"]);
+    r.write("c.rs", "1\n");
+    r.commit_all("C");
+    // Sibling off b, with its own commit — a fork of the lineage that feature can't reach.
+    r.git(&["checkout", "-q", "b"]);
+    r.git(&["checkout", "-q", "-b", "sib"]);
+    r.write("sib.rs", "1\n");
+    r.commit_all("S");
+    // The checked-out branch: a fork of c.
+    r.git(&["checkout", "-q", "c"]);
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("f.rs", "1\n");
+    r.commit_all("F");
+    // A remote ancestor (origin/c at C) plus an origin/HEAD alias that must not leak.
+    r.git(&["update-ref", "refs/remotes/origin/c", "c"]);
+    r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/c"]);
 
-    let branches = herdr_reviewr::git::recent_branches(r.path(), 20);
-    assert!(branches.iter().any(|b| b == "main"));
-    assert!(branches.iter().any(|b| b == "other"));
-    // origin/main is shadowed by the local main; a remote-only branch survives.
-    assert!(!branches.iter().any(|b| b == "origin/main"), "remote twin of a local is noise");
-    assert!(branches.iter().any(|b| b == "origin/remote-only"));
-    // origin/HEAD's SHORT name is just "origin" — the alias must not leak in either form.
-    assert!(
-        !branches.iter().any(|b| b == "origin"),
-        "origin/HEAD short-name alias must be skipped"
-    );
-    assert!(!branches.iter().any(|b| b.ends_with("/HEAD")), "origin/HEAD alias must be skipped");
+    let a = herdr_reviewr::git::ancestor_branches(r.path());
+    // Local: nearest fork first — c (1 commit below F), then b (2), then main (3). No feature, no sib.
+    assert_eq!(a.local, vec!["c", "b", "main"], "local ancestors, nearest fork first");
+    assert!(!a.local.contains(&"sib".to_string()), "a sibling off the lineage is excluded");
+    assert!(!a.local.contains(&"feature".to_string()), "the current branch is not a choice");
+    // Remote: origin/c is an ancestor; the origin/HEAD alias is skipped in both forms.
+    assert!(a.remote.contains(&"origin/c".to_string()), "an origin ancestor is listed");
+    assert!(!a.remote.iter().any(|b| b.ends_with("/HEAD")), "origin/HEAD alias must be skipped");
+    assert!(!a.remote.iter().any(|b| b == "origin"), "origin/HEAD short alias must not leak");
 }
 
 #[test]

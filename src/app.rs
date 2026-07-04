@@ -28,8 +28,6 @@ const MIN_LIST_PCT: u16 = 15;
 const MAX_LIST_PCT: u16 = 60;
 /// How many of this branch's most-recent commits the commit picker offers.
 const COMMIT_PICK_LIMIT: usize = 50;
-/// How many recent branch tips the branch picker offers.
-const BRANCH_PICK_LIMIT: usize = 30;
 
 /// Which pane has the keyboard.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -88,6 +86,26 @@ struct TabStash {
     diff_scroll: usize,
     h_scroll: usize,
     select_anchor: Option<usize>,
+}
+
+/// A row in the branch picker: a selectable branch tip, or the non-selectable rule that
+/// separates the local section from the `origin/*` section. Modelling the divider as a row
+/// (rather than a second list) keeps one cursor over the whole picker; the cursor and the click
+/// hit-test both skip `Divider`, so it never becomes a selection.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum BranchRow {
+    Item(String),
+    Divider,
+}
+
+impl BranchRow {
+    /// The branch name, or `None` for the divider — the one place selectability is decided.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            BranchRow::Item(name) => Some(name),
+            BranchRow::Divider => None,
+        }
+    }
 }
 
 /// The interaction mode the UI is in.
@@ -170,8 +188,9 @@ pub enum Tier {
 pub struct App {
     pub repo: PathBuf,
     pub base: Option<String>,
-    /// The branch picker's choices (recent branch tips) and cursor row, while it is open.
-    pub branch_choices: Vec<String>,
+    /// The branch picker's rows (lineage ancestors: local, a divider, then `origin/*`) and the
+    /// cursor row, while it is open. The cursor never rests on the divider (see [`branch_move`]).
+    pub branch_choices: Vec<BranchRow>,
     pub branch_cursor: usize,
     /// What `base_ref` resolved on the last branch-scope reload — the header chip's label.
     pub resolved_base: Option<String>,
@@ -1037,41 +1056,64 @@ impl App {
         }
     }
 
-    /// Load the recent branches (newest first, minus the checked-out branch) and open the branch
-    /// picker, cursoring the current base. Branch scope only; reports instead of opening when
-    /// there are none.
+    /// Load this checkout's fork-lineage branches and open the picker, cursoring the current base.
+    /// Local ancestors come first, then a divider, then `origin/*` ancestors — each nearest fork
+    /// first (`git::ancestor_branches`). Branch scope only; reports instead of opening when the
+    /// lineage is empty.
     pub fn open_branch_picker(&mut self) {
         if self.scope != Scope::Branch || self.composing() {
             return;
         }
-        let current = git::current_branch(&self.repo);
-        self.branch_choices = git::recent_branches(&self.repo, BRANCH_PICK_LIMIT)
-            .into_iter()
-            .filter(|b| Some(b) != current.as_ref())
-            .collect();
+        let git::AncestorBranches { local, remote } = git::ancestor_branches(&self.repo);
+        let mut rows: Vec<BranchRow> = local.into_iter().map(BranchRow::Item).collect();
+        if !remote.is_empty() {
+            // The divider only exists between two populated sections, so it is never at an edge —
+            // which is what lets `branch_move` hop it with a single extra step.
+            if !rows.is_empty() {
+                rows.push(BranchRow::Divider);
+            }
+            rows.extend(remote.into_iter().map(BranchRow::Item));
+        }
+        self.branch_choices = rows;
         if self.branch_choices.is_empty() {
-            self.status = "no other branches to compare against".to_string();
+            self.status = "no ancestor branches to compare against".to_string();
             return;
         }
+        // Start on the current base if it is one of the choices, else the first row (always an
+        // Item — a leading section is never empty when it precedes the divider).
         self.branch_cursor = self
             .base
             .as_deref()
-            .and_then(|b| self.branch_choices.iter().position(|c| c == b))
+            .and_then(|b| self.branch_choices.iter().position(|r| r.name() == Some(b)))
             .unwrap_or(0);
         self.mode = Mode::BranchPick;
     }
 
-    /// Move the branch-picker cursor within the loaded choices.
+    /// Move the branch-picker cursor by `delta` rows, stepping over the divider so the cursor
+    /// only ever lands on a selectable branch. There is at most one divider and it is interior,
+    /// so a single extra step always clears it.
     pub fn branch_move(&mut self, delta: isize) {
-        if self.mode == Mode::BranchPick {
-            self.branch_cursor = step(self.branch_cursor, delta, self.branch_choices.len());
+        if self.mode != Mode::BranchPick {
+            return;
+        }
+        let n = self.branch_choices.len();
+        let dir = if delta < 0 { -1 } else { 1 };
+        for _ in 0..delta.unsigned_abs().max(1) {
+            let mut next = step(self.branch_cursor, dir, n);
+            if matches!(self.branch_choices.get(next), Some(BranchRow::Divider)) {
+                next = step(next, dir, n);
+            }
+            self.branch_cursor = next;
         }
     }
 
-    /// Compare against the branch at `idx`: set it as the base, close the picker, rebuild the diff.
+    /// Compare against the branch at `idx`: set it as the base, close the picker, rebuild the
+    /// diff. A no-op on the divider (or an out-of-range index), so a divider click changes nothing.
     pub fn pick_branch(&mut self, idx: usize) -> Result<()> {
-        let Some(branch) = self.branch_choices.get(idx) else { return Ok(()) };
-        self.base = Some(branch.clone());
+        let Some(name) = self.branch_choices.get(idx).and_then(BranchRow::name) else {
+            return Ok(());
+        };
+        self.base = Some(name.to_string());
         self.mode = Mode::Normal;
         self.reset_changes_view();
         self.reload()?;

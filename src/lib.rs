@@ -522,7 +522,12 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
             MouseEventKind::Down(MouseButton::Left) => {
                 match ui::hit_branch_pick(area, app, m.column, m.row) {
                     Some(i) => app.pick_branch(i)?,
-                    None => app.close_branch_picker(),
+                    // A click outside the popup closes it; a click on the divider (inside the
+                    // popup, no target) is ignored so it can't dismiss the picker.
+                    None if !ui::in_picker_popup(area, m.column, m.row) => {
+                        app.close_branch_picker();
+                    }
+                    None => {}
                 }
             }
             MouseEventKind::ScrollDown => app.branch_move(3),

@@ -147,41 +147,58 @@ pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
         .map(String::from)
 }
 
-/// Local and remote branch tips, most recently committed first — the base-cycle candidates.
-/// Skips the `origin/HEAD` symref alias (it duplicates the branch it points at).
-pub fn recent_branches(repo: &Path, limit: usize) -> Vec<String> {
-    // Full refnames, shortened by hand: %(refname:short) names the origin/HEAD symref alias
-    // just "origin", which the /HEAD filter can't see.
-    let count = format!("--count={limit}");
-    git(
+/// Branch tips in this checkout's fork lineage — those whose tip is an ancestor of `HEAD` —
+/// split into local and `origin/*` sections, each ordered nearest fork first (fewest commits
+/// between the tip and `HEAD`). The base-picker choices (`specs/review-model.md`).
+///
+/// Only lineage ancestors appear: on `D→C→B→A`, `D` lists `C, B, A`; a sibling `C1` that forks
+/// off `B` but isn't reachable from `HEAD` is left out. Both a local branch and its `origin/*`
+/// twin can appear (in their own sections) — picking the remote keeps the `origin/` label, which
+/// is how the base chip and the picked base stay consistent with what auto-detection resolves.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AncestorBranches {
+    pub local: Vec<String>,
+    pub remote: Vec<String>,
+}
+
+/// Enumerate the ancestor branches (see [`AncestorBranches`]). `--merged HEAD` does the ancestry
+/// filter in one call — it lists only refs whose tip is reachable from `HEAD` — so the per-ref
+/// distance query runs over a handful of survivors, never the whole (possibly huge) remote-ref set.
+/// The `origin/HEAD` symref alias and the current branch are dropped. Errors degrade to empty.
+pub fn ancestor_branches(repo: &Path) -> AncestorBranches {
+    let current = current_branch(repo);
+    let out = git(
         repo,
-        &[
-            "for-each-ref",
-            "--sort=-committerdate",
-            "--format=%(refname)",
-            &count,
-            "refs/heads",
-            "refs/remotes",
-        ],
+        &["for-each-ref", "--merged", "HEAD", "--format=%(refname)", "refs/heads", "refs/remotes/origin"],
     )
-    .map(|out| {
-        let refs: Vec<&str> = out.lines().filter(|r| !r.ends_with("/HEAD")).collect();
-        let locals: HashSet<&str> =
-            refs.iter().filter_map(|r| r.strip_prefix("refs/heads/")).collect();
-        refs.iter()
-            .filter_map(|r| {
-                if let Some(local) = r.strip_prefix("refs/heads/") {
-                    return Some(local.to_string());
-                }
-                // A remote twin of an existing local is noise (the local is the user's copy);
-                // remote-only refs stay — often the only route to the mainline.
-                let remote = r.strip_prefix("refs/remotes/")?;
-                let branch = remote.split_once('/').map_or(remote, |(_, b)| b);
-                (!locals.contains(branch)).then(|| remote.to_string())
-            })
-            .collect()
-    })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    // (distance-to-HEAD, short name) so a plain sort orders nearest fork first, ties by name.
+    let mut local: Vec<(usize, String)> = Vec::new();
+    let mut remote: Vec<(usize, String)> = Vec::new();
+    for refname in out.lines() {
+        if refname.ends_with("/HEAD") {
+            continue; // origin/HEAD symref alias — duplicates the branch it points at
+        }
+        let Some(dist) = commit_distance(repo, refname) else { continue };
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            if current.as_deref() == Some(name) {
+                continue; // the checked-out branch is the thing we diff against, not a choice
+            }
+            local.push((dist, name.to_string()));
+        } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+            remote.push((dist, name.to_string())); // `name` keeps the `origin/` prefix
+        }
+    }
+    local.sort();
+    remote.sort();
+    let names = |v: Vec<(usize, String)>| v.into_iter().map(|(_, n)| n).collect();
+    AncestorBranches { local: names(local), remote: names(remote) }
+}
+
+/// Commits between `git_ref`'s tip and `HEAD` (`git rev-list --count <ref>..HEAD`) — how far the
+/// fork point sits below `HEAD`, the picker's ordering key. `None` if the ref can't be counted.
+fn commit_distance(repo: &Path, git_ref: &str) -> Option<usize> {
+    git_line(repo, &["rev-list", "--count", &format!("{git_ref}..HEAD")])?.parse().ok()
 }
 
 /// One commit on this branch, for the commit picker: full SHA (the diff base), an

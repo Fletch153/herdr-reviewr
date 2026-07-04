@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use anyhow::{Result, bail};
 use common::Repo;
-use herdr_reviewr::app::{App, Focus, FooterAction, Mode};
+use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
@@ -2385,10 +2385,12 @@ fn enter_completes_a_partial_expand_before_collapsing() {
 }
 
 #[test]
-fn the_branch_picker_lists_and_picks_a_base() {
-    let r = Repo::init(); // main
+fn the_branch_picker_sections_lineage_skips_the_divider_and_picks_a_base() {
+    let r = Repo::init(); // main @ base
     r.write("a.rs", "1\n");
     r.commit_all("base");
+    // An origin twin of main, so the picker has both a local and an origin section (and a divider).
+    r.git(&["update-ref", "refs/remotes/origin/main", "main"]);
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("b.rs", "2\n");
     r.commit_all("on feature");
@@ -2397,13 +2399,31 @@ fn the_branch_picker_lists_and_picks_a_base() {
 
     app.open_branch_picker();
     assert_eq!(app.mode, Mode::BranchPick, "the dropdown opens in branch scope");
-    assert!(
-        app.branch_choices.iter().any(|b| b == "main"),
-        "lists other branches, not the current one: {:?}",
-        app.branch_choices
+    // Rows: local main, a divider, then origin/main — feature (the current branch) is excluded.
+    assert_eq!(
+        app.branch_choices,
+        vec![
+            BranchRow::Item("main".to_string()),
+            BranchRow::Divider,
+            BranchRow::Item("origin/main".to_string()),
+        ],
+        "local section, divider, origin section",
     );
-    let idx = app.branch_choices.iter().position(|b| b == "main").unwrap();
-    app.pick_branch(idx).unwrap();
+
+    // The cursor starts on the first item and steps over the divider on the way down and back up.
+    assert_eq!(app.branch_cursor, 0);
+    app.branch_move(1);
+    assert_eq!(app.branch_cursor, 2, "moving down skips the divider onto origin/main");
+    app.branch_move(-1);
+    assert_eq!(app.branch_cursor, 0, "moving up skips the divider back onto main");
+
+    // Picking the divider row is a no-op: base and mode unchanged.
+    app.pick_branch(1).unwrap();
+    assert_eq!(app.mode, Mode::BranchPick, "a divider pick keeps the picker open");
+    assert_eq!(app.base, None, "a divider pick sets no base");
+
+    // Picking the origin item keeps the origin/ label — the base is exactly what was chosen.
+    app.pick_branch(2).unwrap();
     assert_eq!(app.mode, Mode::Normal);
-    assert_eq!(app.base.as_deref(), Some("main"), "picking sets the base branch");
+    assert_eq!(app.base.as_deref(), Some("origin/main"), "picking sets the chosen ref as the base");
 }
