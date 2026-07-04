@@ -80,6 +80,7 @@ below are the full reference.
 | `u` `b` `t` | Switch scope — uncommitted / branch / last turn |
 | `C` | Compare against a commit — opens a picker of this branch's commits (fork → HEAD); diffs the worktree against the chosen one (also: click the commit chip) |
 | `B` | Pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (also: click the base chip) |
+| `p` | On a markdown file, toggle a rendered preview (headings, tables, lists) instead of the diff; `p` / `esc` returns to the diff to comment |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
 | `PageUp` `PageDown` | Move a page · `Ctrl+U` `Ctrl+D` move a half-page |
 | `Tab` | Switch focus between the file list and the diff |

@@ -157,6 +157,10 @@ fn event_loop(
             app.reveal_file_cursor(file_vp);
         }
         app.bound_file_scroll(file_vp);
+        if app.mode == Mode::Preview {
+            let (lines, vp) = ui::preview_metrics(app, area, app.list_pct);
+            app.bound_preview_scroll(lines, vp);
+        }
         terminal.draw(|f| ui::render(f, app))?;
         // Deliver a completed background fetch, then trigger a new one when `pr_pending` is set
         // (panel open, tab entry, `r`, or the agent's turn-end) or the slow fallback poll elapses
@@ -400,6 +404,20 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::Preview {
+        match (key.code, ctrl) {
+            (Esc | Char('q' | 'p'), _) => app.close_preview(),
+            (Char('j') | Down, _) => app.preview_scroll_by(1),
+            (Char('k') | Up, _) => app.preview_scroll_by(-1),
+            (PageDown, _) => app.preview_scroll_by(PAGE),
+            (PageUp, _) => app.preview_scroll_by(-PAGE),
+            (Char('d'), true) => app.preview_scroll_by(HALF_PAGE),
+            (Char('u'), true) => app.preview_scroll_by(-HALF_PAGE),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match (key.code, ctrl) {
         // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
         // keys move the focused pane's cursor (the view follows), like `j`/`k`.
@@ -453,6 +471,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('n'), _) => app.jump_comment(1),
         (Char('N'), _) => app.jump_comment(-1),
         (Char('l'), _) => app.open_list(),
+        (Char('p'), false) => app.open_preview(),
         (Char('/'), false) => app.start_filter(),
         (Esc, _) => {
             if app.filter.is_empty() {

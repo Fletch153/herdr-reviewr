@@ -2461,3 +2461,40 @@ fn the_branch_picker_sections_lineage_skips_the_divider_and_picks_a_base() {
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.base.as_deref(), Some("origin/main"), "picking sets the chosen ref as the base");
 }
+
+fn goto_file(app: &mut App, path: &str) {
+    for _ in 0..app.file_rows.len() {
+        if app.current_entry().map(|e| e.path.as_str()) == Some(path) {
+            return;
+        }
+        app.move_cursor(1).unwrap();
+    }
+    panic!("file {path} not found in the tree");
+}
+
+#[test]
+fn preview_mode_toggles_only_for_markdown_files() {
+    let r = Repo::init();
+    r.write("README.md", "# Title\n\nbody\n");
+    r.write("code.rs", "fn main() {}\n");
+    r.commit_all("init");
+    r.write("README.md", "# Title\n\nmore body\n");
+    r.write("code.rs", "fn main() { let x = 1; }\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    goto_file(&mut app, "README.md");
+    assert!(app.is_markdown_open());
+    app.open_preview();
+    assert_eq!(app.mode, Mode::Preview, "a markdown file opens the preview");
+    app.preview_scroll_by(3);
+    assert_eq!(app.preview_scroll, 3);
+    app.close_preview();
+    assert_eq!(app.mode, Mode::Normal);
+
+    goto_file(&mut app, "code.rs");
+    assert!(!app.is_markdown_open());
+    app.open_preview();
+    assert_eq!(app.mode, Mode::Normal, "preview is refused for non-markdown files");
+    assert!(app.status.contains("markdown"), "and it says why: {:?}", app.status);
+}

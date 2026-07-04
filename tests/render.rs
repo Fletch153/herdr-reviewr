@@ -4,7 +4,7 @@
 mod common;
 
 use common::Repo;
-use herdr_reviewr::app::{App, Focus};
+use herdr_reviewr::app::{App, Focus, Mode};
 use herdr_reviewr::model::Scope;
 use herdr_reviewr::ui::{self, HeaderHit};
 use ratatui::Terminal;
@@ -856,4 +856,21 @@ fn the_filter_query_shows_in_the_pane_title() {
         app.filter_push(c);
     }
     assert!(render(&app).contains("/evm"), "the pane title carries the active filter");
+}
+
+#[test]
+fn the_markdown_preview_renders_the_document() {
+    let r = Repo::init();
+    r.write("doc.md", "# Heading\n\nsome text\n");
+    r.commit_all("init");
+    r.write("doc.md", "# Heading\n\nsome more text\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    app.open_preview();
+    assert_eq!(app.mode, Mode::Preview);
+    let out = render(&app);
+    assert!(out.contains("Heading"), "the heading text shows");
+    assert!(!out.contains("# Heading"), "the '#' marker is rendered away, not shown raw");
+    assert!(out.contains("preview \u{b7}"), "the pane titles itself a preview");
 }

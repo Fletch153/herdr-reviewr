@@ -11,7 +11,7 @@ use std::rc::Rc;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -32,7 +32,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_pr_nav(frame, app, p.files);
     } else {
         render_tab_bar(frame, app, p.tab);
-        render_diff_view(frame, app, p.diff);
+        if app.mode == Mode::Preview {
+            render_markdown_preview(frame, app, p.diff);
+        } else {
+            render_diff_view(frame, app, p.diff);
+        }
         render_file_list(frame, app, p.files);
     }
     // One footer band on every tab, drawn after the per-tab base so it sits on both layouts;
@@ -784,6 +788,39 @@ fn pad_width(s: &str, width: usize) -> String {
     format!("{s}{}", " ".repeat(pad))
 }
 
+fn render_markdown_preview(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let path = app.diff_path.clone().unwrap_or_default();
+    let block = bordered(&format!("preview · {path}"), true, p);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let src = app.preview_markdown().unwrap_or_default();
+    let lines = render_markdown_lines(&src, inner.width);
+    let scroll = app.preview_scroll.min(u16::MAX as usize) as u16;
+    frame.render_widget(Paragraph::new(Text::from(lines)).scroll((scroll, 0)), inner);
+}
+
+fn render_markdown_lines(src: &str, width: u16) -> Vec<Line<'static>> {
+    let parsed = ratskin::RatSkin::parse_text(src);
+    ratskin::RatSkin::default()
+        .parse(parsed, width.max(1))
+        .into_iter()
+        .map(|l| Line::from(l.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect::<Vec<_>>()))
+        .collect()
+}
+
+pub fn preview_metrics(app: &App, area: Rect, list_pct: u16) -> (usize, usize) {
+    let diff = panes(area, list_pct).diff;
+    let width = diff.width.saturating_sub(2);
+    let viewport = diff.height.saturating_sub(2) as usize;
+    let lines = match app.preview_markdown() {
+        Some(src) => render_markdown_lines(&src, width).len(),
+        None => 0,
+    };
+    (lines, viewport)
+}
+
 fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let title = match (&app.diff_path, &app.diff.previous_path) {
@@ -1220,6 +1257,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::CollapseDir => ("←", "collapse"),
         A::ExpandTree => ("enter", "expand tree"),
         A::CollapseTree => ("enter", "collapse tree"),
+        A::Preview => ("p", "preview"),
+        A::ExitPreview => ("p", "diff"),
         A::TogglePane => {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }

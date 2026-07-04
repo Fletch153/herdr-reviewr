@@ -112,6 +112,7 @@ pub enum Mode {
     CommitPick,
     BranchPick,
     Filter,
+    Preview,
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
@@ -140,6 +141,8 @@ pub enum FooterAction {
     Filter,
     ApplyFilter,
     ClearFilter,
+    Preview,
+    ExitPreview,
     Send,
     List,
     Copy,
@@ -188,6 +191,7 @@ pub struct App {
     /// `file_cursor` indexes this, not `entries`.
     pub file_rows: Vec<file_list::Row>,
     pub filter: String,
+    pub preview_scroll: usize,
     pub file_cursor: usize,
     /// Top visible row of the file list, kept so `file_cursor` stays on screen when the
     /// changeset is taller than the pane.
@@ -293,6 +297,7 @@ impl App {
             entries: Vec::new(),
             file_rows: Vec::new(),
             filter: String::new(),
+            preview_scroll: 0,
             file_cursor: 0,
             file_scroll: 0,
             reveal_files: false,
@@ -449,6 +454,47 @@ impl App {
         if self.mode == Mode::Filter {
             self.mode = Mode::Normal;
         }
+    }
+
+    pub fn is_markdown_open(&self) -> bool {
+        std::path::Path::new(self.diff_path.as_deref().unwrap_or(""))
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+    }
+
+    pub fn open_preview(&mut self) {
+        if self.composing() || self.mode != Mode::Normal {
+            return;
+        }
+        if !self.is_markdown_open() {
+            self.status = "preview is for markdown files".to_string();
+            return;
+        }
+        self.preview_scroll = 0;
+        self.mode = Mode::Preview;
+    }
+
+    pub fn close_preview(&mut self) {
+        if self.mode == Mode::Preview {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    pub fn preview_scroll_by(&mut self, delta: isize) {
+        if self.mode == Mode::Preview {
+            self.preview_scroll = self.preview_scroll.saturating_add_signed(delta);
+        }
+    }
+
+    pub fn bound_preview_scroll(&mut self, lines: usize, viewport: usize) {
+        let max = lines.saturating_sub(viewport.max(1));
+        self.preview_scroll = self.preview_scroll.min(max);
+    }
+
+    pub fn preview_markdown(&self) -> Option<String> {
+        let path = self.diff_path.as_deref()?;
+        self.is_markdown_open().then(|| worktree_content(&self.repo, path))
     }
 
     fn apply_filter(&mut self) {
@@ -1703,7 +1749,12 @@ impl App {
                 };
                 Some(c.location())
             }
-            Mode::Normal | Mode::List | Mode::CommitPick | Mode::BranchPick | Mode::Filter => None,
+            Mode::Normal
+            | Mode::List
+            | Mode::CommitPick
+            | Mode::BranchPick
+            | Mode::Filter
+            | Mode::Preview => None,
         }
     }
 
@@ -1860,6 +1911,9 @@ impl App {
             Mode::Filter => {
                 return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
             }
+            Mode::Preview => {
+                return vec![(A::ExitPreview, Primary), (A::Tabs, Orientation), (A::Quit, Orientation)];
+            }
             Mode::Normal => {}
         }
 
@@ -1934,6 +1988,10 @@ impl App {
 
         if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
             out.push((A::Base, Normal));
+        }
+
+        if self.is_markdown_open() {
+            out.push((A::Preview, Normal));
         }
 
         if !self.file_rows.is_empty() || !self.filter.is_empty() {
