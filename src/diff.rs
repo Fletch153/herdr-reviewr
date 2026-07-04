@@ -15,11 +15,20 @@ use crate::highlight::Highlighter;
 /// An 8-bit RGB color.
 pub type Rgb = (u8, u8, u8);
 
-/// A run of one line's text in a single color.
+/// A run of one line's text in a single color and font style.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Span {
     pub text: String,
     pub color: Rgb,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
+impl Span {
+    pub fn plain(text: String, color: Rgb) -> Self {
+        Self { text, color, bold: false, italic: false, underline: false }
+    }
 }
 
 /// A rendered diff row. Content rows (`Context`/`Deletion`/`Insertion`) are selectable

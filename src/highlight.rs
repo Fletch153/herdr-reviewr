@@ -8,7 +8,7 @@ use std::fmt;
 use std::io::Cursor;
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
@@ -82,7 +82,7 @@ impl Highlighter {
         let (Some(syntax), Some(theme)) = (syntax, self.theme.as_ref()) else {
             return content
                 .lines()
-                .map(|l| vec![Span { text: l.to_string(), color: self.default_fg }])
+                .map(|l| vec![Span::plain(l.to_string(), self.default_fg)])
                 .collect();
         };
         let mut h = HighlightLines::new(syntax, theme);
@@ -94,13 +94,13 @@ impl Highlighter {
                     .map(|(style, text)| Span {
                         text: text.trim_end_matches('\n').to_string(),
                         color: (style.foreground.r, style.foreground.g, style.foreground.b),
+                        bold: style.font_style.contains(FontStyle::BOLD),
+                        italic: style.font_style.contains(FontStyle::ITALIC),
+                        underline: style.font_style.contains(FontStyle::UNDERLINE),
                     })
                     .collect(),
                 // A grammar error degrades to plain text rather than blocking the diff.
-                Err(_) => vec![Span {
-                    text: line.trim_end_matches('\n').to_string(),
-                    color: self.default_fg,
-                }],
+                Err(_) => vec![Span::plain(line.trim_end_matches('\n').to_string(), self.default_fg)],
             };
             out.push(spans);
         }
@@ -131,11 +131,21 @@ mod tests {
     }
 
     #[test]
+    fn markdown_emphasis_carries_font_styles() {
+        let h = Highlighter::new(mocha());
+        let lines = h.highlight("a **strong** and *emph* word\n", Some("md"));
+        let spans: Vec<_> = lines.into_iter().flatten().collect();
+        assert!(spans.iter().any(|s| s.text.contains("strong") && s.bold), "strong is bold");
+        assert!(spans.iter().any(|s| s.text.contains("emph") && s.italic), "emphasis is italic");
+        assert!(spans.iter().any(|s| !s.bold && !s.italic), "plain words stay unstyled");
+    }
+
+    #[test]
     fn unknown_language_is_one_plain_span_per_line() {
         let h = Highlighter::new(mocha());
         let lines = h.highlight("alpha\nbeta\n", None);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], vec![super::Span { text: "alpha".into(), color: (0xcd, 0xd6, 0xf4) }]);
+        assert_eq!(lines[0], vec![super::Span::plain("alpha".into(), (0xcd, 0xd6, 0xf4))]);
     }
 
     #[test]

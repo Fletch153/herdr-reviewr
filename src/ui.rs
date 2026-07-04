@@ -348,6 +348,7 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
             w: UnicodeWidthChar::width(ch).unwrap_or(0),
             fg: Color::Reset,
             emph: false,
+            modifier: Modifier::empty(),
         })
         .collect();
     wrap_segments(&cells, width)
@@ -1113,6 +1114,7 @@ struct Cell {
     w: usize,
     fg: Color,
     emph: bool,
+    modifier: Modifier,
 }
 
 /// Expand a row's spans into display cells: tabs become spaces to the next tab stop, and
@@ -1126,16 +1128,17 @@ fn code_cells(row: &Row, emph_on: bool) -> Vec<Cell> {
     let mut col = 0usize; // display column, so tab stops land right after wide glyphs too
     for s in row.spans() {
         let fg = rgb(s.color);
+        let modifier = font_modifier(s);
         for ch in s.text.chars() {
             let emph = in_emph(idx);
             if ch == '\t' {
                 for _ in 0..(TAB - col % TAB) {
-                    cells.push(Cell { ch: ' ', w: 1, fg, emph });
+                    cells.push(Cell { ch: ' ', w: 1, fg, emph, modifier });
                     col += 1;
                 }
             } else {
                 let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-                cells.push(Cell { ch, w, fg, emph });
+                cells.push(Cell { ch, w, fg, emph, modifier });
                 col += w;
             }
             idx += 1;
@@ -1144,30 +1147,44 @@ fn code_cells(row: &Row, emph_on: bool) -> Vec<Cell> {
     cells
 }
 
+fn font_modifier(s: &crate::diff::Span) -> Modifier {
+    let mut m = Modifier::empty();
+    if s.bold {
+        m |= Modifier::BOLD;
+    }
+    if s.italic {
+        m |= Modifier::ITALIC;
+    }
+    if s.underline {
+        m |= Modifier::UNDERLINED;
+    }
+    m
+}
+
 /// Build spans from display cells, merging runs of equal color/emphasis; an emphasized
 /// run takes `emph_bg` as its background.
 fn cells_to_spans(cells: &[Cell], emph_bg: Color) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let mut cur: Option<(Color, bool)> = None;
+    let mut cur: Option<(Color, bool, Modifier)> = None;
     for c in cells {
-        let key = (c.fg, c.emph);
+        let key = (c.fg, c.emph, c.modifier);
         if cur != Some(key) {
-            if let Some((fg, emph)) = cur {
-                spans.push(cell_span(std::mem::take(&mut buf), fg, emph, emph_bg));
+            if let Some((fg, emph, modifier)) = cur {
+                spans.push(cell_span(std::mem::take(&mut buf), fg, emph, modifier, emph_bg));
             }
             cur = Some(key);
         }
         buf.push(c.ch);
     }
-    if let Some((fg, emph)) = cur {
-        spans.push(cell_span(buf, fg, emph, emph_bg));
+    if let Some((fg, emph, modifier)) = cur {
+        spans.push(cell_span(buf, fg, emph, modifier, emph_bg));
     }
     spans
 }
 
-fn cell_span(text: String, fg: Color, emph: bool, emph_bg: Color) -> Span<'static> {
-    let style = Style::default().fg(fg);
+fn cell_span(text: String, fg: Color, emph: bool, modifier: Modifier, emph_bg: Color) -> Span<'static> {
+    let style = Style::default().fg(fg).add_modifier(modifier);
     Span::styled(text, if emph { style.bg(emph_bg) } else { style })
 }
 
