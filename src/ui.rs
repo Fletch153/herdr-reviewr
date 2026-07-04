@@ -1240,6 +1240,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::ExpandFold => ("→", "expand fold"),
         A::ExpandDir => ("→", "expand"),
         A::CollapseDir => ("←", "collapse"),
+        A::ExpandTree => ("⏎", "expand tree"),
+        A::CollapseTree => ("⏎", "collapse tree"),
         A::TogglePane => {
             return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }

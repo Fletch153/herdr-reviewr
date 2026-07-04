@@ -932,6 +932,33 @@ fn arrows_collapse_and_expand_a_folder() {
 }
 
 #[test]
+fn the_footer_offers_enter_to_expand_or_collapse_a_folder_tree() {
+    let r = Repo::init();
+    r.write("src/sub/a.rs", "x\n");
+    r.write("src/b.rs", "y\n");
+    r.commit_all("init");
+    r.write("src/sub/a.rs", "x2\n");
+    r.write("src/b.rs", "y2\n");
+    let mut app = app_on(&r);
+    app.focus = Focus::Files;
+
+    let dir_row = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
+    app.file_cursor = dir_row;
+    let has = |app: &App, a: FooterAction| app.footer_actions().iter().any(|&(x, _)| x == a);
+
+    // src and src/sub start expanded (the Changes default), so ⏎ collapses the whole subtree.
+    assert!(has(&app, FooterAction::CollapseTree), "⏎ collapses the open subtree");
+    assert!(!has(&app, FooterAction::ExpandTree));
+
+    // With the folder shut, ⏎ expands it and its child folders.
+    app.collapse_dir();
+    let dir_row = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
+    app.file_cursor = dir_row;
+    assert!(has(&app, FooterAction::ExpandTree), "⏎ expands a shut folder's tree");
+    assert!(!has(&app, FooterAction::CollapseTree));
+}
+
+#[test]
 fn the_pane_divider_resizes_and_clamps() {
     let r = edited_repo();
     let mut app = app_on(&r);

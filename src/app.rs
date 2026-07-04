@@ -139,8 +139,14 @@ pub enum FooterAction {
     DeleteComment,
     JumpComment,
     ExpandFold,
+    /// `→` on a folder: open it one level.
     ExpandDir,
+    /// `←` on a folder: close it.
     CollapseDir,
+    /// `⏎` on a folder: open it and its direct child folders (finishing a partial `→` open).
+    ExpandTree,
+    /// `⏎` on a fully-open folder: close it and its child folders back up.
+    CollapseTree,
     /// Switch focus between the file list and the diff; the label names the destination pane.
     TogglePane,
     Scope,
@@ -1388,23 +1394,10 @@ impl App {
     /// does another `Enter` collapse it all back.
     pub fn toggle_dir_children(&mut self) {
         let Some(folder) = self.dir_under_cursor() else { return };
-        let prefix = format!("{folder}/");
-        // The direct child directories: a path under `folder` with a further `/`. Collected
-        // before mutating (idempotent `set_dir_expanded` tolerates the duplicates).
-        let kids: Vec<String> = self
-            .entries
-            .iter()
-            .filter_map(|e| {
-                e.path
-                    .strip_prefix(&prefix)
-                    .and_then(|rest| rest.split_once('/'))
-                    .map(|(seg, _)| format!("{folder}/{seg}"))
-            })
-            .collect();
+        let kids = self.direct_child_dirs(&folder);
         // Collapse only when the folder and every child folder are already open; otherwise
         // expand, filling in whatever `→` left shut.
-        let fully_open = self.dir_expanded(&folder) && kids.iter().all(|k| self.dir_expanded(k));
-        let want = !fully_open;
+        let want = !self.tree_fully_open(&folder, &kids);
         let mut changed = self.set_dir_expanded(&folder, want);
         for kid in &kids {
             changed |= self.set_dir_expanded(kid, want);
@@ -1412,6 +1405,37 @@ impl App {
         if changed {
             self.apply_dir_change();
         }
+    }
+
+    /// The direct child directories of `folder`: a path under it with a further `/`. Kept in one
+    /// place so [`toggle_dir_children`](Self::toggle_dir_children) and the footer hint agree on
+    /// what `Enter` acts on.
+    fn direct_child_dirs(&self, folder: &str) -> Vec<String> {
+        let prefix = format!("{folder}/");
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                e.path
+                    .strip_prefix(&prefix)
+                    .and_then(|rest| rest.split_once('/'))
+                    .map(|(seg, _)| format!("{folder}/{seg}"))
+            })
+            .collect()
+    }
+
+    /// Whether `folder` and all its direct child folders are expanded — the state in which `Enter`
+    /// collapses the subtree rather than completing its expansion.
+    fn tree_fully_open(&self, folder: &str, kids: &[String]) -> bool {
+        self.dir_expanded(folder) && kids.iter().all(|k| self.dir_expanded(k))
+    }
+
+    /// For the folder under the cursor: `Some(true)` when `Enter` would collapse its subtree (all
+    /// already open), `Some(false)` when it would expand, `None` off a folder row. Drives the
+    /// footer's `⏎` hint so the label matches the effect.
+    fn dir_enter_collapses(&self) -> Option<bool> {
+        let folder = self.dir_under_cursor()?;
+        let kids = self.direct_child_dirs(&folder);
+        Some(self.tree_fully_open(&folder, &kids))
     }
 
     /// Collapse the directory under the cursor (`←`); a no-op if it is a file or already shut.
@@ -1967,13 +1991,21 @@ impl App {
             }
             out.push((A::Refresh, Normal));
         } else if self.focus == Focus::Files {
-            match self.file_rows.get(self.file_cursor).map(|r| &r.kind) {
-                Some(RowKind::Dir { expanded: true, .. }) => out.push((A::CollapseDir, Primary)),
-                Some(RowKind::Dir { expanded: false, .. }) => out.push((A::ExpandDir, Primary)),
-                _ => {
-                    out.push((A::TogglePane, Primary)); // ⇥ into the diff to review
-                    pane_is_primary = true;
-                }
+            if let Some(RowKind::Dir { expanded, .. }) =
+                self.file_rows.get(self.file_cursor).map(|r| &r.kind)
+            {
+                // `→`/`←` toggles this folder one level (primary); `⏎` opens or closes it
+                // together with its child folders (the deeper move, offered alongside).
+                out.push((if *expanded { A::CollapseDir } else { A::ExpandDir }, Primary));
+                let enter = if self.dir_enter_collapses().unwrap_or(false) {
+                    A::CollapseTree
+                } else {
+                    A::ExpandTree
+                };
+                out.push((enter, Normal));
+            } else {
+                out.push((A::TogglePane, Primary)); // ⇥ into the diff to review
+                pane_is_primary = true;
             }
         } else if self.visible.is_empty() {
             // Diff focused but nothing to show (e.g. a binary): only the scope switch helps.
