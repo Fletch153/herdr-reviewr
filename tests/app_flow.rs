@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use anyhow::{Result, bail};
 use common::Repo;
-use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode};
+use herdr_reviewr::app::{Addressed, App, BranchRow, Focus, FooterAction, Mode};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
@@ -2530,4 +2530,53 @@ fn sending_a_path_requires_a_highlighted_file() {
     assert!(!has_send(&app), "no send hint on a directory row");
     app.send_path_to_agent();
     assert!(app.status.contains("highlight a file"), "refuses without a file: {:?}", app.status);
+}
+
+#[test]
+fn space_marks_a_file_reviewed_and_advances_to_the_next() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.write("b.rs", "1\n");
+    r.commit_all("init");
+    r.write("a.rs", "2\n");
+    r.write("b.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    goto_file(&mut app, "a.rs");
+    assert!(!app.is_reviewed("a.rs"));
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("a.rs"), "marked reviewed");
+    assert_eq!(app.reviewed_count(), 1);
+    assert_eq!(app.current_entry().map(|e| e.path.as_str()), Some("b.rs"), "advanced to next");
+
+    r.write("a.rs", "3\n"); // agent re-edits a.rs
+    app.reload().unwrap();
+    assert!(!app.is_reviewed("a.rs"), "mark clears when the file changes again");
+}
+
+#[test]
+fn comment_addressed_flips_when_the_commented_lines_change() {
+    use herdr_reviewr::model::{Comment, Side};
+    let r = Repo::init();
+    r.write("f.rs", "fn main() {}\n");
+    r.commit_all("init");
+    r.write("f.rs", "fn main() { let x = 1; }\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    let c = Comment {
+        file: "f.rs".into(),
+        side: Side::New,
+        start: 1,
+        end: 1,
+        lines: "+fn main() { let x = 1; }".into(),
+        text: "rename x".into(),
+        diff_anchored: true,
+    };
+    assert_eq!(app.comment_addressed(&c), Addressed::Pending, "the commented line is present");
+
+    r.write("f.rs", "fn main() { let y = 2; }\n"); // agent addresses it
+    app.reload().unwrap();
+    assert_eq!(app.comment_addressed(&c), Addressed::Done, "the commented line changed");
 }

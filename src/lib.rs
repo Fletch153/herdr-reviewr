@@ -472,6 +472,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('l'), _) => app.open_list(),
         (Char('p'), false) => app.open_preview(),
         (Char('+'), _) => app.send_path_to_agent(),
+        (Char(' '), _) => app.toggle_reviewed(),
         (Char('/'), false) => app.start_filter(),
         (Esc, _) => {
             if app.filter.is_empty() {

@@ -578,7 +578,7 @@ fn the_comments_list_flags_a_stale_comment() {
     app.open_list();
 
     let out = render(&app);
-    assert!(out.contains("(stale)"), "stale comment flagged in the list:\n{out}");
+    assert!(out.contains("(gone)"), "orphaned comment flagged in the list:\n{out}");
 }
 
 #[test]

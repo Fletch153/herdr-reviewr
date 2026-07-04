@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, BranchRow, Focus, FooterAction, Mode, Tab, Tier};
+use crate::app::{Addressed, App, BranchRow, Focus, FooterAction, Mode, Tab, Tier};
 use crate::diff::{FileDiff, FileState, Row};
 use crate::file_list::{Annotation, RowKind};
 use crate::forge;
@@ -472,7 +472,12 @@ fn send_button(app: &App) -> String {
 /// The header suffix: the active scope's changed-file count. Shared so the painter and the
 /// hit-test place the right-aligned `Send` button at the same column.
 fn header_suffix(app: &App) -> String {
-    format!("  {} changed", app.changed_count())
+    let reviewed = app.reviewed_count();
+    if reviewed > 0 {
+        format!("  {} changed · {reviewed} reviewed", app.changed_count())
+    } else {
+        format!("  {} changed", app.changed_count())
+    }
 }
 
 /// The column the `Send` button paints at, matching `render_tab_bar`'s layout: right-aligned
@@ -600,13 +605,14 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled(format!("{}/", row.name), name_style));
                     selectable_row(spans, width, fill)
                 }
-                RowKind::File { annotation, .. } => file_row_item(FileRow {
+                RowKind::File { annotation, index } => file_row_item(FileRow {
                     indent: &indent,
                     annotation: annotation.as_ref(),
                     name: &row.name,
                     width,
                     fill,
                     ignored: row.ignored,
+                    reviewed: app.is_reviewed(&app.entries[*index].path),
                     icons: app.icons,
                     p,
                 }),
@@ -633,15 +639,20 @@ struct FileRow<'a> {
     width: usize,
     fill: Option<Color>,
     ignored: bool,
+    reviewed: bool,
     icons: bool,
     p: &'a Palette,
 }
 
 fn file_row_item(row: FileRow) -> ListItem<'static> {
-    let FileRow { indent, annotation, name, width, fill, ignored, icons, p } = row;
-    let (marker, marker_color) = match annotation {
-        Some(a) => (a.change.marker(), kind_color(p, a.change.marker())),
-        None => (' ', p.text),
+    let FileRow { indent, annotation, name, width, fill, ignored, reviewed, icons, p } = row;
+    let (marker, marker_color) = if reviewed {
+        ('✓', p.green)
+    } else {
+        match annotation {
+            Some(a) => (a.change.marker(), kind_color(p, a.change.marker())),
+            None => (' ', p.text),
+        }
     };
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
@@ -666,7 +677,8 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
     }
     // A git-ignored file recedes into a dim basename; its change marker and stats keep their
     // color so a kept ignored file still reads as a change (file-list.md).
-    let base_style = if ignored { Style::default().fg(p.overlay0) } else { text_style(p) };
+    let base_style =
+        if ignored || reviewed { Style::default().fg(p.overlay0) } else { text_style(p) };
     spans.push(Span::styled(base.to_string(), base_style));
     if !stats.is_empty() {
         let used: usize = spans.iter().map(Span::width).sum();
@@ -1431,15 +1443,23 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, c)| {
+            let addressed = app.comment_addressed(c);
+            let (glyph, color) = match addressed {
+                Addressed::Done => ("✓ ", p.green),
+                Addressed::Pending => ("○ ", p.peach),
+                Addressed::Gone => ("· ", p.red),
+            };
             let loc = Span::styled(
                 c.location(),
                 Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
             );
-            let mut spans = vec![loc, Span::styled(format!("  {}", c.text), text_style(p))];
-            // A comment whose anchor may have moved (file left the changeset, or a content
-            // comment's file was deleted) is flagged but kept.
-            if app.is_stale(c) {
-                spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
+            let mut spans = vec![
+                Span::styled(glyph, Style::default().fg(color)),
+                loc,
+                Span::styled(format!("  {}", c.text), text_style(p)),
+            ];
+            if addressed == Addressed::Gone {
+                spans.push(Span::styled("  (gone)", Style::default().fg(p.red)));
             }
             // The list overlay is the active modal, so its row reads at full brightness.
             selectable_row(spans, width, (i == app.list_cursor).then_some(p.surface2))

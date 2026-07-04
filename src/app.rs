@@ -74,6 +74,7 @@ struct TabStash {
     file_cursor: usize,
     file_scroll: usize,
     toggled_dirs: HashSet<String>,
+    reviewed: HashMap<String, u64>,
     diff: FileDiff,
     visible: Vec<Row>,
     expanded_folds: HashSet<u32>,
@@ -82,6 +83,17 @@ struct TabStash {
     diff_scroll: usize,
     h_scroll: usize,
     select_anchor: Option<usize>,
+}
+
+/// Whether the code a comment anchors to has changed since the comment was written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Addressed {
+    /// The commented file left the changeset or was deleted.
+    Gone,
+    /// The commented lines are unchanged — the agent hasn't touched them.
+    Pending,
+    /// The commented lines changed — the agent likely addressed the note.
+    Done,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -210,6 +222,9 @@ pub struct App {
     /// (expanded by default), expanded in `All files` (collapsed by default). Keyed by path,
     /// so it survives a poll that rebuilds the tree.
     toggled_dirs: HashSet<String>,
+    /// Changed files marked reviewed → the worktree-content hash at review time, so the mark
+    /// clears when the agent edits the file again. Keyed by path; survives a poll.
+    reviewed: HashMap<String, u64>,
     /// The inactive tab's saved state, swapped in on a tab switch.
     stash: TabStash,
     /// The active scope's changed files, keyed by repo-relative path and recomputed every
@@ -309,6 +324,7 @@ impl App {
             reveal_diff: false,
             resume_list: false,
             toggled_dirs: HashSet::new(),
+            reviewed: HashMap::new(),
             stash: TabStash::default(),
             changed: HashMap::new(),
             diff: FileDiff::empty(),
@@ -621,6 +637,7 @@ impl App {
             _ => git::changed_files(&self.repo, self.scope, self.resolved_base.as_deref())?,
         };
         self.changed = changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
+        self.prune_reviewed();
         self.entries = match self.tab {
             // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
             Tab::AllFiles => self.all_files_entries()?,
@@ -1045,6 +1062,7 @@ impl App {
 
     fn reset_changes_view(&mut self) {
         self.cache = DiffCache::new();
+        self.reviewed.clear();
         if self.tab == Tab::Changes {
             self.file_cursor = 0;
             self.expanded_folds.clear();
@@ -1248,6 +1266,7 @@ impl App {
         std::mem::swap(&mut self.file_cursor, &mut self.stash.file_cursor);
         std::mem::swap(&mut self.file_scroll, &mut self.stash.file_scroll);
         std::mem::swap(&mut self.toggled_dirs, &mut self.stash.toggled_dirs);
+        std::mem::swap(&mut self.reviewed, &mut self.stash.reviewed);
         std::mem::swap(&mut self.diff, &mut self.stash.diff);
         std::mem::swap(&mut self.visible, &mut self.stash.visible);
         std::mem::swap(&mut self.expanded_folds, &mut self.stash.expanded_folds);
@@ -2095,6 +2114,74 @@ impl App {
         }
     }
 
+    /// Whether the code a comment anchors to has changed since it was written — the round-trip
+    /// signal for "did the agent address this?". `c.lines` is the baseline snapshot; if its
+    /// new-side (context/added) block no longer appears in the file, the agent changed it.
+    pub fn comment_addressed(&self, c: &Comment) -> Addressed {
+        if self.is_stale(c) {
+            return Addressed::Gone;
+        }
+        let baseline: Vec<&str> = c
+            .lines
+            .lines()
+            .filter(|l| matches!(l.as_bytes().first(), Some(b' ' | b'+')))
+            .map(|l| &l[1..])
+            .collect();
+        if baseline.is_empty() {
+            return Addressed::Pending;
+        }
+        let content = worktree_content(&self.repo, &c.file);
+        if contains_block(&content, &baseline) { Addressed::Pending } else { Addressed::Done }
+    }
+
+    pub fn is_reviewed(&self, path: &str) -> bool {
+        self.reviewed.contains_key(path)
+    }
+
+    pub fn reviewed_count(&self) -> usize {
+        self.reviewed.len()
+    }
+
+    /// Toggle the reviewed mark on the cursor's file. When marking (not un-marking), advance to
+    /// the next unreviewed changed file, so a run of `Space` walks the changeset.
+    pub fn toggle_reviewed(&mut self) {
+        let Some(path) = self.current_entry().map(|e| e.path.clone()) else {
+            self.status = "highlight a file to mark reviewed".to_string();
+            return;
+        };
+        if self.reviewed.remove(&path).is_some() {
+            return;
+        }
+        self.reviewed.insert(path.clone(), content_hash(&self.repo, &path));
+        if let Some(row) = self.next_unreviewed_row() {
+            self.file_cursor = row;
+            self.open_cursor_file();
+            self.reveal_files = true;
+        }
+    }
+
+    fn next_unreviewed_row(&self) -> Option<usize> {
+        let n = self.file_rows.len();
+        if n == 0 {
+            return None;
+        }
+        (1..=n).map(|d| (self.file_cursor + d) % n).find(|&i| {
+            self.file_rows[i].file_index().is_some_and(|idx| {
+                let p = &self.entries[idx].path;
+                self.changed.contains_key(p) && !self.reviewed.contains_key(p)
+            })
+        })
+    }
+
+    /// Drop reviewed marks whose file left the changeset or whose content changed since — so an
+    /// agent edit to a reviewed file re-surfaces it for another look.
+    fn prune_reviewed(&mut self) {
+        let (repo, changed) = (&self.repo, &self.changed);
+        self.reviewed.retain(|path, hash| {
+            changed.contains_key(path) && content_hash(repo, path) == *hash
+        });
+    }
+
     fn clamp_list_cursor(&mut self) {
         if self.list_cursor >= self.store.len() {
             self.list_cursor = self.store.len().saturating_sub(1);
@@ -2191,6 +2278,22 @@ fn worktree_content(repo: &std::path::Path, path: &str) -> String {
     std::fs::read(repo.join(path))
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
+}
+
+fn content_hash(repo: &std::path::Path, path: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    worktree_content(repo, path).hash(&mut h);
+    h.finish()
+}
+
+/// Whether `block`'s lines appear as a contiguous run within `content`.
+fn contains_block(content: &str, block: &[&str]) -> bool {
+    if block.is_empty() {
+        return true;
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    lines.windows(block.len()).any(|w| w == block)
 }
 
 fn is_markdown_path(path: &str) -> bool {
