@@ -523,6 +523,14 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         }
         return Ok(());
     }
+    if app.mode == Mode::Preview {
+        match m.kind {
+            MouseEventKind::ScrollDown => app.preview_scroll_by(3),
+            MouseEventKind::ScrollUp => app.preview_scroll_by(-3),
+            _ => {}
+        }
+        return Ok(());
+    }
     // The read-only PR tab: click a tab or the open button, click a row to read it, wheel the
     // navigator (right) to move, wheel the read pane (left) to scroll.
     if app.tab == crate::app::Tab::Pr {

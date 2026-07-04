@@ -796,17 +796,38 @@ fn render_markdown_preview(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let src = app.preview_markdown().unwrap_or_default();
-    let lines = render_markdown_lines(&src, inner.width);
+    let lines = render_markdown_lines(&src, inner.width, p);
     let scroll = app.preview_scroll.min(u16::MAX as usize) as u16;
     frame.render_widget(Paragraph::new(Text::from(lines)).scroll((scroll, 0)), inner);
 }
 
-fn render_markdown_lines(src: &str, width: u16) -> Vec<Line<'static>> {
+fn markdown_skin(p: &Palette) -> ratskin::MadSkin {
+    use ratatui::crossterm::style::Color as Mad;
+    let conv = |c: Color| match c {
+        Color::Rgb(r, g, b) => Mad::Rgb { r, g, b },
+        _ => Mad::Reset,
+    };
+    let mut skin = ratskin::MadSkin::default();
+    skin.set_headers_fg(conv(p.mauve));
+    skin.bold.set_fg(conv(p.peach));
+    skin.italic.set_fg(conv(p.lavender));
+    skin.inline_code.set_fg(conv(p.green));
+    skin
+}
+
+fn render_markdown_lines(src: &str, width: u16, p: &Palette) -> Vec<Line<'static>> {
     let parsed = ratskin::RatSkin::parse_text(src);
-    ratskin::RatSkin::default()
+    ratskin::RatSkin { skin: markdown_skin(p) }
         .parse(parsed, width.max(1))
         .into_iter()
-        .map(|l| Line::from(l.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect::<Vec<_>>()))
+        .map(|l| {
+            Line::from(
+                l.spans
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.into_owned(), s.style))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect()
 }
 
@@ -815,7 +836,7 @@ pub fn preview_metrics(app: &App, area: Rect, list_pct: u16) -> (usize, usize) {
     let width = diff.width.saturating_sub(2);
     let viewport = diff.height.saturating_sub(2) as usize;
     let lines = match app.preview_markdown() {
-        Some(src) => render_markdown_lines(&src, width).len(),
+        Some(src) => render_markdown_lines(&src, width, app.palette()).len(),
         None => 0,
     };
     (lines, viewport)
