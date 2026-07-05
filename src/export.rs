@@ -18,12 +18,21 @@ const PREAMBLE: &str = "The user has left the following review comments. Please 
 consider and resolve each one. When done, print a compact status table (#, location, status, \
 resolution) — for each comment give a 1–2 line resolution of what you changed, or a short \
 answer if it was a question, or a brief note with context if it needs a follow-up. Keep it \
-short and concise.";
+short and concise. When a comment has a <base>, its <code> is a unified-diff hunk (the +/- \
+lines) taken against that git ref — run `git diff <base> -- <file>` for the full change; a \
+comment without a <base> is plain file content.";
 
-/// One comment as its tagged block: the numbered `<comment>` with `<ref>`, `<code>`, and `<note>`.
+/// One comment as its tagged block: the numbered `<comment>` with `<ref>`, an optional `<base>`
+/// (the git ref a Changes hunk is diffed against, so the agent can reproduce it), `<code>`, and
+/// `<note>`.
 pub fn format_comment(n: usize, comment: &Comment) -> String {
+    let base = if comment.diff_anchored {
+        comment.base.as_deref().map_or_else(String::new, |b| format!("<base>{b}</base>\n"))
+    } else {
+        String::new()
+    };
     format!(
-        "<comment n=\"{n}\">\n<ref>{}</ref>\n<code>\n{}\n</code>\n<note>{}</note>\n</comment>",
+        "<comment n=\"{n}\">\n<ref>{}</ref>\n{base}<code>\n{}\n</code>\n<note>{}</note>\n</comment>",
         comment.location(),
         comment.lines,
         normalize_text(&comment.text),
@@ -191,6 +200,23 @@ mod tests {
              <code>\nfrom .x import y\nregister(y)\n</code>\n\
              <note>this import path looks wrong</note>\n</comment>"
         );
+    }
+
+    #[test]
+    fn a_changes_comment_carries_its_diff_base() {
+        let mut c = comment("f.rs", Side::New, 1, 2, " ctx\n+new", "why?");
+        c.base = Some("abc1234def".into());
+        let out = format_comment(1, &c);
+        assert!(out.contains("<base>abc1234def</base>"), "the diff base ref is included: {out}");
+    }
+
+    #[test]
+    fn an_all_files_comment_omits_the_base() {
+        let mut c = comment("f.rs", Side::New, 1, 1, "plain line", "note");
+        c.diff_anchored = false; // File-view (All files) content, not a diff
+        c.base = Some("abc1234".into());
+        let out = format_comment(1, &c);
+        assert!(!out.contains("<base>"), "plain content has no diff base: {out}");
     }
 
     #[test]

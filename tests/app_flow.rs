@@ -791,6 +791,7 @@ fn export_keeps_comments_so_the_round_trip_can_track_them() {
         sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
         "a Changes snippet reaches the agent with its `+/-` markers: {sent:?}"
     );
+    assert!(sent.contains("<base>"), "and the git base ref it was diffed against: {sent:?}");
 }
 
 #[test]
