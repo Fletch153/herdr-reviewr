@@ -96,8 +96,12 @@ pub fn body_rect(area: Rect) -> Rect {
 pub fn hit_divider(area: Rect, list_pct: u16, col: u16, row: u16) -> bool {
     let p = panes(area, list_pct);
     let in_body = row >= p.body.y && row < p.body.y + p.body.height;
-    // A 3-column grab zone straddling the abutting pane borders.
-    in_body && col + 1 >= p.files.x && col <= p.files.x + 1
+    // The grab zone is exactly the two abutting pane borders — the diff pane's right border at
+    // `files.x - 1` and the file pane's left border at `files.x` — and no content column of
+    // either pane. In particular it must stop at `files.x`: the file pane's content starts at
+    // `files.x + 1`, where the stage-marker paints, and that has to stay a click-to-stage target
+    // rather than start a resize.
+    in_body && col + 1 >= p.files.x && col <= p.files.x
 }
 
 /// The file-row index a click at `(col, row)` lands on, or `None` if outside the list.

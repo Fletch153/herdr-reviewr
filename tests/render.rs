@@ -103,6 +103,51 @@ fn the_fold_hint_names_the_arrow_key() {
     assert!(!out.contains("⏎ expand"), "no stale enter hint remains");
 }
 
+#[test]
+fn a_click_on_the_stage_marker_is_not_swallowed_by_the_pane_divider() {
+    // Regression: the divider grab zone used to extend one column into the file pane, over the
+    // stage-marker cell, so a marker click started a (no-op) resize instead of staging. The whole
+    // mouse dispatch checks `hit_divider` before `hit_file`, so the marker must fall outside it.
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n"); // an unstaged modification -> a grey 'M' marker
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    let (w, h) = (140u16, 40u16);
+    let area = Rect::new(0, 0, w, h);
+    let buf = render_buffer(&app);
+
+    // Find the 'M' stage-marker cell in the rendered file pane.
+    let mut marker = None;
+    for y in 0..h {
+        for x in 0..w {
+            if buf.cell((x, y)).is_some_and(|c| c.symbol() == "M") {
+                marker = Some((x, y));
+            }
+        }
+    }
+    let (mx, my) = marker.expect("the 'M' stage marker is rendered");
+
+    assert!(ui::on_file_marker(area, app.list_pct, mx, my), "the marker cell is the stage target");
+    assert!(
+        !ui::hit_divider(area, app.list_pct, mx, my),
+        "the divider must not swallow the marker click"
+    );
+    // The divider is still grabbable on its own border, one column left of the marker.
+    assert!(
+        ui::hit_divider(area, app.list_pct, mx - 1, my),
+        "the pane border still starts a resize"
+    );
+
+    // And the click actually stages: dispatch order is divider (miss) -> file hit -> marker -> stage.
+    assert_eq!(app.file_status("a.rs").map(|s| s.staged), Some(false), "starts unstaged");
+    let row = app.file_rows.iter().position(|rw| rw.name.contains("a.rs")).expect("a.rs row");
+    assert!(!ui::hit_divider(area, app.list_pct, mx, my) && app.stage_toggle(row), "marker stages");
+    assert_eq!(app.file_status("a.rs").map(|s| s.staged), Some(true), "the click staged it");
+}
+
 fn edited_app() -> App {
     let r = Repo::init();
     r.write("hello.rs", "alpha\nbeta\n");
