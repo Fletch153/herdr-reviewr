@@ -1560,7 +1560,8 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("r", "resolve the comment under the cursor"),
                 ("d", "delete the comment"),
                 ("l", "comments list (grouped by base; green = un-sent)"),
-                ("(list) space/a", "check row / all · r resolve checked · enter jump"),
+                ("(list) space/a", "check row / all · r resolve · enter jump"),
+                ("(list) s/y/e/d", "send · copy · edit · delete"),
             ],
         ),
         (
@@ -1568,7 +1569,8 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("1 / 2 / 3", "Changes / All files / PR tab"),
                 ("b / t / C", "branch / last-turn / commit scope"),
-                ("click base chip", "pick the base branch (like the commit picker)"),
+                ("click base chip", "pick the base branch (Branch scope)"),
+                ("click commit chip", "pick a commit to compare against (Commit scope)"),
             ],
         ),
         (
@@ -1590,6 +1592,7 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         (
             "Global",
             vec![
+                ("esc", "close any overlay · else clear the selection / filter"),
                 ("r", "reload"),
                 ("q", "quit"),
                 ("mouse", "click file/diff/header · wheel scroll · drag divider/select"),
