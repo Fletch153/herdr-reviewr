@@ -1568,7 +1568,7 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("1 / 2 / 3", "Changes / All files / PR tab"),
                 ("b / t / C", "branch / last-turn / commit scope"),
-                ("B", "pick the base branch"),
+                ("click base chip", "pick the base branch (like the commit picker)"),
             ],
         ),
         (

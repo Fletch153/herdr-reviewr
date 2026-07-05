@@ -483,7 +483,6 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Left, _) => app.scroll_h(-8),
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
-        (Char('B'), false) => app.open_branch_picker(),
         (Char('C'), false) => app.enter_commit_scope()?,
         (Char('v'), _) => app.toggle_select(),
         (Char('c'), _) => app.start_comment(),

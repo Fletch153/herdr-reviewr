@@ -79,7 +79,7 @@ below are the full reference.
 | `1` `2` `3` | Switch tab — Changes / All files / PR |
 | `b` `t` | Switch scope — branch / last turn |
 | `C` | Compare against a commit — defaults to the tip (the working-tree / uncommitted view, shown as `[commit] [uncommitted]`); click the commit chip to pick an older commit and diff the worktree against it |
-| `B` | Pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (also: click the base chip) |
+| base chip | Click the base chip to pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (chip-click only, like the commit picker) |
 | `p` | On a markdown file, toggle a rendered preview (headings, tables, lists) instead of the diff; `p` / `esc` returns to the diff to comment |
 | `+` | Send the highlighted file's `@path` into the agent's chat input (numpad or top-row `+`), ready to submit |
 | `space` | Walk the review. In the diff (Changes tab), step to the next change block; past the last block the file is marked reviewed (dims + `✓`) and you land on the next unreviewed file's first block. On the file list it marks the whole file reviewed and jumps to the next. The mark clears if the agent edits that file again; the header shows `N changed · M reviewed` |
@@ -160,7 +160,7 @@ button, and the scroll wheel all work too.
   the default diff is this branch's own work, not everything inherited from mainline; else the
   repository trunk (`origin/HEAD`, e.g. `origin/develop`, then `origin/main` → `origin/master` →
   `main` → `master`) when nothing forks below `HEAD`. A superset of the uncommitted view that adds
-  the branch's committed work. The header's base chip shows the effective base; click it (or press `B`)
+  the branch's committed work. The header's base chip shows the effective base; click it
   to pick a different base from this checkout's fork lineage — handy for stacked branches. The
   picker lists only ancestors of `HEAD`, nearest fork first, local branches then `origin/*`
   (picking the remote keeps its `origin/` label).

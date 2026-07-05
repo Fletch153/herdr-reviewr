@@ -2342,9 +2342,6 @@ impl App {
 
         if self.file_rows.is_empty() {
             out.push((A::Scope, Primary));
-            if self.scope == Scope::Branch {
-                out.push((A::Base, Normal));
-            }
             out.push((A::Refresh, Normal));
         } else if self.focus == Focus::Files {
             if let Some(RowKind::Dir { expanded, .. }) =
@@ -2394,10 +2391,6 @@ impl App {
             && self.comment_under_cursor().is_none()
         {
             out.push((A::OpenEditor, Normal));
-        }
-
-        if self.scope == Scope::Branch && !out.iter().any(|&(a, _)| a == A::Base) {
-            out.push((A::Base, Normal));
         }
 
         if self.current_entry().is_some() {

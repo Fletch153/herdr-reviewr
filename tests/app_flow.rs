@@ -2453,7 +2453,7 @@ fn the_editor_hint_shows_in_the_diff_and_yields_to_edit_on_a_comment() {
 }
 
 #[test]
-fn the_base_hint_shows_in_branch_scope_even_with_files_present() {
+fn the_base_picker_is_chip_click_only_no_footer_key() {
     let r = Repo::init();
     r.write("a.rs", "one\n");
     r.commit_all("init"); // on main — the branch-scope base
@@ -2465,9 +2465,11 @@ fn the_base_hint_shows_in_branch_scope_even_with_files_present() {
     app.reload().unwrap();
 
     assert!(!app.file_rows.is_empty(), "branch scope sees the feature commit's file");
+    // The base picker now opens only by clicking the base chip (like the commit picker), so no
+    // `B` key hint is offered in the footer.
     assert!(
-        app.footer_actions().iter().any(|&(a, _)| a == FooterAction::Base),
-        "`B base` stays offered in branch scope with files present (regression: it only showed when empty)"
+        !app.footer_actions().iter().any(|&(a, _)| a == FooterAction::Base),
+        "no base key hint — the picker is chip-click only"
     );
 }
 
