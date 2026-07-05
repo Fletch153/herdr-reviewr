@@ -625,6 +625,7 @@ fn the_comments_list_groups_by_base_and_shows_checkboxes() {
     assert!(out.contains("── All files ──"), "an all-files group header renders");
     assert!(out.contains("[ ]"), "checkboxes render");
     assert!(out.contains("fresh note") && out.contains("file note"), "comment text listed");
+    assert!(out.contains("space check"), "the command status bar renders at the bottom");
 }
 
 #[test]

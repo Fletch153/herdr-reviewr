@@ -100,6 +100,13 @@ impl BranchRow {
     }
 }
 
+/// A row of the comments-list overlay: a group header, or a comment by its store index.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ListRow {
+    Header(String),
+    Item(usize),
+}
+
 /// The interaction mode the UI is in.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -1805,7 +1812,44 @@ impl App {
     fn selection_anchor(&self) -> Option<(Side, u32, u32, String)> {
         let (lo, hi) = self.selection_range();
         let selected: Vec<&Row> = self.visible.get(lo..=hi)?.iter().collect();
-        anchor(&selected, self.diff.view == View::Diff)
+        let (side, start, end) = anchor_range(&selected)?;
+        let lines = if self.diff.view == View::Diff {
+            // Widen to the enclosing hunk (bounded by folds) so the snippet carries the actual git
+            // change — the `-old`/`+new` lines and their context — not just the one clicked line.
+            let (a, b) = self.enclosing_hunk(lo, hi);
+            self.visible[a..=b]
+                .iter()
+                .filter(|r| r.is_content())
+                .map(Row::marker_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            // File view (All files): plain content of the anchored side, no markers.
+            let has_new = selected.iter().filter(|r| r.is_content()).any(|r| r.new_no().is_some());
+            let pick: fn(&Row) -> Option<u32> = if has_new { Row::new_no } else { Row::old_no };
+            selected
+                .iter()
+                .filter(|r| r.is_content() && pick(r).is_some())
+                .map(|r| r.text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Some((side, start, end, lines))
+    }
+
+    /// The bounds in `visible` of the hunk enclosing `[lo, hi]`: expand outward while the
+    /// neighbouring row is diff content, stopping at folds and the file edges.
+    fn enclosing_hunk(&self, lo: usize, hi: usize) -> (usize, usize) {
+        let last = self.visible.len().saturating_sub(1);
+        let mut a = lo.min(last);
+        while a > 0 && self.visible[a - 1].is_content() {
+            a -= 1;
+        }
+        let mut b = hi.min(last);
+        while b < last && self.visible[b + 1].is_content() {
+            b += 1;
+        }
+        (a, b)
     }
 
     fn build_comment(&self, text: String) -> Option<Comment> {
@@ -1949,6 +1993,31 @@ impl App {
     /// Store indices in the list's grouped display order; `list_cursor` indexes this.
     pub fn list_order(&self) -> Vec<usize> {
         self.list_groups().into_iter().flat_map(|(_, items)| items).collect()
+    }
+
+    /// The overlay's display rows in order: a header per group, then its comments. Scrolling and
+    /// hit-testing walk this so headers and comments stay in one coordinate space.
+    pub fn list_display(&self) -> Vec<ListRow> {
+        let mut out = Vec::new();
+        for (label, idxs) in self.list_groups() {
+            out.push(ListRow::Header(label));
+            out.extend(idxs.into_iter().map(ListRow::Item));
+        }
+        out
+    }
+
+    /// The display-row index (headers counted) of the highlighted comment, for scroll-into-view.
+    pub fn list_cursor_row(&self) -> usize {
+        let mut items = 0;
+        for (d, row) in self.list_display().iter().enumerate() {
+            if let ListRow::Item(_) = row {
+                if items == self.list_cursor {
+                    return d;
+                }
+                items += 1;
+            }
+        }
+        0
     }
 
     /// The group header for a comment: its authoring commit / branch, or `All files`.
@@ -2452,6 +2521,11 @@ impl App {
         self.changed.contains_key(path)
     }
 
+    /// How many comments the next Send would dispatch — the un-sent ("fresh") ones.
+    pub fn unsent_count(&self) -> usize {
+        self.store.iter().filter(|c| !c.sent).count()
+    }
+
     pub fn is_reviewed(&self, path: &str) -> bool {
         self.reviewed.contains_key(path)
     }
@@ -2623,36 +2697,21 @@ fn line_in(c: &Comment, row: &Row) -> bool {
 
 /// Compute `(side, start, end, snippet)` for a selection of diff rows.
 ///
-/// New-side numbers win when present (insertion/context rows); a pure deletion
-/// anchors to the old side. The snippet keeps each row's `+`/`−`/space marker.
-fn anchor(selected: &[&Row], markers: bool) -> Option<(Side, u32, u32, String)> {
+/// The `(side, start, end)` a selection anchors to. New-side numbers win when present
+/// (insertion/context rows); a pure deletion anchors to the old side. Snippet capture is
+/// separate (`selection_anchor`), since the Changes snippet widens to the enclosing hunk.
+fn anchor_range(selected: &[&Row]) -> Option<(Side, u32, u32)> {
     // A selection may straddle a collapsed fold; anchor only over its content rows.
     let selected: Vec<&Row> = selected.iter().copied().filter(|r| r.is_content()).collect();
     if selected.is_empty() {
         return None;
     }
-    // On the Changes diff the snippet keeps the `+/-` hunk verbatim (both sides) so the agent sees
-    // the change; in the File view (All files) it is the marker-free content of the anchored side.
-    let snippet = if markers {
-        selected.iter().map(|r| r.marker_text()).collect::<Vec<_>>().join("\n")
-    } else {
-        let side_text = |on_side: fn(&Row) -> Option<u32>| -> String {
-            selected
-                .iter()
-                .filter(|r| on_side(r).is_some())
-                .map(|r| r.text())
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let has_new = selected.iter().any(|r| r.new_no().is_some());
-        side_text(if has_new { Row::new_no } else { Row::old_no })
-    };
     let new_nos: Vec<u32> = selected.iter().filter_map(|r| r.new_no()).collect();
     if let (Some(&min), Some(&max)) = (new_nos.iter().min(), new_nos.iter().max()) {
-        return Some((Side::New, min, max, snippet));
+        return Some((Side::New, min, max));
     }
     let old_nos: Vec<u32> = selected.iter().filter_map(|r| r.old_no()).collect();
     let min = *old_nos.iter().min()?;
     let max = *old_nos.iter().max()?;
-    Some((Side::Old, min, max, snippet))
+    Some((Side::Old, min, max))
 }

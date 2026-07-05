@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, BranchRow, Focus, FooterAction, Mode, Tab, Tier};
+use crate::app::{App, BranchRow, Focus, FooterAction, ListRow, Mode, Tab, Tier};
 use crate::diff::{FileDiff, FileState, Row};
 use crate::file_list::{Annotation, RowKind};
 use crate::forge;
@@ -468,7 +468,7 @@ fn commit_chip(app: &App) -> String {
 }
 
 fn send_button(app: &App) -> String {
-    format!("[ Send ({}) ]", app.store.len())
+    format!("[ Send ({}) ]", app.unsent_count())
 }
 
 /// The header suffix: the active scope's changed-file count. Shared so the painter and the
@@ -1311,7 +1311,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Filter => ("/", "filter"),
         A::ApplyFilter => ("enter", "apply"),
         A::PickCommit | A::PickBranch => ("enter", "compare"),
-        A::Send => return ("s".into(), format!("send {}", app.store.len())),
+        A::Send => return ("s".into(), format!("send {}", app.unsent_count())),
         A::List => ("l", "list"),
         A::Copy => ("y", "copy"),
         A::Save => ("enter", "save"),
@@ -1452,65 +1452,78 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup);
 
     let width = inner.width as usize;
+    // Reserve the last inner row for a command status bar; the rest scrolls.
+    let content_h = inner.height.saturating_sub(1) as usize;
+    let display = app.list_display();
+    let cursor_row = app.list_cursor_row();
+    let scroll = commit_scroll(cursor_row, content_h);
     let mut items: Vec<ListItem> = Vec::new();
-    let mut ordinal = 0usize; // matches app.list_cursor (the grouped comment order)
-    for (label, idxs) in app.list_groups() {
-        items.push(ListItem::new(Line::from(Span::styled(
-            format!("── {label} ──"),
-            Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
-        ))));
-        for i in idxs {
-            let Some(c) = app.store.get(i) else { continue };
-            let checked = app.is_list_selected(i);
-            let checkbox = Span::styled(
-                if checked { "[x] " } else { "[ ] " },
-                Style::default().fg(if checked { p.green } else { p.overlay1 }),
-            );
-            // Un-sent ("fresh") comments read in pale green so what the next Send will carry stands
-            // out; sent comments are the usual bold mauve.
-            let loc_style = if c.sent {
-                Style::default().fg(p.mauve).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(p.green).add_modifier(Modifier::BOLD)
-            };
-            let mut spans = vec![
-                checkbox,
-                Span::styled(c.location(), loc_style),
-                Span::styled(format!("  {}", c.text), text_style(p)),
-            ];
-            if app.is_stale(c) {
-                spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
+    for (d, row) in display.iter().enumerate().skip(scroll).take(content_h) {
+        match row {
+            ListRow::Header(label) => items.push(ListItem::new(Line::from(Span::styled(
+                format!("── {label} ──"),
+                Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
+            )))),
+            ListRow::Item(i) => {
+                let Some(c) = app.store.get(*i) else { continue };
+                let checked = app.is_list_selected(*i);
+                let checkbox = Span::styled(
+                    if checked { "[x] " } else { "[ ] " },
+                    Style::default().fg(if checked { p.green } else { p.overlay1 }),
+                );
+                // Un-sent ("fresh") comments read in pale green so what the next Send will carry
+                // stands out; sent comments are the usual bold mauve.
+                let loc_style = if c.sent {
+                    Style::default().fg(p.mauve).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.green).add_modifier(Modifier::BOLD)
+                };
+                let mut spans = vec![
+                    checkbox,
+                    Span::styled(c.location(), loc_style),
+                    Span::styled(format!("  {}", c.text), text_style(p)),
+                ];
+                if app.is_stale(c) {
+                    spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
+                }
+                items.push(selectable_row(spans, width, (d == cursor_row).then_some(p.surface2)));
             }
-            items.push(selectable_row(spans, width, (ordinal == app.list_cursor).then_some(p.surface2)));
-            ordinal += 1;
         }
     }
-    frame.render_widget(List::new(items), inner);
+    let content_area = Rect { height: content_h as u16, ..inner };
+    frame.render_widget(List::new(items), content_area);
+
+    // The command status bar pinned to the overlay's last row.
+    let bar = Rect { y: inner.y + content_h as u16, height: 1, ..inner };
+    let hints = "space check · a all · r resolve · enter open · s send · y copy · e edit · d delete · esc close";
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_width(hints, width),
+            Style::default().fg(p.overlay1),
+        )))
+        .style(Style::default().bg(p.surface0)),
+        bar,
+    );
 }
 
-/// The store index of the comment row a click at `(col, row)` lands on, skipping group headers;
-/// `None` on a header or outside the overlay. Walks the same grouped layout the renderer draws.
+/// The store index of the comment row a click at `(col, row)` lands on, skipping group headers
+/// and the status bar; `None` otherwise. Uses the same grouped layout and scroll as the renderer.
 #[must_use]
 pub fn hit_comments_list(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     let inner = Block::default().borders(Borders::ALL).inner(centered(area, 80, 60));
     if !contains(inner, col, row) {
         return None;
     }
-    let target = (row - inner.y) as usize;
-    let mut d = 0usize;
-    for (_, idxs) in app.list_groups() {
-        if d == target {
-            return None; // a group header
-        }
-        d += 1;
-        for i in idxs {
-            if d == target {
-                return Some(i);
-            }
-            d += 1;
-        }
+    let content_h = inner.height.saturating_sub(1) as usize;
+    let clicked = (row - inner.y) as usize;
+    if clicked >= content_h {
+        return None; // the status bar
     }
-    None
+    let scroll = commit_scroll(app.list_cursor_row(), content_h);
+    match app.list_display().get(clicked + scroll) {
+        Some(ListRow::Item(i)) => Some(*i),
+        _ => None,
+    }
 }
 
 /// The `?` help content as titled groups of `(keys, description)`. One source for both the

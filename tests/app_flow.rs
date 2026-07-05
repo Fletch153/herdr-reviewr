@@ -720,11 +720,12 @@ fn comments_on_added_and_removed_lines_keep_the_diff_marker() {
     comment_on(&mut app, '-', "why was this dropped?");
     assert_eq!(app.store.len(), 2);
 
-    // A Changes (diff) comment keeps the `+/-` hunk so the agent sees the change.
-    let removed = app.store.iter().find(|c| c.location().ends_with("(removed)")).unwrap();
-    assert!(removed.lines.starts_with('-'), "removed-line snippet keeps `-`: {:?}", removed.lines);
-    let added = app.store.iter().find(|c| !c.location().ends_with("(removed)")).unwrap();
-    assert!(added.lines.starts_with('+'), "added-line snippet keeps `+`: {:?}", added.lines);
+    // A Changes (diff) comment captures the enclosing hunk, so both sides of the change reach the
+    // agent regardless of which line was clicked.
+    for c in app.store.iter() {
+        let has_marker = c.lines.lines().any(|l| l.starts_with('+') || l.starts_with('-'));
+        assert!(has_marker, "the hunk snippet carries the +/- change: {:?}", c.lines);
+    }
 }
 
 #[test]
@@ -1754,7 +1755,9 @@ fn anchor_stamps_scope_base_and_keeps_the_diff_marker() {
 
     let c = app.store.get(0).expect("a comment was made");
     assert_eq!(c.side, Side::New);
-    assert_eq!(c.lines, "+fn main() { work(); }", "a Changes snapshot keeps the `+` diff marker");
+    // The hunk snapshot carries both sides of the one-line change.
+    assert!(c.lines.contains("+fn main() { work(); }"), "keeps the added side: {:?}", c.lines);
+    assert!(c.lines.contains("-fn main() {}"), "and the removed side: {:?}", c.lines);
     assert_eq!(c.scope, Scope::Commit, "stamped with the authoring scope");
     assert_eq!(c.base.as_deref(), app.selected_commit.as_deref(), "and the diff base");
     assert!(!c.sent, "a fresh comment starts un-sent");
@@ -1987,6 +1990,51 @@ fn open_comment_restores_scope_and_base_then_jumps() {
     assert_eq!(app.scope, Scope::Commit);
     assert_eq!(app.mode, Mode::Normal, "the list closed on the jump");
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "and its file is open");
+}
+
+#[test]
+fn the_send_count_ignores_already_sent_comments() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "one");
+    assert_eq!(app.unsent_count(), 1);
+
+    app.export(&FakeTarget::ok());
+    assert_eq!(app.unsent_count(), 0, "sent comments drop out of the send count");
+
+    comment_on(&mut app, '-', "two");
+    assert_eq!(app.unsent_count(), 1, "only the new comment counts toward the next send");
+}
+
+#[test]
+fn a_changes_snippet_captures_both_sides_of_the_hunk() {
+    let r = Repo::init();
+    r.write("a.rs", "keep1\nold\nkeep2\n");
+    r.commit_all("init");
+    r.write("a.rs", "keep1\nnew\nkeep2\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    goto_file(&mut app, "a.rs");
+    comment_on(&mut app, '+', "why the change?"); // click only the +new line
+
+    let c = app.store.get(0).unwrap();
+    assert!(c.lines.lines().any(|l| l == "-old"), "captures the removed side: {:?}", c.lines);
+    assert!(c.lines.lines().any(|l| l == "+new"), "and the added side: {:?}", c.lines);
+    assert!(c.lines.lines().any(|l| l == " keep1"), "with surrounding context: {:?}", c.lines);
+}
+
+#[test]
+fn list_cursor_row_counts_group_headers() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.store.add(lit("a.rs", Some("aaaa"), true, "group one"));
+    app.store.add(lit("a.rs", Some("bbbb"), true, "group two"));
+    app.open_list();
+
+    // display: [Header(a), Item0, Header(b), Item1]
+    assert_eq!(app.list_cursor_row(), 1, "the first comment sits below its header");
+    app.list_move(1);
+    assert_eq!(app.list_cursor_row(), 3, "the second, in a new group, below a second header");
 }
 
 #[test]
