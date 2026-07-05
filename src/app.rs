@@ -1790,7 +1790,10 @@ impl App {
         // The File view marks every comment as content-anchored, so it ages by file existence,
         // not changeset membership (specs/review-model.md).
         let diff_anchored = self.diff.view == View::Diff;
-        Some(Comment { file, side, start, end, lines, text, diff_anchored })
+        // Stamp the base the comment is anchored against, so an Old-side (removed-line) comment
+        // can tell when its base changes out from under it.
+        let base = self.resolved_base.clone();
+        Some(Comment { file, side, start, end, lines, text, diff_anchored, base })
     }
 
     /// The `path:line` the composer is anchored to (selection for a new comment,
@@ -1810,6 +1813,7 @@ impl App {
                     lines: String::new(),
                     text: String::new(),
                     diff_anchored: true,
+                    base: None,
                 };
                 Some(c.location())
             }
@@ -2244,12 +2248,23 @@ impl App {
     /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
     /// the changeset; a File-view (content) comment only once its file is gone from the
     /// worktree, since it was never tied to the changeset (specs/review-model.md).
+    /// Whether the code a comment anchors to is gone. New-side comments are worktree-anchored, so
+    /// they age only when the file or the line itself disappears — a base change never orphans
+    /// them. Old-side (removed-line) comments only exist relative to their base, so they orphan
+    /// when that base changes or the file is deleted.
     pub fn is_stale(&self, c: &Comment) -> bool {
-        if c.diff_anchored {
-            !self.changed.contains_key(&c.file)
-        } else {
-            !self.repo.join(&c.file).exists()
+        if !self.repo.join(&c.file).exists() {
+            return true;
         }
+        match c.side {
+            Side::New => c.end > worktree_content(&self.repo, &c.file).lines().count() as u32,
+            Side::Old => c.base.as_deref() != self.resolved_base.as_deref(),
+        }
+    }
+
+    /// Whether `path` is part of the active scope's changeset (the current diff).
+    pub fn in_changeset(&self, path: &str) -> bool {
+        self.changed.contains_key(path)
     }
 
     pub fn is_reviewed(&self, path: &str) -> bool {
@@ -2431,13 +2446,23 @@ fn anchor(selected: &[&Row]) -> Option<(Side, u32, u32, String)> {
     if selected.is_empty() {
         return None;
     }
-    let snippet = selected.iter().map(|r| r.marker_text()).collect::<Vec<_>>().join("\n");
+    // The snippet is the marker-free content of the anchored side: worktree text for a New-side
+    // comment (context + insertions), base text for an Old-side one (context + deletions). Diff
+    // markers are base-relative, so they never enter the stored snapshot — only the code does.
+    let side_text = |on_side: fn(&Row) -> Option<u32>| -> String {
+        selected
+            .iter()
+            .filter(|r| on_side(r).is_some())
+            .map(|r| r.text())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let new_nos: Vec<u32> = selected.iter().filter_map(|r| r.new_no()).collect();
     if let (Some(&min), Some(&max)) = (new_nos.iter().min(), new_nos.iter().max()) {
-        return Some((Side::New, min, max, snippet));
+        return Some((Side::New, min, max, side_text(Row::new_no)));
     }
     let old_nos: Vec<u32> = selected.iter().filter_map(|r| r.old_no()).collect();
     let min = *old_nos.iter().min()?;
     let max = *old_nos.iter().max()?;
-    Some((Side::Old, min, max, snippet))
+    Some((Side::Old, min, max, side_text(Row::old_no)))
 }

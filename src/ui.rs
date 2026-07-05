@@ -1456,10 +1456,13 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
             );
             let mut spans =
                 vec![loc, Span::styled(format!("  {}", c.text), text_style(p))];
-            // A comment whose file left the changeset (or was deleted) is flagged, not
-            // auto-resolved — the reviewer resolves it with `r` when they're done.
+            // Flag, don't auto-resolve — the reviewer clears a comment with `r`. `(stale)` means
+            // the anchored code is gone; `(outside diff)` means a still-valid comment whose file
+            // simply isn't in the current changeset (e.g. after a base switch).
             if app.is_stale(c) {
                 spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
+            } else if c.diff_anchored && !app.in_changeset(&c.file) {
+                spans.push(Span::styled("  (outside diff)", Style::default().fg(p.overlay0)));
             }
             // The list overlay is the active modal, so its row reads at full brightness.
             selectable_row(spans, width, (i == app.list_cursor).then_some(p.surface2))

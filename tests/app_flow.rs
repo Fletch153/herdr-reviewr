@@ -700,7 +700,7 @@ fn comment_anchors_to_gits_real_line_numbers() {
 }
 
 #[test]
-fn comments_on_added_and_removed_lines_capture_the_snippet() {
+fn comments_on_added_and_removed_lines_capture_the_marker_free_side_snippet() {
     let r = edited_repo();
     let mut app = app_on(&r);
     assert_eq!(app.entries.len(), 1);
@@ -709,19 +709,16 @@ fn comments_on_added_and_removed_lines_capture_the_snippet() {
     comment_on(&mut app, '-', "why was this dropped?");
     assert_eq!(app.store.len(), 2);
 
-    let removed = app
-        .store
-        .iter()
-        .find(|c| c.location().ends_with("(removed)"))
-        .expect("a removed-side comment");
-    assert!(removed.lines.starts_with('-'), "snippet keeps the diff marker: {:?}", removed.lines);
-
-    let added = app
-        .store
-        .iter()
-        .find(|c| !c.location().ends_with("(removed)"))
-        .expect("a new-side comment");
-    assert!(added.lines.starts_with('+'));
+    // Snapshots are the plain code of the anchored side — no `+`/`-`/space markers, and no
+    // cross-side `-old/+new` pair from a modified line.
+    for c in app.store.iter() {
+        assert!(!c.lines.is_empty(), "the snippet is captured: {:?}", c.lines);
+        assert!(
+            !c.lines.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
+            "the snippet is marker-free: {:?}",
+            c.lines,
+        );
+    }
 }
 
 #[test]
@@ -782,9 +779,10 @@ fn export_keeps_comments_so_the_round_trip_can_track_them() {
     assert!(sent.starts_with("<review>"), "leads with the review container: {sent:?}");
     assert!(sent.contains("<ref>a.rs:"), "each comment carries a tagged location: {sent:?}");
     assert!(sent.contains("<note>one</note>"), "the note is tagged: {sent:?}");
+    assert!(sent.contains("<code>"), "each block carries its code snippet: {sent:?}");
     assert!(
-        sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
-        "each block carries its diff snippet: {sent:?}"
+        !sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
+        "the snippet is marker-free — no base-relative diff markers reach the agent: {sent:?}"
     );
 }
 
@@ -1109,7 +1107,7 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
 }
 
 #[test]
-fn a_comment_on_a_reverted_file_is_flagged_stale() {
+fn a_comment_on_a_reverted_file_stays_live_outside_the_diff() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
@@ -1120,7 +1118,10 @@ fn a_comment_on_a_reverted_file_is_flagged_stale() {
     assert!(app.entries.iter().all(|f| f.path != "a.rs"), "file left the changeset");
     assert_eq!(app.store.len(), 1, "the comment still exists");
     let c = app.store.get(0).unwrap();
-    assert!(app.is_stale(c), "a diff comment whose file left the changeset is stale");
+    // The New-side line still exists in the worktree, so the comment is not orphaned — it's just
+    // no longer part of the current diff.
+    assert!(!app.is_stale(c), "a worktree-anchored comment survives its file leaving the diff");
+    assert!(!app.in_changeset("a.rs"), "and the file is outside the changeset");
 }
 
 #[test]
@@ -1145,7 +1146,7 @@ fn switching_scope_swaps_the_changeset() {
 }
 
 #[test]
-fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
+fn a_multi_line_range_comment_spans_lines_with_a_marker_free_snippet() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
@@ -1168,11 +1169,10 @@ fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     assert_eq!(app.store.len(), 1);
     let c = app.store.iter().next().unwrap();
     assert!(c.end > c.start, "comment covers a line range: {}..{}", c.start, c.end);
-    let snippet: Vec<&str> = c.lines.lines().collect();
-    assert!(snippet.len() >= 2, "snippet keeps every selected line: {:?}", c.lines);
+    assert!(!c.lines.is_empty(), "the snippet is captured: {:?}", c.lines);
     assert!(
-        snippet.iter().all(|l| l.starts_with(['+', '-', ' '])),
-        "every snippet line keeps its diff marker: {:?}",
+        !c.lines.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
+        "the snippet is the marker-free content of the anchored side: {:?}",
         c.lines
     );
 }
@@ -1565,7 +1565,7 @@ fn switching_tabs_restores_each_tab_selection() {
 }
 
 #[test]
-fn changed_count_and_staleness_stay_scope_based_on_all_files() {
+fn a_new_side_comment_survives_leaving_the_changeset() {
     use herdr_reviewr::app::Tab;
     use herdr_reviewr::model::Comment;
     let r = Repo::init();
@@ -1576,15 +1576,16 @@ fn changed_count_and_staleness_stay_scope_based_on_all_files() {
     let mut app = app_on(&r);
     assert_eq!(app.changed_count(), 1, "Changes counts the one changed file");
 
-    // A diff comment on b.rs, which is in the worktree but not in the changeset.
+    // A New-side comment on b.rs, which is in the worktree but not in the changeset.
     let comment = Comment {
         file: "b.rs".into(),
         side: Side::New,
         start: 1,
         end: 1,
-        lines: " two".into(),
+        lines: "two".into(),
         text: "?".into(),
         diff_anchored: true,
+        base: None,
     };
     app.store.add(comment.clone());
 
@@ -1592,9 +1593,10 @@ fn changed_count_and_staleness_stay_scope_based_on_all_files() {
     assert!(app.entries.len() >= 2, "All files lists the whole worktree");
     assert_eq!(app.changed_count(), 1, "the count is the changeset, not the worktree total");
     assert!(
-        app.is_stale(&comment),
-        "a diff comment keys on the changeset even while All files lists b.rs"
+        !app.is_stale(&comment),
+        "a New-side comment is worktree-anchored, so it is not stale outside the changeset",
     );
+    assert!(!app.in_changeset("b.rs"), "though b.rs is not part of the current diff");
 }
 
 /// The annotation on the `All files` row for `path`: `Some(Some(_))` annotated, `Some(None)`
@@ -1731,6 +1733,57 @@ fn content_comment_is_stale_only_when_its_file_is_deleted() {
 }
 
 #[test]
+fn anchor_captures_the_worktree_line_text_without_a_marker() {
+    let r = Repo::init();
+    r.write("a.rs", "fn main() {}\n");
+    r.commit_all("init");
+    r.write("a.rs", "fn main() { work(); }\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    goto_file(&mut app, "a.rs");
+    comment_on(&mut app, '+', "note");
+
+    let c = app.store.get(0).expect("a comment was made");
+    assert_eq!(c.side, Side::New);
+    assert_eq!(c.lines, "fn main() { work(); }", "the snapshot is the plain worktree line");
+    assert_eq!(c.base.as_deref(), app.selected_commit.as_deref(), "stamped with the diff base");
+}
+
+#[test]
+fn a_base_change_orphans_old_side_comments_but_not_new_side() {
+    use herdr_reviewr::model::Comment;
+    let r = Repo::init();
+    r.write("a.rs", "l1\nl2\n");
+    r.commit_all("c1");
+    r.write("a.rs", "l1\nl2\nl3\n");
+    r.commit_all("c2");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    let base_now = app.selected_commit.clone().expect("commit scope has a base");
+    assert!(app.commit_choices.len() >= 2, "two commits to switch between");
+    let older = app.commit_choices[1].sha.clone();
+
+    let mk = |side| Comment {
+        file: "a.rs".into(),
+        side,
+        start: 1,
+        end: 1,
+        lines: "l1".into(),
+        text: "?".into(),
+        diff_anchored: true,
+        base: Some(base_now.clone()),
+    };
+    let new_c = mk(Side::New);
+    let old_c = mk(Side::Old);
+    assert!(!app.is_stale(&new_c) && !app.is_stale(&old_c), "both live against their own base");
+
+    app.selected_commit = Some(older);
+    app.reload().unwrap();
+    assert!(!app.is_stale(&new_c), "the New-side comment is worktree-anchored and survives");
+    assert!(app.is_stale(&old_c), "the Old-side comment orphans when its base changes");
+}
+
+#[test]
 fn the_tabs_keep_independent_selections() {
     use herdr_reviewr::app::Tab;
     let r = Repo::init();
@@ -1771,9 +1824,9 @@ fn a_file_view_comment_exports_as_path_line_with_a_context_snippet() {
     let target = FakeTarget::ok();
     app.export(&target);
     let out = target.last();
-    assert!(out.contains("a.rs:2"), "header is path:line:\n{out}");
+    assert!(out.contains("a.rs:2"), "ref is path:line:\n{out}");
     assert!(!out.contains("(removed)"), "a content comment never carries (removed):\n{out}");
-    assert!(out.contains(" beta"), "the snippet is the space-prefixed content line:\n{out}");
+    assert!(out.contains("<code>\nbeta\n</code>"), "the snippet is the marker-free line:\n{out}");
 }
 
 #[test]

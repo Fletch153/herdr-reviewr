@@ -78,12 +78,16 @@ pub struct Comment {
     pub side: Side,
     pub start: u32,
     pub end: u32,
-    /// Verbatim diff lines the comment anchors to, each keeping its `+`/`-`/space marker.
+    /// The marker-free content of the anchored side (worktree text for `New`, base text for
+    /// `Old`) for the lines `start..=end` — a stable, base-independent snapshot of the code.
     pub lines: String,
     pub text: String,
     /// True when anchored to a diff (the `Changes` tab); false for a File-view content comment
-    /// (the `All files` tab). Selects how staleness is judged (specs/review-model.md).
+    /// (the `All files` tab). Gates which view renders the comment inline (specs/review-model.md).
     pub diff_anchored: bool,
+    /// The resolved diff base the comment was anchored against; identifies an `Old`-side
+    /// comment's removed-line snapshot. `None` for last-turn or worktree-only anchors.
+    pub base: Option<String>,
 }
 
 impl Comment {
@@ -165,9 +169,10 @@ mod tests {
             side: Side::New,
             start,
             end,
-            lines: "+x".into(),
+            lines: "x".into(),
             text: text.into(),
             diff_anchored: true,
+            base: None,
         }
     }
 

@@ -572,8 +572,8 @@ fn the_comments_list_flags_a_stale_comment() {
     }
     app.submit_comment();
 
-    // a.rs reverts to its committed state → leaves the changeset → the comment is stale.
-    r.write("a.rs", "alpha\nbeta\n");
+    // Deleting a.rs removes the line the comment anchors to → it is truly orphaned.
+    r.remove("a.rs");
     app.reload().unwrap();
     app.open_list();
 

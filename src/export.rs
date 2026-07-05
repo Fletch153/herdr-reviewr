@@ -160,6 +160,7 @@ mod tests {
             lines: lines.into(),
             text: text.into(),
             diff_anchored: true,
+            base: None,
         }
     }
 
@@ -170,33 +171,33 @@ mod tests {
             Side::New,
             40,
             41,
-            "-from .z import w\n+from .x import y",
+            "from .x import y\nregister(y)",
             "this import path looks wrong",
         );
         assert_eq!(
             format_comment(1, &c),
             "<comment n=\"1\">\n<ref>extruct/core/llm_registry.py:40-41</ref>\n\
-             <code>\n-from .z import w\n+from .x import y\n</code>\n\
+             <code>\nfrom .x import y\nregister(y)\n</code>\n\
              <note>this import path looks wrong</note>\n</comment>"
         );
     }
 
     #[test]
     fn removed_side_marks_the_ref() {
-        let c = comment("a.rs", Side::Old, 38, 38, "-    cleanup()", "still needed");
+        let c = comment("a.rs", Side::Old, 38, 38, "    cleanup()", "still needed");
         assert_eq!(
             format_comment(2, &c),
             "<comment n=\"2\">\n<ref>a.rs:38 (removed)</ref>\n\
-             <code>\n-    cleanup()\n</code>\n<note>still needed</note>\n</comment>"
+             <code>\n    cleanup()\n</code>\n<note>still needed</note>\n</comment>"
         );
     }
 
     #[test]
     fn multiline_text_keeps_breaks_but_drops_blank_lines() {
-        let c = comment("a.rs", Side::New, 1, 1, "+x", "first line\n\n  \nsecond line\n");
+        let c = comment("a.rs", Side::New, 1, 1, "x", "first line\n\n  \nsecond line\n");
         assert_eq!(
             format_comment(1, &c),
-            "<comment n=\"1\">\n<ref>a.rs:1</ref>\n<code>\n+x\n</code>\n\
+            "<comment n=\"1\">\n<ref>a.rs:1</ref>\n<code>\nx\n</code>\n\
              <note>first line\nsecond line</note>\n</comment>"
         );
     }
