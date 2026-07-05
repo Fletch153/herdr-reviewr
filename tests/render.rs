@@ -578,7 +578,7 @@ fn the_comments_list_flags_a_stale_comment() {
     app.open_list();
 
     let out = render(&app);
-    assert!(out.contains("(gone)"), "orphaned comment flagged in the list:\n{out}");
+    assert!(out.contains("(stale)"), "orphaned comment flagged in the list:\n{out}");
 }
 
 #[test]
@@ -596,6 +596,17 @@ fn open_list_renders_the_comments_overlay() {
     let out = render(&app);
     assert!(out.contains("Comments ("), "overlay titled with a count");
     assert!(out.contains("overlay note"), "comment text listed");
+}
+
+#[test]
+fn the_help_panel_lists_the_key_sections() {
+    let mut app = edited_app();
+    app.open_help();
+    let out = render(&app);
+    assert!(out.contains("Keys"), "the help overlay is titled");
+    assert!(out.contains("Navigate"), "a section header renders");
+    assert!(out.contains("Comments"), "a section header renders");
+    assert!(out.contains("resolve"), "the resolve key is documented");
 }
 
 #[test]

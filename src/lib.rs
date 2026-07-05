@@ -161,6 +161,10 @@ fn event_loop(
             let (lines, vp) = ui::preview_metrics(app, area, app.list_pct);
             app.bound_preview_scroll(lines, vp);
         }
+        if app.mode == Mode::Help {
+            let (lines, vp) = ui::help_metrics(area);
+            app.bound_help_scroll(lines, vp);
+        }
         terminal.draw(|f| ui::render(f, app))?;
         // Deliver a completed background fetch, then trigger a new one when `pr_pending` is set
         // (panel open, tab entry, `r`, or the agent's turn-end) or the slow fallback poll elapses
@@ -361,6 +365,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
             Char('s') => app.export(&Agent),
             Char('y') => app.export(&Clipboard),
             Char('e') => app.start_edit(),
+            Char('r') => app.resolve_comment(),
             Char('d') => app.delete_comment(),
             _ => {}
         }
@@ -418,12 +423,30 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::Help {
+        match (key.code, ctrl) {
+            (Esc | Char('q' | '?'), _) => app.close_help(),
+            (Char('j') | Down, _) => app.help_scroll_by(1),
+            (Char('k') | Up, _) => app.help_scroll_by(-1),
+            (PageDown, _) => app.help_scroll_by(PAGE),
+            (PageUp, _) => app.help_scroll_by(-PAGE),
+            (Char('d'), true) => app.help_scroll_by(HALF_PAGE),
+            (Char('u'), true) => app.help_scroll_by(-HALF_PAGE),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match (key.code, ctrl) {
         // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
         // keys move the focused pane's cursor (the view follows), like `j`/`k`.
         (Char('u'), true) => app.move_cursor(-HALF_PAGE)?,
         (Char('d'), true) => app.move_cursor(HALF_PAGE)?,
         (Char('q'), _) => app.should_quit = true,
+        // `r` resolves the comment under the diff cursor; with none there it reloads.
+        (Char('r'), false) if app.focus == Focus::Diff && app.comment_under_cursor().is_some() => {
+            app.resolve_comment();
+        }
         (Char('r'), _) => app.reload()?,
         // `1` / `2` / `3` switch tabs (provisional; the keymap is an Open Decision in tui.md).
         (Char('1'), _) => app.set_tab(crate::app::Tab::Changes)?,
@@ -472,7 +495,8 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('l'), _) => app.open_list(),
         (Char('p'), false) => app.open_preview(),
         (Char('+'), _) => app.send_path_to_agent(),
-        (Char(' '), _) => app.toggle_reviewed(),
+        (Char(' '), _) => app.review_advance(),
+        (Char('?'), _) => app.open_help(),
         (Char('/'), false) => app.start_filter(),
         (Esc, _) => {
             if app.filter.is_empty() {
@@ -487,10 +511,34 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
 }
 
 fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> Result<()> {
-    // A modal (the comment composer or the comments-list overlay) captures the screen and is
-    // keyboard-driven, so the mouse is inert while one is open — otherwise clicks and the
-    // wheel would drive the panes drawn underneath it.
-    if app.composing() || app.mode == Mode::List {
+    // The comment composer captures the screen and is keyboard-driven, so the mouse is inert
+    // while it is open — otherwise clicks and the wheel would drive the panes drawn underneath.
+    if app.composing() {
+        return Ok(());
+    }
+    // The comments-list overlay: click a row to jump to its code, click outside to close, wheel
+    // to move the selection.
+    if app.mode == Mode::List {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                match ui::hit_comments_list(area, app, m.column, m.row) {
+                    Some(i) => app.jump_to_comment(i),
+                    None if !ui::in_picker_popup(area, m.column, m.row) => app.close_list(),
+                    None => {}
+                }
+            }
+            MouseEventKind::ScrollDown => app.list_move(3),
+            MouseEventKind::ScrollUp => app.list_move(-3),
+            _ => {}
+        }
+        return Ok(());
+    }
+    if app.mode == Mode::Help {
+        match m.kind {
+            MouseEventKind::ScrollDown => app.help_scroll_by(3),
+            MouseEventKind::ScrollUp => app.help_scroll_by(-3),
+            _ => {}
+        }
         return Ok(());
     }
     if app.mode == Mode::CommitPick {

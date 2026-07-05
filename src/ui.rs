@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{Addressed, App, BranchRow, Focus, FooterAction, Mode, Tab, Tier};
+use crate::app::{App, BranchRow, Focus, FooterAction, Mode, Tab, Tier};
 use crate::diff::{FileDiff, FileState, Row};
 use crate::file_list::{Annotation, RowKind};
 use crate::forge;
@@ -49,6 +49,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_commit_picker(frame, app, area);
     } else if app.mode == Mode::BranchPick {
         render_branch_picker(frame, app, area);
+    } else if app.mode == Mode::Help {
+        render_help_panel(frame, app, area);
     }
 }
 
@@ -1287,6 +1289,10 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::EditComment => ("e", "edit"),
         A::OpenEditor => ("e", "editor"),
         A::DeleteComment => ("d", "delete"),
+        A::Resolve => ("r", "resolve"),
+        A::Review => {
+            return ("space".into(), if app.focus == Focus::Diff { "next block" } else { "review" }.into());
+        }
         A::JumpComment => ("n/N", "jump"),
         A::ExpandFold => ("→", "expand fold"),
         A::ExpandDir => ("→", "expand"),
@@ -1310,10 +1316,11 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Save => ("enter", "save"),
         A::Newline => ("⇧⏎", "newline"),
         A::Cancel => ("esc", "cancel"),
-        A::CloseList | A::ClosePicker => ("esc", "close"),
+        A::CloseList | A::ClosePicker | A::CloseHelp => ("esc", "close"),
         A::OpenPr => ("o", "open ↗"),
         A::Refresh => ("r", "refresh"),
         A::Tabs => ("1·2·3", ""),
+        A::Help => ("?", "help"),
         A::Quit => ("q", ""),
     };
     (k.into(), l.into())
@@ -1443,29 +1450,154 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let addressed = app.comment_addressed(c);
-            let (glyph, color) = match addressed {
-                Addressed::Done => ("✓ ", p.green),
-                Addressed::Pending => ("○ ", p.peach),
-                Addressed::Gone => ("· ", p.red),
-            };
             let loc = Span::styled(
                 c.location(),
                 Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
             );
-            let mut spans = vec![
-                Span::styled(glyph, Style::default().fg(color)),
-                loc,
-                Span::styled(format!("  {}", c.text), text_style(p)),
-            ];
-            if addressed == Addressed::Gone {
-                spans.push(Span::styled("  (gone)", Style::default().fg(p.red)));
+            let mut spans =
+                vec![loc, Span::styled(format!("  {}", c.text), text_style(p))];
+            // A comment whose file left the changeset (or was deleted) is flagged, not
+            // auto-resolved — the reviewer resolves it with `r` when they're done.
+            if app.is_stale(c) {
+                spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
             }
             // The list overlay is the active modal, so its row reads at full brightness.
             selectable_row(spans, width, (i == app.list_cursor).then_some(p.surface2))
         })
         .collect();
     frame.render_widget(List::new(items), inner);
+}
+
+/// The comment-list row a click at `(col, row)` lands on, or `None` outside the overlay's rows.
+/// The list is unscrolled (one row per comment), so a row maps directly to a store index.
+#[must_use]
+pub fn hit_comments_list(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
+    let inner = Block::default().borders(Borders::ALL).inner(centered(area, 80, 60));
+    if !contains(inner, col, row) {
+        return None;
+    }
+    let idx = (row - inner.y) as usize;
+    (idx < app.store.len()).then_some(idx)
+}
+
+/// The `?` help content as titled groups of `(keys, description)`. One source for both the
+/// rendered panel and its line count, hand-maintained from the key handler in `lib.rs`.
+fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        (
+            "Navigate",
+            vec![
+                ("j / k  ↑ / ↓", "move the cursor"),
+                ("PgUp/PgDn", "page the focused pane"),
+                ("Ctrl-u / Ctrl-d", "half-page"),
+                ("Tab", "switch files ⇄ diff"),
+                ("← / →", "collapse/expand dir · expand fold · scroll diff"),
+                ("Enter", "expand/collapse the tree under a folder"),
+                ("w", "toggle line wrap"),
+                ("[ / ]", "narrow / widen the file list"),
+            ],
+        ),
+        (
+            "Review",
+            vec![
+                ("Space", "diff: next change block, then mark file → next file"),
+                ("Space", "file list: mark the whole file reviewed → next"),
+                ("n / N", "next / previous comment"),
+            ],
+        ),
+        (
+            "Comments",
+            vec![
+                ("c", "comment on the selection"),
+                ("v", "start / extend a selection"),
+                ("e", "edit the comment / open $EDITOR"),
+                ("r", "resolve the comment under the cursor"),
+                ("d", "delete the comment"),
+                ("l", "open the comments list"),
+                ("(list) click", "jump to a comment · r resolve · e edit · d delete"),
+            ],
+        ),
+        (
+            "Scope & base",
+            vec![
+                ("1 / 2 / 3", "Changes / All files / PR tab"),
+                ("b / t / C", "branch / last-turn / commit scope"),
+                ("B", "pick the base branch"),
+            ],
+        ),
+        (
+            "Panels",
+            vec![
+                ("p", "markdown preview (markdown files)"),
+                ("?", "this help"),
+                ("/", "filter files"),
+            ],
+        ),
+        (
+            "Send",
+            vec![
+                ("s / S", "send comments to the agent"),
+                ("y / Y", "copy comments to the clipboard"),
+                ("+", "send the highlighted file's path to the agent"),
+            ],
+        ),
+        (
+            "Global",
+            vec![
+                ("r", "reload"),
+                ("q", "quit"),
+                ("mouse", "click file/diff/header · wheel scroll · drag divider/select"),
+            ],
+        ),
+    ]
+}
+
+/// The total rendered height of the help content, matching `help_lines`' layout (a blank
+/// spacer before every group but the first, a header, then one row per binding).
+fn help_total_lines() -> usize {
+    help_groups().iter().enumerate().map(|(g, (_, rows))| usize::from(g > 0) + 1 + rows.len()).sum()
+}
+
+/// The help content as styled lines: bold section headers and dim-key rows.
+fn help_lines(p: &Palette) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (g, (title, rows)) in help_groups().into_iter().enumerate() {
+        if g > 0 {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(
+            title,
+            Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
+        )));
+        for (keys, desc) in rows {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {keys:<16}"), Style::default().fg(p.lavender)),
+                Span::styled(desc, text_style(p)),
+            ]));
+        }
+    }
+    lines
+}
+
+/// The help overlay's `(total lines, viewport height)`, for scroll clamping (`lib.rs`).
+#[must_use]
+pub fn help_metrics(area: Rect) -> (usize, usize) {
+    let inner = inner_rect(centered(area, 80, 70));
+    (help_total_lines(), inner.height as usize)
+}
+
+fn render_help_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let popup = centered(area, 80, 70);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.mauve))
+        .title("Keys");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let scroll = app.help_scroll.min(u16::MAX as usize) as u16;
+    frame.render_widget(Paragraph::new(Text::from(help_lines(p))).scroll((scroll, 0)), inner);
 }
 
 fn commit_picker_rect(area: Rect) -> Rect {

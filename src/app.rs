@@ -85,17 +85,6 @@ struct TabStash {
     select_anchor: Option<usize>,
 }
 
-/// Whether the code a comment anchors to has changed since the comment was written.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Addressed {
-    /// The commented file left the changeset or was deleted.
-    Gone,
-    /// The commented lines are unchanged — the agent hasn't touched them.
-    Pending,
-    /// The commented lines changed — the agent likely addressed the note.
-    Done,
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum BranchRow {
     Item(String),
@@ -125,6 +114,8 @@ pub enum Mode {
     BranchPick,
     Filter,
     Preview,
+    /// Browsing the `?` keybinding help overlay.
+    Help,
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
@@ -137,6 +128,8 @@ pub enum FooterAction {
     EditComment,
     OpenEditor,
     DeleteComment,
+    Resolve,
+    Review,
     JumpComment,
     ExpandFold,
     ExpandDir,
@@ -166,6 +159,8 @@ pub enum FooterAction {
     OpenPr,
     Refresh,
     Tabs,
+    Help,
+    CloseHelp,
     Quit,
 }
 
@@ -205,6 +200,8 @@ pub struct App {
     pub file_rows: Vec<file_list::Row>,
     pub filter: String,
     pub preview_scroll: usize,
+    /// Top visible line of the `?` help overlay; reset when it opens.
+    pub help_scroll: usize,
     pub file_cursor: usize,
     /// Top visible row of the file list, kept so `file_cursor` stays on screen when the
     /// changeset is taller than the pane.
@@ -318,6 +315,7 @@ impl App {
             file_rows: Vec::new(),
             filter: String::new(),
             preview_scroll: 0,
+            help_scroll: 0,
             file_cursor: 0,
             file_scroll: 0,
             reveal_files: false,
@@ -512,6 +510,32 @@ impl App {
     pub fn bound_preview_scroll(&mut self, lines: usize, viewport: usize) {
         let max = lines.saturating_sub(viewport.max(1));
         self.preview_scroll = self.preview_scroll.min(max);
+    }
+
+    /// Open the `?` keybinding help overlay from a resting Normal view.
+    pub fn open_help(&mut self) {
+        if self.composing() || self.mode != Mode::Normal {
+            return;
+        }
+        self.help_scroll = 0;
+        self.mode = Mode::Help;
+    }
+
+    pub fn close_help(&mut self) {
+        if self.mode == Mode::Help {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    pub fn help_scroll_by(&mut self, delta: isize) {
+        if self.mode == Mode::Help {
+            self.help_scroll = self.help_scroll.saturating_add_signed(delta);
+        }
+    }
+
+    pub fn bound_help_scroll(&mut self, lines: usize, viewport: usize) {
+        let max = lines.saturating_sub(viewport.max(1));
+        self.help_scroll = self.help_scroll.min(max);
     }
 
     pub fn preview_markdown(&self) -> Option<String> {
@@ -1794,7 +1818,8 @@ impl App {
             | Mode::CommitPick
             | Mode::BranchPick
             | Mode::Filter
-            | Mode::Preview => None,
+            | Mode::Preview
+            | Mode::Help => None,
         }
     }
 
@@ -1872,13 +1897,30 @@ impl App {
     pub fn delete_comment(&mut self) {
         if let Some(i) = self.target_comment() {
             logln!("comment delete [{i}]");
-            self.store.take(i);
-            self.clamp_list_cursor();
+            self.remove_comment(i);
             self.status = "comment deleted".to_string();
-            // Don't strand the user in an empty "Comments (0)" overlay, matching `export`.
-            if self.store.is_empty() {
-                self.close_list();
-            }
+        }
+    }
+
+    /// Resolve the targeted comment: a resolved note is done, so it is removed from the store and
+    /// drops out of the `l` list. Targets the list row in the overlay, else the one under the
+    /// diff cursor.
+    pub fn resolve_comment(&mut self) {
+        if let Some(i) = self.target_comment() {
+            logln!("comment resolve [{i}]");
+            self.remove_comment(i);
+            self.status = format!("resolved ({} left)", self.store.len());
+        }
+    }
+
+    /// Remove the comment at `i`, keeping the list cursor in range and closing the overlay once it
+    /// empties — the shared body of delete and resolve. Don't strand the user in an empty
+    /// "Comments (0)" overlay, matching `export`.
+    fn remove_comment(&mut self, i: usize) {
+        self.store.take(i);
+        self.clamp_list_cursor();
+        if self.store.is_empty() {
+            self.close_list();
         }
     }
 
@@ -1901,6 +1943,93 @@ impl App {
             self.diff_cursor = t;
             self.reveal_diff = true;
         }
+    }
+
+    /// The visible-row index where each change block begins — a maximal run of insertion/deletion
+    /// rows, delimited by context and folds. Derived live from `visible`; nothing is precomputed.
+    pub fn change_block_starts(&self) -> Vec<usize> {
+        let is_change = |r: &Row| matches!(r, Row::Insertion { .. } | Row::Deletion { .. });
+        self.visible
+            .iter()
+            .enumerate()
+            .filter(|&(i, r)| is_change(r) && (i == 0 || !is_change(&self.visible[i - 1])))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Advance the review one step. On the Changes tab with the diff focused, step to the next
+    /// change block; once past the last, mark the open file reviewed and land on the next
+    /// unreviewed file's first change block. Elsewhere (the file list, or another tab) fall back
+    /// to marking the whole file reviewed and advancing — the coarse `Space` triage.
+    pub fn review_advance(&mut self) {
+        if self.tab != Tab::Changes || self.focus != Focus::Diff {
+            self.toggle_reviewed();
+            return;
+        }
+        if let Some(&t) = self.change_block_starts().iter().find(|&&i| i > self.diff_cursor) {
+            self.select_anchor = None;
+            self.diff_cursor = t;
+            self.reveal_diff = true;
+            return;
+        }
+        // Past the last block: mark the open file reviewed, then walk to the next unreviewed one.
+        let Some(path) = self.diff_path.clone() else {
+            self.toggle_reviewed();
+            return;
+        };
+        self.reviewed.insert(path.clone(), content_hash(&self.repo, &path));
+        if let Some(fi) = self.file_row_of_path(&path) {
+            self.file_cursor = fi;
+        }
+        let (reviewed, total) = (self.reviewed_count(), self.changed_count());
+        if let Some(row) = self.next_unreviewed_row() {
+            self.file_cursor = row;
+            self.open_cursor_file(); // loads the next file's diff and rebuilds `visible`
+            self.focus = Focus::Diff;
+            self.reveal_files = true;
+            // Land on the new file's first change block (its top if it has none).
+            self.diff_cursor = self.change_block_starts().first().copied().unwrap_or(0);
+            self.select_anchor = None;
+            self.reveal_diff = true;
+            self.status = format!("file reviewed · {reviewed} of {total}");
+        } else {
+            self.status = "all files reviewed".to_string();
+        }
+    }
+
+    /// Open the comment at store `index` in the diff, land the cursor on its line, and close the
+    /// list overlay — the click-to-navigate path from the comments list. Mirrors `start_edit`'s
+    /// open-and-anchor routine without entering the composer.
+    pub fn jump_to_comment(&mut self, index: usize) {
+        let Some(c) = self.store.get(index) else { return };
+        let (file, side, start, end) = (c.file.clone(), c.side, c.start, c.end);
+        if self.diff_path.as_deref() != Some(file.as_str())
+            && let Some(e) = self.entries.iter().find(|e| e.path == file).cloned()
+        {
+            self.reset_diff_view();
+            self.open_path_in_tab(e.path, e.previous_path);
+            if let Some(fi) = self.file_row_of_path(&file) {
+                self.file_cursor = fi;
+            }
+        }
+        // Only move the cursor when the open diff is actually the comment's file, so a stale
+        // comment never jumps onto a same-numbered line in a different file.
+        if self.diff_path.as_deref() == Some(file.as_str())
+            && let Some(idx) = self.visible.iter().position(|row| {
+                let no = match side {
+                    Side::New => row.new_no(),
+                    Side::Old => row.old_no(),
+                };
+                no.is_some_and(|n| start <= n && n <= end)
+            })
+        {
+            self.diff_cursor = idx;
+            self.select_anchor = None;
+        }
+        self.focus = Focus::Diff;
+        self.reveal_diff = true;
+        self.reveal_files = true;
+        self.close_list();
     }
 
     pub fn open_list(&mut self) {
@@ -1936,6 +2065,7 @@ impl App {
             Mode::List => {
                 return vec![
                     (A::Send, Primary),
+                    (A::Resolve, Normal),
                     (A::CloseList, Normal),
                     (A::Copy, Normal),
                     (A::EditComment, Normal),
@@ -1953,6 +2083,9 @@ impl App {
             }
             Mode::Preview => {
                 return vec![(A::ExitPreview, Primary), (A::Tabs, Orientation), (A::Quit, Orientation)];
+            }
+            Mode::Help => {
+                return vec![(A::CloseHelp, Primary)];
             }
             Mode::Normal => {}
         }
@@ -2006,11 +2139,16 @@ impl App {
             out.push((A::ClearSelection, Normal));
         } else if self.comment_under_cursor().is_some() {
             out.push((A::EditComment, Primary));
+            out.push((A::Resolve, Normal));
             out.push((A::DeleteComment, Normal));
             out.push((A::JumpComment, Normal));
         } else {
             out.push((A::Comment, Primary));
             out.push((A::Select, Normal));
+            // On the Changes tab, `Space` walks the file's change blocks one at a time.
+            if self.tab == Tab::Changes {
+                out.push((A::Review, Normal));
+            }
         }
 
         // Switching scope is always available while reviewing, so it shows in every context on
@@ -2054,6 +2192,7 @@ impl App {
         if !pane_is_primary && !self.file_rows.is_empty() {
             out.push((A::TogglePane, Orientation));
         }
+        out.push((A::Help, Orientation));
         out.push((A::Tabs, Orientation));
         out.push((A::Quit, Orientation));
         out
@@ -2111,26 +2250,6 @@ impl App {
         } else {
             !self.repo.join(&c.file).exists()
         }
-    }
-
-    /// Whether the code a comment anchors to has changed since it was written — the round-trip
-    /// signal for "did the agent address this?". `c.lines` is the baseline snapshot; if its
-    /// new-side (context/added) block no longer appears in the file, the agent changed it.
-    pub fn comment_addressed(&self, c: &Comment) -> Addressed {
-        if self.is_stale(c) {
-            return Addressed::Gone;
-        }
-        let baseline: Vec<&str> = c
-            .lines
-            .lines()
-            .filter(|l| matches!(l.as_bytes().first(), Some(b' ' | b'+')))
-            .map(|l| &l[1..])
-            .collect();
-        if baseline.is_empty() {
-            return Addressed::Pending;
-        }
-        let content = worktree_content(&self.repo, &c.file);
-        if contains_block(&content, &baseline) { Addressed::Pending } else { Addressed::Done }
     }
 
     pub fn is_reviewed(&self, path: &str) -> bool {
@@ -2285,15 +2404,6 @@ fn content_hash(repo: &std::path::Path, path: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     worktree_content(repo, path).hash(&mut h);
     h.finish()
-}
-
-/// Whether `block`'s lines appear as a contiguous run within `content`.
-fn contains_block(content: &str, block: &[&str]) -> bool {
-    if block.is_empty() {
-        return true;
-    }
-    let lines: Vec<&str> = content.lines().collect();
-    lines.windows(block.len()).any(|w| w == block)
 }
 
 fn is_markdown_path(path: &str) -> bool {

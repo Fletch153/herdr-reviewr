@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use anyhow::{Result, bail};
 use common::Repo;
-use herdr_reviewr::app::{Addressed, App, BranchRow, Focus, FooterAction, Mode, Tab};
+use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode, Tab};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
@@ -779,8 +779,9 @@ fn export_keeps_comments_so_the_round_trip_can_track_them() {
     // The sent text is the real export block format, end to end through App::export.
     let sent = target.last();
     assert!(sent.contains("one") && sent.contains("two"), "both comment texts present: {sent:?}");
-    assert!(sent.lines().next().is_some_and(|l| l.starts_with("a.rs:")), "leads with a location");
-    assert!(sent.contains("\n\n"), "blocks separated by a blank line: {sent:?}");
+    assert!(sent.starts_with("<review>"), "leads with the review container: {sent:?}");
+    assert!(sent.contains("<ref>a.rs:"), "each comment carries a tagged location: {sent:?}");
+    assert!(sent.contains("<note>one</note>"), "the note is tagged: {sent:?}");
     assert!(
         sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
         "each block carries its diff snippet: {sent:?}"
@@ -2558,32 +2559,6 @@ fn space_marks_a_file_reviewed_and_advances_to_the_next() {
 }
 
 #[test]
-fn comment_addressed_flips_when_the_commented_lines_change() {
-    use herdr_reviewr::model::{Comment, Side};
-    let r = Repo::init();
-    r.write("f.rs", "fn main() {}\n");
-    r.commit_all("init");
-    r.write("f.rs", "fn main() { let x = 1; }\n");
-    let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.reload().unwrap();
-
-    let c = Comment {
-        file: "f.rs".into(),
-        side: Side::New,
-        start: 1,
-        end: 1,
-        lines: "+fn main() { let x = 1; }".into(),
-        text: "rename x".into(),
-        diff_anchored: true,
-    };
-    assert_eq!(app.comment_addressed(&c), Addressed::Pending, "the commented line is present");
-
-    r.write("f.rs", "fn main() { let y = 2; }\n"); // agent addresses it
-    app.reload().unwrap();
-    assert_eq!(app.comment_addressed(&c), Addressed::Done, "the commented line changed");
-}
-
-#[test]
 fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
     let r = Repo::init();
     r.write("keep.rs", "1\n");
@@ -2597,4 +2572,99 @@ fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
     assert!(app.is_reviewed("keep.rs"), "marked reviewed");
     app.reload().unwrap(); // a poll must not strip an unchanged file's mark
     assert!(app.is_reviewed("keep.rs"), "the mark survives a poll for an unchanged file");
+}
+
+/// A file whose first and last (of nine) lines change, giving two separate change blocks.
+fn two_block_app() -> (Repo, App) {
+    let r = Repo::init();
+    r.write("a.rs", "top\na\nb\nc\nd\ne\nf\ng\nbot\n");
+    r.write("b.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "top\nA\nb\nc\nd\ne\nf\nG\nbot\n"); // lines 2 and 8 change
+    r.write("b.rs", "ONE\n"); // one block
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    (r, app)
+}
+
+#[test]
+fn change_block_starts_finds_each_contiguous_run() {
+    let (_r, mut app) = two_block_app();
+    goto_file(&mut app, "a.rs");
+    app.focus = Focus::Diff;
+    assert_eq!(app.change_block_starts().len(), 2, "the two edits are two blocks");
+}
+
+#[test]
+fn space_steps_blocks_then_marks_file_and_lands_on_next_files_first_block() {
+    let (_r, mut app) = two_block_app();
+    goto_file(&mut app, "a.rs");
+    app.focus = Focus::Diff;
+    let starts = app.change_block_starts();
+    assert_eq!(starts.len(), 2);
+
+    app.review_advance();
+    assert_eq!(app.diff_cursor, starts[0], "steps to the first block");
+    app.review_advance();
+    assert_eq!(app.diff_cursor, starts[1], "steps to the second block");
+
+    app.review_advance(); // past the last block
+    assert!(app.is_reviewed("a.rs"), "the file is marked reviewed after its last block");
+    assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "advances to the next file");
+    assert_eq!(app.focus, Focus::Diff, "stays in the diff to keep stepping");
+    assert_eq!(
+        app.diff_cursor,
+        app.change_block_starts().first().copied().unwrap(),
+        "lands on the next file's first change block",
+    );
+}
+
+#[test]
+fn resolve_removes_the_comment_and_shrinks_the_list() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "fix this");
+    assert_eq!(app.store.len(), 1);
+    app.open_list();
+    assert_eq!(app.mode, Mode::List);
+
+    app.resolve_comment();
+    assert_eq!(app.store.len(), 0, "resolving removes the comment");
+    assert_eq!(app.mode, Mode::Normal, "the emptied list overlay closes");
+}
+
+#[test]
+fn jump_to_comment_opens_file_and_sets_diff_cursor() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.write("b.rs", "one\ntwo\n");
+    r.commit_all("init");
+    r.write("a.rs", "1x\n");
+    r.write("b.rs", "one\nTWO\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    // Comment on b.rs's changed line, then browse away to a.rs.
+    goto_file(&mut app, "b.rs");
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+');
+    app.start_comment();
+    for ch in "look here".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+    let arow = file_row(&app, "a.rs");
+    app.select_file(arow).unwrap(); // browse away to a.rs
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "browsed to another file");
+
+    app.open_list();
+    app.jump_to_comment(0);
+    assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "jumped to the comment's file");
+    assert_eq!(app.mode, Mode::Normal, "the list overlay closed on the jump");
+    assert_eq!(app.focus, Focus::Diff);
+    assert_eq!(
+        app.visible[app.diff_cursor].new_no(),
+        Some(2),
+        "the cursor sits on the commented line",
+    );
 }

@@ -1,8 +1,9 @@
 //! Formatting comments and exporting them to the agent or clipboard.
 //!
-//! See `specs/review-model.md`. A comment becomes a block of `location`, the
-//! diff snippet, then the text. Export is consume-on-success: the caller removes
-//! a comment only after `export` returns `Ok`.
+//! See `specs/review-model.md`. The review is sent as a tagged `<review>` block: an
+//! instruction preamble, then one numbered `<comment>` per note carrying a `<ref>`
+//! location, the `<code>` snippet, and the reviewer's `<note>`. The agent is asked to
+//! resolve each and report a status table.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -12,13 +13,25 @@ use anyhow::{Context, Result, bail};
 use crate::herdr;
 use crate::model::Comment;
 
-/// One comment as its export block: location, snippet, then text.
-pub fn format_comment(comment: &Comment) -> String {
-    format!("{}\n{}\n{}", comment.location(), comment.lines, normalize_text(&comment.text))
+/// The instruction that leads the review, telling the agent to resolve each comment and report.
+const PREAMBLE: &str = "The user has left the following review comments. Please carefully \
+consider and resolve each one. When done, print a compact status table (#, location, status, \
+resolution) — for each comment give a 1–2 line resolution of what you changed, or a short \
+answer if it was a question, or a brief note with context if it needs a follow-up. Keep it \
+short and concise.";
+
+/// One comment as its tagged block: the numbered `<comment>` with `<ref>`, `<code>`, and `<note>`.
+pub fn format_comment(n: usize, comment: &Comment) -> String {
+    format!(
+        "<comment n=\"{n}\">\n<ref>{}</ref>\n<code>\n{}\n</code>\n<note>{}</note>\n</comment>",
+        comment.location(),
+        comment.lines,
+        normalize_text(&comment.text),
+    )
 }
 
 /// Comment text for export: drop `\r`, trim trailing space per line, and drop blank
-/// lines so a multi-line comment can never introduce the blank-line block separator.
+/// lines so a multi-line comment stays a compact note inside its `<note>` tag.
 fn normalize_text(text: &str) -> String {
     text.replace('\r', "")
         .lines()
@@ -28,11 +41,18 @@ fn normalize_text(text: &str) -> String {
         .join("\n")
 }
 
-/// Many comments, sorted by file then start line, one blank line between blocks.
+/// The whole review: the preamble and every comment (sorted by file then start line, numbered
+/// from 1) wrapped in a `<review>` container.
 pub fn format_all(comments: &[&Comment]) -> String {
     let mut sorted = comments.to_vec();
     sorted.sort_by(|a, b| a.file.cmp(&b.file).then(a.start.cmp(&b.start)));
-    sorted.iter().map(|c| format_comment(c)).collect::<Vec<_>>().join("\n\n")
+    let blocks = sorted
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format_comment(i + 1, c))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("<review>\n{PREAMBLE}\n\n{blocks}\n</review>")
 }
 
 /// A destination comments can be exported to. Export succeeds or errors as a whole.
@@ -144,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn block_is_location_snippet_text() {
+    fn block_tags_the_ref_code_and_note() {
         let c = comment(
             "extruct/core/llm_registry.py",
             Side::New,
@@ -154,29 +174,48 @@ mod tests {
             "this import path looks wrong",
         );
         assert_eq!(
-            format_comment(&c),
-            "extruct/core/llm_registry.py:40-41\n-from .z import w\n+from .x import y\nthis import path looks wrong"
+            format_comment(1, &c),
+            "<comment n=\"1\">\n<ref>extruct/core/llm_registry.py:40-41</ref>\n\
+             <code>\n-from .z import w\n+from .x import y\n</code>\n\
+             <note>this import path looks wrong</note>\n</comment>"
         );
     }
 
     #[test]
-    fn removed_side_marks_the_header() {
+    fn removed_side_marks_the_ref() {
         let c = comment("a.rs", Side::Old, 38, 38, "-    cleanup()", "still needed");
-        assert_eq!(format_comment(&c), "a.rs:38 (removed)\n-    cleanup()\nstill needed");
+        assert_eq!(
+            format_comment(2, &c),
+            "<comment n=\"2\">\n<ref>a.rs:38 (removed)</ref>\n\
+             <code>\n-    cleanup()\n</code>\n<note>still needed</note>\n</comment>"
+        );
     }
 
     #[test]
     fn multiline_text_keeps_breaks_but_drops_blank_lines() {
         let c = comment("a.rs", Side::New, 1, 1, "+x", "first line\n\n  \nsecond line\n");
-        assert_eq!(format_comment(&c), "a.rs:1\n+x\nfirst line\nsecond line");
+        assert_eq!(
+            format_comment(1, &c),
+            "<comment n=\"1\">\n<ref>a.rs:1</ref>\n<code>\n+x\n</code>\n\
+             <note>first line\nsecond line</note>\n</comment>"
+        );
     }
 
     #[test]
-    fn all_sorts_by_file_then_start_with_blank_separator() {
+    fn all_wraps_a_preamble_and_numbers_comments_sorted_by_file_then_start() {
         let b = comment("b.rs", Side::New, 5, 5, "+x", "two");
         let a2 = comment("a.rs", Side::New, 20, 20, "+y", "later");
         let a1 = comment("a.rs", Side::New, 3, 3, "+z", "earlier");
         let out = format_all(&[&b, &a2, &a1]);
-        assert_eq!(out, "a.rs:3\n+z\nearlier\n\na.rs:20\n+y\nlater\n\nb.rs:5\n+x\ntwo");
+        assert!(out.starts_with("<review>\n"), "opens with the review container: {out}");
+        assert!(out.ends_with("\n</review>"), "closes the container: {out}");
+        assert!(out.contains("resolve each one"), "carries the instruction preamble");
+        // Sorted a.rs:3, a.rs:20, b.rs:5 → numbered 1, 2, 3.
+        let n1 = out.find("n=\"1\"").unwrap();
+        let n2 = out.find("n=\"2\"").unwrap();
+        let n3 = out.find("n=\"3\"").unwrap();
+        assert!(n1 < n2 && n2 < n3, "comments numbered in sorted order");
+        assert!(out.find("<ref>a.rs:3</ref>").unwrap() < out.find("<ref>a.rs:20</ref>").unwrap());
+        assert!(out.contains("<ref>b.rs:5</ref>"));
     }
 }

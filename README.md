@@ -82,7 +82,7 @@ below are the full reference.
 | `B` | Pick the branch-scope diff base from this checkout's fork lineage — ancestors of `HEAD`, nearest first, local then `origin/*` (also: click the base chip) |
 | `p` | On a markdown file, toggle a rendered preview (headings, tables, lists) instead of the diff; `p` / `esc` returns to the diff to comment |
 | `+` | Send the highlighted file's `@path` into the agent's chat input (numpad or top-row `+`), ready to submit |
-| `space` | Mark the highlighted changed file reviewed (dims + `✓`) and jump to the next unreviewed file; the mark clears if the agent edits that file again. The header shows `N changed · M reviewed` |
+| `space` | Walk the review. In the diff (Changes tab), step to the next change block; past the last block the file is marked reviewed (dims + `✓`) and you land on the next unreviewed file's first block. On the file list it marks the whole file reviewed and jumps to the next. The mark clears if the agent edits that file again; the header shows `N changed · M reviewed` |
 | `j` `k` · `↑` `↓` | Move the cursor in the focused pane |
 | `PageUp` `PageDown` | Move a page · `Ctrl+U` `Ctrl+D` move a half-page |
 | `Tab` | Switch focus between the file list and the diff |
@@ -90,6 +90,7 @@ below are the full reference.
 | `w` | Toggle line wrap |
 | `/` | Filter the file tree by name (type to filter, `esc` clears, `enter` keeps it) |
 | `]` `[` | Widen / narrow the file list |
+| `?` | Show every keybinding in an overlay (`j`/`k` scroll, `esc` closes) |
 | `r` | Refresh now |
 | `q` | Quit |
 
@@ -100,10 +101,11 @@ below are the full reference.
 | `v` | Start a line selection, then `j` / `k` to extend (or click-drag) |
 | `c` | Comment on the selection — or on the current line |
 | `e` | Open the file in `$EDITOR` — or edit the comment under the cursor, if any |
+| `r` | Resolve (remove) the comment under the cursor — drops it from the list |
 | `d` | Delete the comment under the cursor |
 | `n` `N` | Jump to the next / previous comment |
-| `l` | List every comment |
-| `s` | Send all comments to the agent |
+| `l` | List every comment; click a row (or `r` on it) — a click jumps to that comment's code, `r` resolves it |
+| `s` | Send all comments to the agent, wrapped in a `<review>` block that asks it to resolve each and report a status table |
 | `y` | Copy all comments to the clipboard |
 | `esc` | Clear the selection |
 
