@@ -671,14 +671,13 @@ fn stage_color(p: &Palette, s: crate::model::FileStatus) -> Color {
 fn file_row_item(row: FileRow) -> ListItem<'static> {
     let FileRow { indent, annotation, status, name, width, fill, ignored, reviewed, icons, p } =
         row;
-    // The marker column is the file's git-staging state; a reviewed ✓ still takes precedence.
-    let (marker, marker_color) = if reviewed {
-        ('✓', p.green)
-    } else {
-        match status {
-            Some(s) => (s.marker, stage_color(p, s)),
-            None => (' ', p.text),
-        }
+    // The marker column is the file's git-staging state. A reviewed file swaps the letter for a
+    // ✓ but keeps the staging colour (green staged, grey not), so the status is never lost.
+    let (marker, marker_color) = match status {
+        Some(s) if reviewed => ('✓', stage_color(p, s)),
+        Some(s) => (s.marker, stage_color(p, s)),
+        None if reviewed => ('✓', p.overlay1),
+        None => (' ', p.text),
     };
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);

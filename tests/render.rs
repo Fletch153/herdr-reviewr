@@ -148,6 +148,40 @@ fn a_click_on_the_stage_marker_is_not_swallowed_by_the_pane_divider() {
     assert_eq!(app.file_status("a.rs").map(|s| s.staged), Some(true), "the click staged it");
 }
 
+#[test]
+fn a_reviewed_tick_keeps_the_staging_colour() {
+    // Regression: a reviewed file rendered a ✓ hardcoded green, discarding its staging status.
+    // The ✓ must carry the same colour the git marker would (green staged, grey not).
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n"); // unstaged modification -> grey status
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.toggle_reviewed(); // mark a.rs reviewed -> the marker becomes ✓
+
+    let tick_fg = |app: &App| {
+        let buf = render_buffer(app);
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                if cell.symbol() == "✓" {
+                    return cell.fg;
+                }
+            }
+        }
+        panic!("no ✓ was rendered");
+    };
+
+    let unstaged = tick_fg(&app);
+    let row = app.file_rows.iter().position(|rr| rr.name.contains("a.rs")).expect("a.rs row");
+    app.stage_toggle(row); // stage it; content is unchanged so the review tick survives
+    assert!(app.is_reviewed("a.rs"), "staging keeps the tick");
+    let staged = tick_fg(&app);
+
+    assert_ne!(unstaged, staged, "the ✓ colour tracks staging instead of always being green");
+}
+
 fn edited_app() -> App {
     let r = Repo::init();
     r.write("hello.rs", "alpha\nbeta\n");
