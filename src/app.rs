@@ -123,6 +123,15 @@ pub enum Mode {
     Preview,
     /// Browsing the `?` keybinding help overlay.
     Help,
+    /// Confirming a file/folder deletion; the target lives in `pending_delete`.
+    ConfirmDelete,
+}
+
+/// A file or folder the reviewer has asked to delete, awaiting confirmation.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PendingDelete {
+    pub path: String,
+    pub is_dir: bool,
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
@@ -138,6 +147,7 @@ pub enum FooterAction {
     Resolve,
     ResolveSelected,
     SelectAll,
+    ConfirmDelete,
     Review,
     JumpComment,
     ExpandFold,
@@ -270,6 +280,8 @@ pub struct App {
     pub commit_choices: Vec<git::CommitRef>,
     pub commit_cursor: usize,
     pub mode: Mode,
+    /// The file/folder queued for deletion while `Mode::ConfirmDelete` is up.
+    pending_delete: Option<PendingDelete>,
     pub input: String,
     /// The comment editor's caret: a char index into `input` (`0..=chars().count()`).
     pub caret: usize,
@@ -354,6 +366,7 @@ impl App {
             commit_choices: Vec::new(),
             commit_cursor: 0,
             mode: Mode::Normal,
+            pending_delete: None,
             input: String::new(),
             caret: 0,
             status: String::new(),
@@ -534,6 +547,63 @@ impl App {
 
     pub fn close_help(&mut self) {
         if self.mode == Mode::Help {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// The file/folder queued for deletion, for the confirmation overlay to name.
+    pub fn pending_delete(&self) -> Option<&PendingDelete> {
+        self.pending_delete.as_ref()
+    }
+
+    /// Ask to delete the file or folder under the file-list cursor. Opens a confirmation overlay
+    /// rather than deleting outright; only on a file tab (the PR tab is read-only).
+    pub fn request_delete(&mut self) {
+        if !self.tab.is_file_tab() || self.composing() {
+            return;
+        }
+        let target = self.file_rows.get(self.file_cursor).and_then(|row| {
+            if let Some(idx) = row.file_index() {
+                self.entries.get(idx).map(|e| PendingDelete { path: e.path.clone(), is_dir: false })
+            } else {
+                row.dir_path().map(|p| PendingDelete { path: p.to_string(), is_dir: true })
+            }
+        });
+        match target {
+            Some(t) => {
+                self.pending_delete = Some(t);
+                self.mode = Mode::ConfirmDelete;
+            }
+            None => self.status = "nothing under the cursor to delete".to_string(),
+        }
+    }
+
+    /// Delete the confirmed target from the working tree, then refresh.
+    pub fn confirm_delete(&mut self) {
+        self.mode = Mode::Normal;
+        let Some(target) = self.pending_delete.take() else { return };
+        let full = self.repo.join(&target.path);
+        let result = if target.is_dir {
+            std::fs::remove_dir_all(&full)
+        } else {
+            std::fs::remove_file(&full)
+        };
+        match result {
+            Ok(()) => {
+                logln!("deleted {}", target.path);
+                self.status = format!("deleted {}", target.path);
+                let _ = self.reload();
+            }
+            Err(e) => {
+                logln!("delete ERR {}: {e}", target.path);
+                self.status = format!("delete failed: {e}");
+            }
+        }
+    }
+
+    pub fn cancel_delete(&mut self) {
+        self.pending_delete = None;
+        if self.mode == Mode::ConfirmDelete {
             self.mode = Mode::Normal;
         }
     }
@@ -1899,7 +1969,8 @@ impl App {
             | Mode::BranchPick
             | Mode::Filter
             | Mode::Preview
-            | Mode::Help => None,
+            | Mode::Help
+            | Mode::ConfirmDelete => None,
         }
     }
 
@@ -2338,6 +2409,9 @@ impl App {
             }
             Mode::Help => {
                 return vec![(A::CloseHelp, Primary)];
+            }
+            Mode::ConfirmDelete => {
+                return vec![(A::ConfirmDelete, Primary), (A::Cancel, Normal)];
             }
             Mode::Normal => {}
         }

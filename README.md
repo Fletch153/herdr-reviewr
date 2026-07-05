@@ -90,6 +90,7 @@ below are the full reference.
 | `w` | Toggle line wrap |
 | `/` | Filter the file tree by name (type to filter, `esc` clears, `enter` keeps it) |
 | `]` `[` | Widen / narrow the file list |
+| `⌫` Backspace | Delete the file or folder under the cursor from the working tree — asks to confirm first (`y`/`enter` deletes, `n`/`esc` cancels) |
 | `?` | Show every keybinding in an overlay (`j`/`k` scroll, `esc` closes) |
 | `r` | Refresh now |
 | `q` | Quit |

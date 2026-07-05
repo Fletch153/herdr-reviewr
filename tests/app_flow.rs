@@ -2738,6 +2738,84 @@ fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
 }
 
 #[test]
+fn request_delete_opens_a_confirmation_then_confirm_removes_the_file() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.write("b.rs", "two\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n");
+    r.write("b.rs", "TWO\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    goto_file(&mut app, "a.rs");
+
+    app.request_delete();
+    assert_eq!(app.mode, Mode::ConfirmDelete, "delete asks first");
+    let pd = app.pending_delete().expect("a pending delete");
+    assert_eq!(pd.path, "a.rs");
+    assert!(!pd.is_dir);
+
+    app.confirm_delete();
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(!r.path_buf().join("a.rs").exists(), "the file is gone from the working tree");
+    assert!(r.path_buf().join("b.rs").exists(), "other files are untouched");
+}
+
+#[test]
+fn cancel_delete_keeps_the_file() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    goto_file(&mut app, "a.rs");
+
+    app.request_delete();
+    app.cancel_delete();
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.pending_delete().is_none(), "the pending delete is cleared");
+    assert!(r.path_buf().join("a.rs").exists(), "the file is left in place");
+}
+
+#[test]
+fn request_delete_on_a_folder_removes_it_recursively() {
+    let r = Repo::init();
+    r.write("src/a.rs", "x\n");
+    r.commit_all("init");
+    r.write("src/a.rs", "X\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    let dir_row =
+        app.file_rows.iter().position(|row| row.dir_path() == Some("src")).expect("a src dir row");
+    app.file_cursor = dir_row;
+
+    app.request_delete();
+    let pd = app.pending_delete().expect("a pending delete");
+    assert_eq!(pd.path, "src");
+    assert!(pd.is_dir, "a directory row targets the folder");
+
+    app.confirm_delete();
+    assert!(!r.path_buf().join("src").exists(), "the folder and its contents are removed");
+}
+
+#[test]
+fn delete_is_blocked_on_the_read_only_pr_tab() {
+    use herdr_reviewr::app::Tab;
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::Pr).unwrap();
+
+    app.request_delete();
+    assert_ne!(app.mode, Mode::ConfirmDelete, "no delete on the read-only PR tab");
+    assert!(app.pending_delete().is_none());
+}
+
+#[test]
 fn a_reviewed_tick_survives_a_base_switch_but_not_a_content_change() {
     let r = Repo::init();
     r.write("a.rs", "l1\n");

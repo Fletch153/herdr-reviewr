@@ -444,6 +444,15 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::ConfirmDelete {
+        match key.code {
+            Char('y') | Enter => app.confirm_delete(),
+            Esc | Char('n' | 'q') => app.cancel_delete(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match (key.code, ctrl) {
         // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
         // keys move the focused pane's cursor (the view follows), like `j`/`k`.
@@ -503,6 +512,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('+'), _) => app.send_path_to_agent(),
         (Char(' '), _) => app.review_advance(),
         (Char('?'), _) => app.open_help(),
+        (Backspace, _) => app.request_delete(),
         (Char('/'), false) => app.start_filter(),
         (Esc, _) => {
             if app.filter.is_empty() {
@@ -546,6 +556,9 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
             _ => {}
         }
         return Ok(());
+    }
+    if app.mode == Mode::ConfirmDelete {
+        return Ok(()); // keyboard-only confirmation
     }
     if app.mode == Mode::CommitPick {
         match m.kind {

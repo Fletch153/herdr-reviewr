@@ -587,6 +587,17 @@ fn the_comments_list_groups_by_base_and_shows_checkboxes() {
 }
 
 #[test]
+fn the_delete_confirmation_overlay_names_the_target() {
+    let mut app = edited_app();
+    app.request_delete();
+    let out = render(&app);
+    assert!(out.contains("Delete file"), "the overlay names the action");
+    assert!(out.contains("hello.rs"), "and the target path");
+    assert!(out.contains("y / enter"), "and the confirm key");
+    assert!(out.contains("working tree"), "and warns it removes the file");
+}
+
+#[test]
 fn the_help_panel_lists_the_key_sections() {
     let mut app = edited_app();
     app.open_help();

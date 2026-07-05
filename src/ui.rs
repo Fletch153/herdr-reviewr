@@ -51,6 +51,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_branch_picker(frame, app, area);
     } else if app.mode == Mode::Help {
         render_help_panel(frame, app, area);
+    } else if app.mode == Mode::ConfirmDelete {
+        render_confirm_delete(frame, app, area);
     }
 }
 
@@ -1297,6 +1299,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::DeleteComment => ("d", "delete"),
         A::Resolve | A::ResolveSelected => ("r", "resolve"),
         A::SelectAll => ("a", "select all"),
+        A::ConfirmDelete => ("y/↵", "delete"),
         A::Review => {
             return (
                 "space".into(),
@@ -1548,6 +1551,7 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("Tab", "switch files ⇄ diff"),
                 ("← / →", "collapse/expand dir · expand fold · scroll diff"),
                 ("Enter", "expand/collapse the tree under a folder"),
+                ("backspace", "delete the file / folder under the cursor (confirms first)"),
                 ("w", "toggle line wrap"),
                 ("[ / ]", "narrow / widen the file list"),
             ],
@@ -1656,6 +1660,43 @@ fn render_help_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup);
     let scroll = app.help_scroll.min(u16::MAX as usize) as u16;
     frame.render_widget(Paragraph::new(Text::from(help_lines(p))).scroll((scroll, 0)), inner);
+}
+
+fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let Some(pd) = app.pending_delete() else { return };
+    let popup = centered(area, 60, 30);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.red))
+        .title("Delete");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let kind = if pd.is_dir { "folder" } else { "file" };
+    let tail = if pd.is_dir { " and everything inside it?" } else { "?" };
+    let path = truncate_width(&pd.path, (inner.width as usize).saturating_sub(kind.len() + 10));
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("Delete {kind} "), text_style(p)),
+            Span::styled(path, Style::default().fg(p.mauve).add_modifier(Modifier::BOLD)),
+            Span::styled(tail.to_string(), text_style(p)),
+        ]),
+        Line::default(),
+        Line::from(Span::styled(
+            "This removes it from the working tree.",
+            Style::default().fg(p.subtext0),
+        )),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("y / enter", Style::default().fg(p.red).add_modifier(Modifier::BOLD)),
+            Span::styled(" delete    ", text_style(p)),
+            Span::styled("n / esc", Style::default().fg(p.lavender)),
+            Span::styled(" cancel", Style::default().fg(p.subtext0)),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn commit_picker_rect(area: Rect) -> Rect {
