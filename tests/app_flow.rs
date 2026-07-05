@@ -2738,6 +2738,29 @@ fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
 }
 
 #[test]
+fn stage_toggle_stages_then_unstages_via_git_status() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("scratch.rs", "new\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    assert_eq!(app.file_status("scratch.rs").map(|s| s.staged), Some(false), "untracked, unstaged");
+
+    let row = file_row(&app, "scratch.rs");
+    assert!(app.stage_toggle(row), "the marker click acts");
+    assert_eq!(app.file_status("scratch.rs").map(|s| s.staged), Some(true), "git add staged it");
+
+    let row = file_row(&app, "scratch.rs");
+    assert!(app.stage_toggle(row));
+    assert_eq!(
+        app.file_status("scratch.rs").map(|s| s.staged),
+        Some(false),
+        "git reset unstaged it"
+    );
+}
+
+#[test]
 fn request_delete_opens_a_confirmation_then_confirm_removes_the_file() {
     let r = Repo::init();
     r.write("a.rs", "one\n");

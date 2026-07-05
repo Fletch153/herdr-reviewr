@@ -485,3 +485,21 @@ fn recent_commits_lists_history_even_on_the_base_branch() {
 
     assert!(recent_commits(r.path(), 0).is_empty(), "the limit is honoured");
 }
+
+#[test]
+fn working_status_reports_staged_unstaged_and_untracked() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("new.rs", "n\n");
+    r.write("a.rs", "ONE\n");
+
+    let st = herdr_reviewr::git::working_status(r.path()).unwrap();
+    assert_eq!(st.get("new.rs").map(|s| (s.marker, s.staged)), Some(('?', false)));
+    assert_eq!(st.get("a.rs").map(|s| (s.marker, s.staged)), Some(('M', false)));
+
+    r.git(&["add", "new.rs", "a.rs"]);
+    let st = herdr_reviewr::git::working_status(r.path()).unwrap();
+    assert_eq!(st.get("new.rs").map(|s| (s.marker, s.staged)), Some(('A', true)));
+    assert_eq!(st.get("a.rs").map(|s| (s.marker, s.staged)), Some(('M', true)));
+}

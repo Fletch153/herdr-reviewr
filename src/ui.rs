@@ -119,6 +119,14 @@ pub fn hit_file(
     (idx < n_files).then_some(idx)
 }
 
+/// Whether `(col, row)` lands on a file row's change marker — the first cell of the row, where
+/// the `?`/`A`/`M` glyph paints. Used to turn a marker click into a stage/unstage toggle.
+#[must_use]
+pub fn on_file_marker(area: Rect, list_pct: u16, col: u16, row: u16) -> bool {
+    let inner = inner_rect(panes(area, list_pct).files);
+    contains(inner, col, row) && col == inner.x
+}
+
 /// The number of file rows visible in the file pane, used to clamp the file-list scroll.
 #[must_use]
 pub fn file_viewport_height(area: Rect, list_pct: u16) -> usize {
@@ -612,6 +620,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                 RowKind::File { annotation, index } => file_row_item(FileRow {
                     indent: &indent,
                     annotation: annotation.as_ref(),
+                    status: app.file_status(&app.entries[*index].path),
                     name: &row.name,
                     width,
                     fill,
@@ -639,6 +648,7 @@ fn gutter_spans(marker: char, marker_color: Color, p: &Palette) -> Vec<Span<'sta
 struct FileRow<'a> {
     indent: &'a str,
     annotation: Option<&'a Annotation>,
+    status: Option<crate::model::FileStatus>,
     name: &'a str,
     width: usize,
     fill: Option<Color>,
@@ -648,13 +658,21 @@ struct FileRow<'a> {
     p: &'a Palette,
 }
 
+/// The marker colour for a file's `git status`: the change kind's colour when staged (A green,
+/// M/R amber, D red), greyed out when unstaged/untracked.
+fn stage_color(p: &Palette, s: crate::model::FileStatus) -> Color {
+    if s.staged { kind_color(p, s.marker) } else { p.overlay1 }
+}
+
 fn file_row_item(row: FileRow) -> ListItem<'static> {
-    let FileRow { indent, annotation, name, width, fill, ignored, reviewed, icons, p } = row;
+    let FileRow { indent, annotation, status, name, width, fill, ignored, reviewed, icons, p } =
+        row;
+    // The marker column is the file's git-staging state; a reviewed ✓ still takes precedence.
     let (marker, marker_color) = if reviewed {
         ('✓', p.green)
     } else {
-        match annotation {
-            Some(a) => (a.change.marker(), kind_color(p, a.change.marker())),
+        match status {
+            Some(s) => (s.marker, stage_color(p, s)),
             None => (' ', p.text),
         }
     };
@@ -1609,6 +1627,21 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("r", "reload"),
                 ("q", "quit"),
                 ("mouse", "click file/diff/header · wheel scroll · drag divider/select"),
+            ],
+        ),
+        (
+            "Status markers (git)",
+            vec![
+                ("A M D R", "added · modified · deleted · renamed"),
+                ("?", "a new, untracked file"),
+                (
+                    "colour",
+                    "in the change kind's colour = staged · grey = not staged · blank = unchanged vs HEAD",
+                ),
+                (
+                    "click marker",
+                    "stage a grey file (git add) or unstage a coloured one (git reset)",
+                ),
             ],
         ),
     ]

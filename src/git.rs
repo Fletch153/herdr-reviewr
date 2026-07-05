@@ -9,7 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::model::{ChangeKind, ChangedFile, Scope};
+use crate::model::{ChangeKind, ChangedFile, FileStatus, Scope};
 
 /// Run `git -C <repo> <args>` and return stdout. Errors on non-zero exit.
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
@@ -52,6 +52,16 @@ fn git_line(repo: &Path, args: &[&str]) -> Option<String> {
 /// Whether `git -C <repo> <args>` spawns and exits zero. The predicate workhorse for existence checks.
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
     Command::new("git").arg("-C").arg(repo).args(args).output().is_ok_and(|o| o.status.success())
+}
+
+/// Stage `path` into the index (`git add`). Returns whether git succeeded.
+pub fn stage(repo: &Path, path: &str) -> bool {
+    git_ok(repo, &["add", "--", path])
+}
+
+/// Unstage `path` from the index (`git reset`, leaving the working tree untouched).
+pub fn unstage(repo: &Path, path: &str) -> bool {
+    git_ok(repo, &["reset", "-q", "--", path])
 }
 
 /// Whether `path` is inside a git work tree.
@@ -524,6 +534,29 @@ fn untracked(repo: &Path) -> Result<Vec<String>> {
         .filter(|(xy, _)| *xy == "??")
         .map(|(_, path)| path.to_string())
         .collect())
+}
+
+/// Each file's working-tree state vs `HEAD` (`git status --porcelain`), keyed by path: the status
+/// letter and whether it is staged. Untracked is `('?', false)`; ignored (`!!`) is skipped; a
+/// staged file takes the index letter `X`, an unstaged one the worktree letter `Y`.
+pub fn working_status(repo: &Path) -> Result<std::collections::HashMap<String, FileStatus>> {
+    let status = git(repo, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
+    let mut out = std::collections::HashMap::new();
+    for (xy, path) in porcelain_records(&status) {
+        if xy == "!!" {
+            continue;
+        }
+        let bytes = xy.as_bytes();
+        let (x, y) = (bytes[0] as char, bytes[1] as char);
+        let file = if xy == "??" {
+            FileStatus { marker: '?', staged: false }
+        } else {
+            let staged = x != ' ';
+            FileStatus { marker: if staged { x } else { y }, staged }
+        };
+        out.insert(path.to_string(), file);
+    }
+    Ok(out)
 }
 
 /// The `(xy, path)` of each `git status --porcelain -z` record. Each record is `XY␠PATH`; the

@@ -30,6 +30,14 @@ impl Scope {
     }
 }
 
+/// A file's working-tree state from `git status` (vs `HEAD`): the status letter and whether the
+/// change is staged. Drives the file-list marker's colour and the stage/unstage click.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FileStatus {
+    pub marker: char,
+    pub staged: bool,
+}
+
 /// How a file changed within a scope.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChangeKind {

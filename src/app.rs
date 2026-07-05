@@ -248,6 +248,8 @@ pub struct App {
     /// annotate `All files` entries with their marker and stats. Stays correct while `All
     /// files` lists the whole worktree.
     changed: HashMap<String, Annotation>,
+    /// Each file's `git status` state (vs HEAD), for the staging marker; refreshed every reload.
+    file_status: HashMap<String, crate::model::FileStatus>,
     pub diff: FileDiff,
     /// The rows actually shown: `diff.rows` with each fold collapsed to a marker or
     /// expanded to its lines. The cursor, scroll, selection, and hit-testing index this.
@@ -347,6 +349,7 @@ impl App {
             reviewed: HashMap::new(),
             stash: TabStash::default(),
             changed: HashMap::new(),
+            file_status: HashMap::new(),
             diff: FileDiff::empty(),
             visible: Vec::new(),
             expanded_folds: HashSet::new(),
@@ -608,6 +611,36 @@ impl App {
         }
     }
 
+    /// Toggle staging from a click on a file's change marker: stage (`git add`) an untracked (`?`)
+    /// file, or unstage (`git reset`) a staged-added (`A`) one, then refresh. Returns whether it
+    /// acted; other change kinds are left for the caller to treat as a normal row click.
+    pub fn stage_toggle(&mut self, file_row: usize) -> bool {
+        let Some(entry_idx) = self.file_rows.get(file_row).and_then(file_list::Row::file_index)
+        else {
+            return false;
+        };
+        let Some(entry) = self.entries.get(entry_idx) else { return false };
+        let path = entry.path.clone();
+        match self.file_status.get(&path) {
+            Some(s) if s.staged => {
+                git::unstage(&self.repo, &path);
+                self.status = format!("unstaged {path}");
+            }
+            Some(_) => {
+                git::stage(&self.repo, &path);
+                self.status = format!("staged {path}");
+            }
+            None => return false, // clean vs HEAD — nothing to stage; fall through to open it
+        }
+        let _ = self.reload();
+        true
+    }
+
+    /// The `git status` state (vs HEAD) of `path`, for the file-list staging marker.
+    pub fn file_status(&self, path: &str) -> Option<crate::model::FileStatus> {
+        self.file_status.get(path).copied()
+    }
+
     pub fn help_scroll_by(&mut self, delta: isize) {
         if self.mode == Mode::Help {
             self.help_scroll = self.help_scroll.saturating_add_signed(delta);
@@ -742,6 +775,7 @@ impl App {
             _ => git::changed_files(&self.repo, self.scope, self.resolved_base.as_deref())?,
         };
         self.changed = changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
+        self.file_status = git::working_status(&self.repo).unwrap_or_default();
         self.prune_reviewed();
         self.entries = match self.tab {
             // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.

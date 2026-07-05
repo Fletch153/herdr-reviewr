@@ -647,7 +647,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 app.file_rows.len(),
                 app.file_scroll,
             ) {
-                app.select_file(i)?;
+                // A click on the change marker toggles staging; anywhere else opens the file.
+                if !(ui::on_file_marker(area, app.list_pct, m.column, m.row) && app.stage_toggle(i))
+                {
+                    app.select_file(i)?;
+                }
             } else if let Some(i) =
                 ui::hit_diff(area, app.list_pct, m.column, m.row, heights, app.diff_scroll)
             {
