@@ -1105,7 +1105,10 @@ impl App {
 
     fn reset_changes_view(&mut self) {
         self.cache = DiffCache::new();
-        self.reviewed.clear();
+        // Reviewed ticks are keyed by worktree content, not by the diff base — switching branch or
+        // commit doesn't touch the files, so the ticks stay. `prune_reviewed` (run every reload)
+        // drops a tick only when the file's content actually changes (an edit, a pull/reset, or a
+        // branch checkout that alters it).
         if self.tab == Tab::Changes {
             self.file_cursor = 0;
             self.expanded_folds.clear();

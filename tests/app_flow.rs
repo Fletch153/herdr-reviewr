@@ -2884,6 +2884,62 @@ fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
     assert!(app.is_reviewed("keep.rs"), "the mark survives a poll for an unchanged file");
 }
 
+#[test]
+fn a_reviewed_tick_survives_a_base_switch_but_not_a_content_change() {
+    let r = Repo::init();
+    r.write("a.rs", "l1\n");
+    r.commit_all("c1");
+    r.write("a.rs", "l1\nl2\n");
+    r.commit_all("c2");
+    r.write("a.rs", "l1\nl2\nl3\n"); // uncommitted, so a diff exists against either commit
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    let older = app.commit_choices[1].sha.clone();
+
+    goto_file(&mut app, "a.rs");
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("a.rs"), "marked reviewed under the current base");
+
+    // Switching the diff base doesn't touch the worktree, so the tick stays.
+    app.set_commit(older).unwrap();
+    assert!(app.is_reviewed("a.rs"), "the tick survives switching the base");
+
+    // But an actual worktree content change clears it.
+    r.write("a.rs", "l1\nl2\nCHANGED\n");
+    app.reload().unwrap();
+    assert!(!app.is_reviewed("a.rs"), "a worktree content change drops the tick");
+}
+
+#[test]
+fn a_reviewed_tick_follows_content_across_a_branch_switch() {
+    use herdr_reviewr::app::Tab;
+    let r = Repo::init();
+    r.write("same.rs", "identical\n");
+    r.write("diff.rs", "on-main\n");
+    r.commit_all("main");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("diff.rs", "on-feature\n"); // differs between the branches
+    r.commit_all("feature change");
+
+    let mut app = App::new(r.path_buf(), Scope::Branch, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::AllFiles).unwrap(); // both files list here
+
+    let d = file_row(&app, "diff.rs");
+    app.select_file(d).unwrap();
+    app.toggle_reviewed();
+    let s = file_row(&app, "same.rs");
+    app.select_file(s).unwrap();
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("same.rs") && app.is_reviewed("diff.rs"), "both ticked on feature");
+
+    // Check out main: same.rs is byte-identical, diff.rs changes on disk.
+    r.git(&["checkout", "-q", "main"]);
+    app.reload().unwrap();
+    assert!(app.is_reviewed("same.rs"), "an identical file keeps its tick across branches");
+    assert!(!app.is_reviewed("diff.rs"), "a file whose content changed loses its tick");
+}
+
 /// A file whose first and last (of nine) lines change, giving two separate change blocks.
 fn two_block_app() -> (Repo, App) {
     let r = Repo::init();
