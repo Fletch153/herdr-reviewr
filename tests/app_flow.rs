@@ -1178,10 +1178,13 @@ fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     let c = app.store.iter().next().unwrap();
     assert!(c.end > c.start, "comment covers a line range: {}..{}", c.start, c.end);
     let snippet: Vec<&str> = c.lines.lines().collect();
-    assert!(snippet.len() >= 2, "the diff snippet keeps every selected line: {:?}", c.lines);
+    // Exactly the selected content rows are captured — no more, no less.
+    let selected_rows = app.visible[lo..=hi].iter().filter(|r| r.is_content()).count();
+    assert_eq!(snippet.len(), selected_rows, "captures exactly the selected lines: {:?}", c.lines);
+    assert!(snippet.len() >= 2, "the selection spanned multiple lines: {:?}", c.lines);
     assert!(
         snippet.iter().all(|l| l.starts_with(['+', '-', ' '])),
-        "each snippet line keeps its diff marker: {:?}",
+        "each selected line keeps its diff marker: {:?}",
         c.lines
     );
 }
