@@ -1289,7 +1289,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::EditComment => ("e", "edit"),
         A::OpenEditor => ("e", "editor"),
         A::DeleteComment => ("d", "delete"),
-        A::Resolve => ("r", "resolve"),
+        A::Resolve | A::ResolveSelected => ("r", "resolve"),
+        A::SelectAll => ("a", "select all"),
         A::Review => {
             return ("space".into(), if app.focus == Focus::Diff { "next block" } else { "review" }.into());
         }
@@ -1437,50 +1438,79 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let popup = centered(area, 80, 60);
     frame.render_widget(Clear, popup);
+    let selected = app.list_selected.len();
+    let title = if selected > 0 {
+        format!("Comments ({}) — {selected} selected", app.store.len())
+    } else {
+        format!("Comments ({})", app.store.len())
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(p.mauve))
-        .title(format!("Comments ({})", app.store.len()));
+        .title(title);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     let width = inner.width as usize;
-    let items: Vec<ListItem> = app
-        .store
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let loc = Span::styled(
-                c.location(),
-                Style::default().fg(p.mauve).add_modifier(Modifier::BOLD),
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut ordinal = 0usize; // matches app.list_cursor (the grouped comment order)
+    for (label, idxs) in app.list_groups() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("── {label} ──"),
+            Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
+        ))));
+        for i in idxs {
+            let Some(c) = app.store.get(i) else { continue };
+            let checked = app.is_list_selected(i);
+            let checkbox = Span::styled(
+                if checked { "[x] " } else { "[ ] " },
+                Style::default().fg(if checked { p.green } else { p.overlay1 }),
             );
-            let mut spans =
-                vec![loc, Span::styled(format!("  {}", c.text), text_style(p))];
-            // Flag, don't auto-resolve — the reviewer clears a comment with `r`. `(stale)` means
-            // the anchored code is gone; `(outside diff)` means a still-valid comment whose file
-            // simply isn't in the current changeset (e.g. after a base switch).
+            // Un-sent ("fresh") comments read in pale green so what the next Send will carry stands
+            // out; sent comments are the usual bold mauve.
+            let loc_style = if c.sent {
+                Style::default().fg(p.mauve).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.green).add_modifier(Modifier::BOLD)
+            };
+            let mut spans = vec![
+                checkbox,
+                Span::styled(c.location(), loc_style),
+                Span::styled(format!("  {}", c.text), text_style(p)),
+            ];
             if app.is_stale(c) {
                 spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
-            } else if c.diff_anchored && !app.in_changeset(&c.file) {
-                spans.push(Span::styled("  (outside diff)", Style::default().fg(p.overlay0)));
             }
-            // The list overlay is the active modal, so its row reads at full brightness.
-            selectable_row(spans, width, (i == app.list_cursor).then_some(p.surface2))
-        })
-        .collect();
+            items.push(selectable_row(spans, width, (ordinal == app.list_cursor).then_some(p.surface2)));
+            ordinal += 1;
+        }
+    }
     frame.render_widget(List::new(items), inner);
 }
 
-/// The comment-list row a click at `(col, row)` lands on, or `None` outside the overlay's rows.
-/// The list is unscrolled (one row per comment), so a row maps directly to a store index.
+/// The store index of the comment row a click at `(col, row)` lands on, skipping group headers;
+/// `None` on a header or outside the overlay. Walks the same grouped layout the renderer draws.
 #[must_use]
 pub fn hit_comments_list(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     let inner = Block::default().borders(Borders::ALL).inner(centered(area, 80, 60));
     if !contains(inner, col, row) {
         return None;
     }
-    let idx = (row - inner.y) as usize;
-    (idx < app.store.len()).then_some(idx)
+    let target = (row - inner.y) as usize;
+    let mut d = 0usize;
+    for (_, idxs) in app.list_groups() {
+        if d == target {
+            return None; // a group header
+        }
+        d += 1;
+        for i in idxs {
+            if d == target {
+                return Some(i);
+            }
+            d += 1;
+        }
+    }
+    None
 }
 
 /// The `?` help content as titled groups of `(keys, description)`. One source for both the
@@ -1516,8 +1546,8 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("e", "edit the comment / open $EDITOR"),
                 ("r", "resolve the comment under the cursor"),
                 ("d", "delete the comment"),
-                ("l", "open the comments list"),
-                ("(list) click", "jump to a comment · r resolve · e edit · d delete"),
+                ("l", "comments list (grouped by base; green = un-sent)"),
+                ("(list) space/a", "check row / all · r resolve checked · enter jump"),
             ],
         ),
         (

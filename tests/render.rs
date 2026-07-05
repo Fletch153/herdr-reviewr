@@ -599,6 +599,35 @@ fn open_list_renders_the_comments_overlay() {
 }
 
 #[test]
+fn the_comments_list_groups_by_base_and_shows_checkboxes() {
+    use herdr_reviewr::model::{Comment, Scope, Side};
+    let mk = |text: &str, sent: bool, base: Option<&str>, diff: bool| Comment {
+        file: "a.rs".into(),
+        side: Side::New,
+        start: 1,
+        end: 1,
+        lines: "x".into(),
+        text: text.into(),
+        diff_anchored: diff,
+        scope: Scope::Commit,
+        base: base.map(Into::into),
+        sent,
+    };
+    let mut app = edited_app();
+    app.store.add(mk("fresh note", false, Some("abc1234"), true));
+    app.store.add(mk("sent note", true, Some("abc1234"), true));
+    app.store.add(mk("file note", false, None, false));
+    app.open_list();
+
+    let out = render(&app);
+    assert!(out.contains("Comments ("), "overlay titled");
+    assert!(out.contains("── commit"), "a commit group header renders");
+    assert!(out.contains("── All files ──"), "an all-files group header renders");
+    assert!(out.contains("[ ]"), "checkboxes render");
+    assert!(out.contains("fresh note") && out.contains("file note"), "comment text listed");
+}
+
+#[test]
 fn the_help_panel_lists_the_key_sections() {
     let mut app = edited_app();
     app.open_help();

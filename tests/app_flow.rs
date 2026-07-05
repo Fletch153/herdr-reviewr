@@ -14,24 +14,35 @@ use herdr_reviewr::model::{Scope, Side};
 /// An export target that records what it was handed and can be made to fail.
 struct FakeTarget {
     ok: bool,
+    marks_sent: bool,
     captured: RefCell<Vec<String>>,
 }
 
 impl FakeTarget {
     fn ok() -> Self {
-        Self { ok: true, captured: RefCell::new(Vec::new()) }
+        Self { ok: true, marks_sent: true, captured: RefCell::new(Vec::new()) }
     }
     fn failing() -> Self {
-        Self { ok: false, captured: RefCell::new(Vec::new()) }
+        Self { ok: false, marks_sent: true, captured: RefCell::new(Vec::new()) }
+    }
+    /// A successful target that does not mark comments sent (models the clipboard).
+    fn copy() -> Self {
+        Self { ok: true, marks_sent: false, captured: RefCell::new(Vec::new()) }
     }
     fn last(&self) -> String {
         self.captured.borrow().last().cloned().unwrap_or_default()
+    }
+    fn count(&self) -> usize {
+        self.captured.borrow().len()
     }
 }
 
 impl ExportTarget for FakeTarget {
     fn label(&self) -> &'static str {
         "fake"
+    }
+    fn marks_sent(&self) -> bool {
+        self.marks_sent
     }
     fn export(&self, text: &str) -> Result<()> {
         self.captured.borrow_mut().push(text.to_string());
@@ -700,7 +711,7 @@ fn comment_anchors_to_gits_real_line_numbers() {
 }
 
 #[test]
-fn comments_on_added_and_removed_lines_capture_the_marker_free_side_snippet() {
+fn comments_on_added_and_removed_lines_keep_the_diff_marker() {
     let r = edited_repo();
     let mut app = app_on(&r);
     assert_eq!(app.entries.len(), 1);
@@ -709,16 +720,11 @@ fn comments_on_added_and_removed_lines_capture_the_marker_free_side_snippet() {
     comment_on(&mut app, '-', "why was this dropped?");
     assert_eq!(app.store.len(), 2);
 
-    // Snapshots are the plain code of the anchored side — no `+`/`-`/space markers, and no
-    // cross-side `-old/+new` pair from a modified line.
-    for c in app.store.iter() {
-        assert!(!c.lines.is_empty(), "the snippet is captured: {:?}", c.lines);
-        assert!(
-            !c.lines.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
-            "the snippet is marker-free: {:?}",
-            c.lines,
-        );
-    }
+    // A Changes (diff) comment keeps the `+/-` hunk so the agent sees the change.
+    let removed = app.store.iter().find(|c| c.location().ends_with("(removed)")).unwrap();
+    assert!(removed.lines.starts_with('-'), "removed-line snippet keeps `-`: {:?}", removed.lines);
+    let added = app.store.iter().find(|c| !c.location().ends_with("(removed)")).unwrap();
+    assert!(added.lines.starts_with('+'), "added-line snippet keeps `+`: {:?}", added.lines);
 }
 
 #[test]
@@ -781,8 +787,8 @@ fn export_keeps_comments_so_the_round_trip_can_track_them() {
     assert!(sent.contains("<note>one</note>"), "the note is tagged: {sent:?}");
     assert!(sent.contains("<code>"), "each block carries its code snippet: {sent:?}");
     assert!(
-        !sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
-        "the snippet is marker-free — no base-relative diff markers reach the agent: {sent:?}"
+        sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
+        "a Changes snippet reaches the agent with its `+/-` markers: {sent:?}"
     );
 }
 
@@ -1146,7 +1152,7 @@ fn switching_scope_swaps_the_changeset() {
 }
 
 #[test]
-fn a_multi_line_range_comment_spans_lines_with_a_marker_free_snippet() {
+fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
@@ -1169,10 +1175,11 @@ fn a_multi_line_range_comment_spans_lines_with_a_marker_free_snippet() {
     assert_eq!(app.store.len(), 1);
     let c = app.store.iter().next().unwrap();
     assert!(c.end > c.start, "comment covers a line range: {}..{}", c.start, c.end);
-    assert!(!c.lines.is_empty(), "the snippet is captured: {:?}", c.lines);
+    let snippet: Vec<&str> = c.lines.lines().collect();
+    assert!(snippet.len() >= 2, "the diff snippet keeps every selected line: {:?}", c.lines);
     assert!(
-        !c.lines.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
-        "the snippet is the marker-free content of the anchored side: {:?}",
+        snippet.iter().all(|l| l.starts_with(['+', '-', ' '])),
+        "each snippet line keeps its diff marker: {:?}",
         c.lines
     );
 }
@@ -1585,7 +1592,9 @@ fn a_new_side_comment_survives_leaving_the_changeset() {
         lines: "two".into(),
         text: "?".into(),
         diff_anchored: true,
+        scope: Scope::Commit,
         base: None,
+        sent: false,
     };
     app.store.add(comment.clone());
 
@@ -1733,7 +1742,7 @@ fn content_comment_is_stale_only_when_its_file_is_deleted() {
 }
 
 #[test]
-fn anchor_captures_the_worktree_line_text_without_a_marker() {
+fn anchor_stamps_scope_base_and_keeps_the_diff_marker() {
     let r = Repo::init();
     r.write("a.rs", "fn main() {}\n");
     r.commit_all("init");
@@ -1745,12 +1754,14 @@ fn anchor_captures_the_worktree_line_text_without_a_marker() {
 
     let c = app.store.get(0).expect("a comment was made");
     assert_eq!(c.side, Side::New);
-    assert_eq!(c.lines, "fn main() { work(); }", "the snapshot is the plain worktree line");
-    assert_eq!(c.base.as_deref(), app.selected_commit.as_deref(), "stamped with the diff base");
+    assert_eq!(c.lines, "+fn main() { work(); }", "a Changes snapshot keeps the `+` diff marker");
+    assert_eq!(c.scope, Scope::Commit, "stamped with the authoring scope");
+    assert_eq!(c.base.as_deref(), app.selected_commit.as_deref(), "and the diff base");
+    assert!(!c.sent, "a fresh comment starts un-sent");
 }
 
 #[test]
-fn a_base_change_orphans_old_side_comments_but_not_new_side() {
+fn a_changes_comment_matches_only_its_authoring_base() {
     use herdr_reviewr::model::Comment;
     let r = Repo::init();
     r.write("a.rs", "l1\nl2\n");
@@ -1759,28 +1770,223 @@ fn a_base_change_orphans_old_side_comments_but_not_new_side() {
     r.commit_all("c2");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
-    let base_now = app.selected_commit.clone().expect("commit scope has a base");
+    let head = app.selected_commit.clone().expect("commit scope has a base");
     assert!(app.commit_choices.len() >= 2, "two commits to switch between");
     let older = app.commit_choices[1].sha.clone();
 
-    let mk = |side| Comment {
+    let c = Comment {
         file: "a.rs".into(),
-        side,
+        side: Side::New,
         start: 1,
         end: 1,
         lines: "l1".into(),
         text: "?".into(),
         diff_anchored: true,
-        base: Some(base_now.clone()),
+        scope: Scope::Commit,
+        base: Some(head.clone()),
+        sent: false,
     };
-    let new_c = mk(Side::New);
-    let old_c = mk(Side::Old);
-    assert!(!app.is_stale(&new_c) && !app.is_stale(&old_c), "both live against their own base");
+    // Authored against HEAD: matches now.
+    assert!(app.comment_matches_current(&c), "matches under its own commit base");
 
-    app.selected_commit = Some(older);
+    // Switch the diff base to an older commit: the comment no longer belongs to this diff.
+    app.set_commit(older).unwrap();
+    assert!(!app.comment_matches_current(&c), "hidden once the base changes");
+
+    // Back to its base: it matches again.
+    app.set_commit(head).unwrap();
+    assert!(app.comment_matches_current(&c), "returns when its base is restored");
+}
+
+#[test]
+fn all_files_comments_ignore_the_base() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::model::Comment;
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
-    assert!(!app.is_stale(&new_c), "the New-side comment is worktree-anchored and survives");
-    assert!(app.is_stale(&old_c), "the Old-side comment orphans when its base changes");
+    app.set_tab(Tab::AllFiles).unwrap();
+
+    let c = Comment {
+        file: "a.rs".into(),
+        side: Side::New,
+        start: 1,
+        end: 1,
+        lines: "ONE".into(),
+        text: "note".into(),
+        diff_anchored: false, // a File-view (All files) comment
+        scope: Scope::Commit,
+        base: None,
+        sent: false,
+    };
+    assert!(app.comment_matches_current(&c), "an All-files comment shows in the File view");
+}
+
+/// A literal comment for list/selection tests that don't need to drive the diff UI.
+fn lit(file: &str, base: Option<&str>, diff_anchored: bool, text: &str) -> herdr_reviewr::model::Comment {
+    herdr_reviewr::model::Comment {
+        file: file.into(),
+        side: Side::New,
+        start: 1,
+        end: 1,
+        lines: "x".into(),
+        text: text.into(),
+        diff_anchored,
+        scope: Scope::Commit,
+        base: base.map(Into::into),
+        sent: false,
+    }
+}
+
+#[test]
+fn send_dispatches_only_unsent_and_marks_them_sent() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "first");
+
+    let t = FakeTarget::ok();
+    app.export(&t);
+    assert_eq!(t.count(), 1, "the fresh comment is dispatched");
+    assert!(app.store.get(0).unwrap().sent, "and marked sent");
+
+    // A second send with nothing new is a no-op.
+    let t2 = FakeTarget::ok();
+    app.export(&t2);
+    assert_eq!(t2.count(), 0, "nothing new to send");
+    assert!(app.status.contains("nothing new"));
+}
+
+#[test]
+fn a_second_send_only_sends_new_comments() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    let t = FakeTarget::ok();
+
+    comment_on(&mut app, '+', "first");
+    app.export(&t);
+    comment_on(&mut app, '-', "second");
+    app.export(&t);
+
+    assert_eq!(t.count(), 2);
+    let p2 = t.last();
+    assert_eq!(p2.matches("<comment ").count(), 1, "the second send carries only the new comment");
+    assert!(p2.contains("second") && !p2.contains("first"), "and it is the new one: {p2}");
+}
+
+#[test]
+fn copy_does_not_mark_sent() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "x");
+
+    app.export(&FakeTarget::copy());
+    assert!(!app.store.get(0).unwrap().sent, "copy leaves the comment un-sent");
+
+    let agent = FakeTarget::ok();
+    app.export(&agent);
+    assert_eq!(agent.count(), 1, "so a later agent send still carries it");
+    assert!(app.store.get(0).unwrap().sent);
+}
+
+#[test]
+fn a_sent_comment_cannot_be_edited_only_resolved() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "note");
+    app.export(&FakeTarget::ok());
+
+    app.open_list();
+    app.start_edit();
+    assert_eq!(app.mode, Mode::List, "edit is refused on a sent comment");
+    assert!(app.status.contains("resolve only"), "status explains why: {}", app.status);
+
+    app.resolve_selected();
+    assert_eq!(app.store.len(), 0, "but it can still be resolved");
+}
+
+#[test]
+fn list_groups_by_view_and_base() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.store.add(lit("a.rs", Some("aaaaaaa000"), true, "at A"));
+    app.store.add(lit("a.rs", Some("bbbbbbb111"), true, "at B"));
+    app.store.add(lit("a.rs", None, false, "in all files"));
+
+    let groups = app.list_groups();
+    assert_eq!(groups.len(), 3, "two commit groups and one All-files group");
+    assert_eq!(groups.iter().filter(|(l, _)| l.starts_with("commit ")).count(), 2);
+    assert!(groups.iter().any(|(l, _)| l == "All files"));
+    // Diff groups come before the All-files group.
+    assert!(groups.last().unwrap().0 == "All files");
+    // list_order flattens every comment exactly once.
+    assert_eq!(app.list_order().len(), 3);
+}
+
+#[test]
+fn space_toggles_selection_and_a_selects_all() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.store.add(lit("a.rs", Some("base"), true, "one"));
+    app.store.add(lit("a.rs", Some("base"), true, "two"));
+    app.open_list();
+    assert!(app.list_selected.is_empty());
+
+    app.toggle_list_select();
+    assert_eq!(app.list_selected.len(), 1, "space checks the cursor row");
+    app.select_all_or_none();
+    assert_eq!(app.list_selected.len(), 2, "a checks all");
+    app.select_all_or_none();
+    assert!(app.list_selected.is_empty(), "a again clears when all were checked");
+}
+
+#[test]
+fn resolve_selected_removes_the_checked_comments() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.store.add(lit("a.rs", Some("base"), true, "one"));
+    app.store.add(lit("a.rs", Some("base"), true, "two"));
+    app.store.add(lit("a.rs", Some("base"), true, "three"));
+    app.open_list();
+
+    app.toggle_list_select(); // row 0 (one)
+    app.list_move(1);
+    app.toggle_list_select(); // row 1 (two)
+    app.resolve_selected();
+
+    assert_eq!(app.store.len(), 1, "the two checked comments are removed");
+    assert_eq!(app.store.get(0).unwrap().text, "three", "the unchecked one remains");
+    assert!(app.list_selected.is_empty(), "the selection is cleared");
+}
+
+#[test]
+fn open_comment_restores_scope_and_base_then_jumps() {
+    let r = Repo::init();
+    r.write("a.rs", "l1\n");
+    r.commit_all("c1");
+    r.write("a.rs", "l1\nl2\n");
+    r.commit_all("c2");
+    r.write("a.rs", "l1\nl2\nl3\n"); // uncommitted, so a diff exists against either commit
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    let head = app.selected_commit.clone().unwrap();
+    let older = app.commit_choices[1].sha.clone();
+
+    goto_file(&mut app, "a.rs");
+    comment_on(&mut app, '+', "note"); // authored against HEAD
+    assert_eq!(app.store.get(0).unwrap().base.as_deref(), Some(head.as_str()));
+
+    app.set_commit(older).unwrap(); // switch away — the comment is now off-base
+    assert!(!app.comment_matches_current(app.store.get(0).unwrap()), "hidden off its base");
+
+    app.open_list();
+    app.open_comment(0);
+    assert_eq!(app.selected_commit.as_deref(), Some(head.as_str()), "restored its commit base");
+    assert_eq!(app.scope, Scope::Commit);
+    assert_eq!(app.mode, Mode::Normal, "the list closed on the jump");
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "and its file is open");
 }
 
 #[test]

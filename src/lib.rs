@@ -362,10 +362,17 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
             Esc | Char('l' | 'q') => app.close_list(),
             Char('j') | Down => app.list_move(1),
             Char('k') | Up => app.list_move(-1),
+            Char(' ') => app.toggle_list_select(),
+            Char('a') => app.select_all_or_none(),
+            Enter => {
+                if let Some(i) = app.list_current() {
+                    app.open_comment(i);
+                }
+            }
             Char('s') => app.export(&Agent),
             Char('y') => app.export(&Clipboard),
             Char('e') => app.start_edit(),
-            Char('r') => app.resolve_comment(),
+            Char('r') => app.resolve_selected(),
             Char('d') => app.delete_comment(),
             _ => {}
         }
@@ -522,7 +529,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 match ui::hit_comments_list(area, app, m.column, m.row) {
-                    Some(i) => app.jump_to_comment(i),
+                    Some(i) => app.open_comment(i),
                     None if !ui::in_picker_popup(area, m.column, m.row) => app.close_list(),
                     None => {}
                 }

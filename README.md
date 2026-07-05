@@ -104,10 +104,14 @@ below are the full reference.
 | `r` | Resolve (remove) the comment under the cursor — drops it from the list |
 | `d` | Delete the comment under the cursor |
 | `n` `N` | Jump to the next / previous comment |
-| `l` | List every comment; click a row (or `r` on it) — a click jumps to that comment's code, `r` resolves it |
-| `s` | Send all comments to the agent, wrapped in a `<review>` block that asks it to resolve each and report a status table |
-| `y` | Copy all comments to the clipboard |
+| `l` | List every comment, grouped by view + base (`── commit … ──` / `── branch … ──` / `── All files ──`); fresh (un-sent) comments show in green. `space` checks a row, `a` checks all, `r` resolves the checked set (or the cursor row), `enter`/click jumps to a comment — switching to its commit/branch first |
+| `s` | Send the **un-sent** comments to the agent in a `<review>` block (asks it to resolve each and report a status table); sent comments become resolve-only. A Changes comment carries its `+/-` hunk; an All-files comment carries plain code |
+| `y` | Copy all comments to the clipboard (does not mark them sent) |
 | `esc` | Clear the selection |
+
+Comments are scoped to the diff they were made against: a comment made while comparing one
+commit/branch shows only under that view + base, and cycling commits or branches reveals only
+that diff's comments. The `l` list spans all of them and clicking one takes you back to its diff.
 
 **In the comment box**
 

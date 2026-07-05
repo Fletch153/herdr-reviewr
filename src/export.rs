@@ -59,6 +59,11 @@ pub fn format_all(comments: &[&Comment]) -> String {
 pub trait ExportTarget {
     fn export(&self, text: &str) -> Result<()>;
     fn label(&self) -> &'static str;
+    /// Whether dispatching to this target marks the sent comments as sent (so the next Send skips
+    /// them). True for the agent; false for the clipboard, which is a manual grab of everything.
+    fn marks_sent(&self) -> bool {
+        true
+    }
 }
 
 /// A clipboard tool and the args that make it read stdin into the system clipboard. Tried in
@@ -78,6 +83,10 @@ pub struct Clipboard;
 impl ExportTarget for Clipboard {
     fn label(&self) -> &'static str {
         "clipboard"
+    }
+
+    fn marks_sent(&self) -> bool {
+        false
     }
 
     fn export(&self, text: &str) -> Result<()> {
@@ -133,7 +142,7 @@ impl ExportTarget for Agent {
 #[cfg(test)]
 mod tests {
     use super::{CLIPBOARD_TOOLS, format_all, format_comment, select_tool};
-    use crate::model::{Comment, Side};
+    use crate::model::{Comment, Scope, Side};
 
     #[test]
     fn clipboard_tool_selection_prefers_list_order_and_can_be_empty() {
@@ -160,7 +169,9 @@ mod tests {
             lines: lines.into(),
             text: text.into(),
             diff_anchored: true,
+            scope: Scope::Commit,
             base: None,
+            sent: false,
         }
     }
 

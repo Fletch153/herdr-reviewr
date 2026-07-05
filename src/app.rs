@@ -129,6 +129,8 @@ pub enum FooterAction {
     OpenEditor,
     DeleteComment,
     Resolve,
+    ResolveSelected,
+    SelectAll,
     Review,
     JumpComment,
     ExpandFold,
@@ -255,6 +257,8 @@ pub struct App {
     pub select_anchor: Option<usize>,
     pub store: CommentStore,
     pub list_cursor: usize,
+    /// Store indices checked in the comments list for a batch resolve; cleared on any change.
+    pub list_selected: HashSet<usize>,
     pub selected_commit: Option<String>,
     pub commit_choices: Vec<git::CommitRef>,
     pub commit_cursor: usize,
@@ -339,6 +343,7 @@ impl App {
             select_anchor: None,
             store: CommentStore::new(),
             list_cursor: 0,
+            list_selected: HashSet::new(),
             selected_commit,
             commit_choices: Vec::new(),
             commit_cursor: 0,
@@ -1069,9 +1074,16 @@ impl App {
 
     pub fn pick_commit(&mut self, idx: usize) -> Result<()> {
         let Some(commit) = self.commit_choices.get(idx) else { return Ok(()) };
-        self.selected_commit = Some(commit.sha.clone());
-        self.scope = Scope::Commit;
+        let sha = commit.sha.clone();
         self.mode = Mode::Normal;
+        self.set_commit(sha)
+    }
+
+    /// Repoint the Commit-scope diff at `sha` and reload — shared by the picker and by restoring a
+    /// comment's authoring commit when it's clicked in the list.
+    pub fn set_commit(&mut self, sha: String) -> Result<()> {
+        self.selected_commit = Some(sha);
+        self.scope = Scope::Commit;
         self.reset_changes_view();
         self.reload()?;
         self.reveal_files = true;
@@ -1145,8 +1157,16 @@ impl App {
         let Some(name) = self.branch_choices.get(idx).and_then(BranchRow::name) else {
             return Ok(());
         };
-        self.base = Some(name.to_string());
+        let name = name.to_string();
         self.mode = Mode::Normal;
+        self.set_branch(name)
+    }
+
+    /// Repoint the Branch-scope diff at `name` and reload — shared by the picker and by restoring a
+    /// comment's authoring branch when it's clicked in the list.
+    pub fn set_branch(&mut self, name: String) -> Result<()> {
+        self.base = Some(name);
+        self.scope = Scope::Branch;
         self.reset_changes_view();
         self.reload()?;
         self.reveal_files = true;
@@ -1566,6 +1586,12 @@ impl App {
         let from_list = self.mode == Mode::List;
         let Some(i) = self.target_comment() else { return };
         let Some(c) = self.store.get(i) else { return };
+        // A sent comment is a record of what the agent already received — it can be resolved but
+        // not rewritten out from under it.
+        if c.sent {
+            self.status = "sent — resolve only".to_string();
+            return;
+        }
         let (file, side, start, end, text) =
             (c.file.clone(), c.side, c.start, c.end, c.text.clone());
 
@@ -1779,7 +1805,7 @@ impl App {
     fn selection_anchor(&self) -> Option<(Side, u32, u32, String)> {
         let (lo, hi) = self.selection_range();
         let selected: Vec<&Row> = self.visible.get(lo..=hi)?.iter().collect();
-        anchor(&selected)
+        anchor(&selected, self.diff.view == View::Diff)
     }
 
     fn build_comment(&self, text: String) -> Option<Comment> {
@@ -1790,10 +1816,15 @@ impl App {
         // The File view marks every comment as content-anchored, so it ages by file existence,
         // not changeset membership (specs/review-model.md).
         let diff_anchored = self.diff.view == View::Diff;
-        // Stamp the base the comment is anchored against, so an Old-side (removed-line) comment
-        // can tell when its base changes out from under it.
-        let base = self.resolved_base.clone();
-        Some(Comment { file, side, start, end, lines, text, diff_anchored, base })
+        // Pin the comment to the exact diff it was made against: its scope plus a restore key —
+        // the commit SHA, the branch name, or nothing for last-turn / an All-files comment. This
+        // is what makes cycling commits/branches show only that diff's comments.
+        let base = match self.scope {
+            Scope::Commit => self.selected_commit.clone(),
+            Scope::Branch => self.base.clone(),
+            Scope::LastTurn => None,
+        };
+        Some(Comment { file, side, start, end, lines, text, diff_anchored, scope: self.scope, base, sent: false })
     }
 
     /// The `path:line` the composer is anchored to (selection for a new comment,
@@ -1813,7 +1844,9 @@ impl App {
                     lines: String::new(),
                     text: String::new(),
                     diff_anchored: true,
+                    scope: Scope::Commit,
                     base: None,
+                    sent: false,
                 };
                 Some(c.location())
             }
@@ -1827,12 +1860,26 @@ impl App {
         }
     }
 
-    /// Whether comment `c` anchors to the pane's current view — a diff comment to the Diff view,
-    /// a content comment to the File view. Stops a comment of one kind rendering on, or being
-    /// acted on at, an unrelated line in the other tab's view of the same file (the diff's line
-    /// numbering and the File view's worktree line numbering differ; specs/review-model.md).
-    fn comment_in_view(&self, c: &Comment) -> bool {
-        c.diff_anchored == (self.diff.view == View::Diff)
+    /// Whether comment `c` belongs to the view and base currently on screen. A comment renders
+    /// inline only under the exact diff it was authored against: the right pane view (Changes vs
+    /// All files) and — for a Changes comment — the same scope and base (commit SHA / branch).
+    /// All-files comments carry no base, so they show whenever the File view is active. Cycling
+    /// commits or branches therefore reveals only that diff's comments (specs/review-model.md).
+    pub fn comment_matches_current(&self, c: &Comment) -> bool {
+        if c.diff_anchored != (self.diff.view == View::Diff) {
+            return false;
+        }
+        if !c.diff_anchored {
+            return true;
+        }
+        if c.scope != self.scope {
+            return false;
+        }
+        match self.scope {
+            Scope::Commit => c.base.as_deref() == self.selected_commit.as_deref(),
+            Scope::Branch => c.base.as_deref() == self.base.as_deref(),
+            Scope::LastTurn => true,
+        }
     }
 
     /// Row indices on the open diff's file that a comment anchors to.
@@ -1846,7 +1893,7 @@ impl App {
             .filter(|(_, row)| {
                 self.store
                     .iter()
-                    .any(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
+                    .any(|c| c.file == file && self.comment_matches_current(c) && line_in(c, row))
             })
             .map(|(i, _)| i)
             .collect()
@@ -1860,7 +1907,7 @@ impl App {
         let Some(file) = self.diff_path.as_deref() else { return cards };
         for (ci, c) in self.store.iter().enumerate() {
             if c.file == file
-                && self.comment_in_view(c)
+                && self.comment_matches_current(c)
                 && let Some(last) = self.visible.iter().rposition(|row| line_in(c, row))
             {
                 cards[last].push(ci);
@@ -1869,20 +1916,145 @@ impl App {
         cards
     }
 
-    /// The store index to act on: the comment under the diff cursor, or — in the
-    /// list overlay — the highlighted row.
+    /// The store index to act on: the comment under the diff cursor, or — in the list overlay —
+    /// the highlighted row, mapped through the grouped display order.
     fn target_comment(&self) -> Option<usize> {
         if self.mode == Mode::List {
-            return (self.list_cursor < self.store.len()).then_some(self.list_cursor);
+            return self.list_order().get(self.list_cursor).copied();
         }
         self.comment_under_cursor()
+    }
+
+    /// Comments grouped for the list overlay as `(header label, store indices)`: the Changes
+    /// (diff) groups keyed by scope+base first — one per commit/branch a comment was made
+    /// against — then the All-files group. Order within a group is store (creation) order.
+    pub fn list_groups(&self) -> Vec<(String, Vec<usize>)> {
+        type Key = (bool, Scope, Option<String>);
+        let mut groups: Vec<(Key, String, Vec<usize>)> = Vec::new();
+        for (i, c) in self.store.iter().enumerate() {
+            let key: Key = (c.diff_anchored, c.scope, c.base.clone());
+            if let Some(g) = groups.iter_mut().find(|g| g.0 == key) {
+                g.2.push(i);
+            } else {
+                let label = self.base_label(c);
+                groups.push((key, label, vec![i]));
+            }
+        }
+        let (mut diff_groups, file_groups): (Vec<_>, Vec<_>) =
+            groups.into_iter().partition(|g| g.0.0);
+        diff_groups.extend(file_groups);
+        diff_groups.into_iter().map(|(_, label, items)| (label, items)).collect()
+    }
+
+    /// Store indices in the list's grouped display order; `list_cursor` indexes this.
+    pub fn list_order(&self) -> Vec<usize> {
+        self.list_groups().into_iter().flat_map(|(_, items)| items).collect()
+    }
+
+    /// The group header for a comment: its authoring commit / branch, or `All files`.
+    fn base_label(&self, c: &Comment) -> String {
+        if !c.diff_anchored {
+            return "All files".to_string();
+        }
+        match c.scope {
+            Scope::Commit => match &c.base {
+                Some(sha) => {
+                    let short = self
+                        .commit_choices
+                        .iter()
+                        .find(|k| &k.sha == sha)
+                        .map_or_else(|| sha.chars().take(7).collect(), |k| k.short.clone());
+                    format!("commit {short}")
+                }
+                None => "commit".to_string(),
+            },
+            Scope::Branch => match &c.base {
+                Some(name) => format!("branch {name}"),
+                None => "branch".to_string(),
+            },
+            Scope::LastTurn => "last turn".to_string(),
+        }
+    }
+
+    /// The store index the list cursor is on, via the grouped order.
+    pub fn list_current(&self) -> Option<usize> {
+        self.list_order().get(self.list_cursor).copied()
+    }
+
+    /// Whether the comment at store index `i` is checked in the list.
+    pub fn is_list_selected(&self, i: usize) -> bool {
+        self.list_selected.contains(&i)
+    }
+
+    /// Toggle the checkbox on the highlighted comment.
+    pub fn toggle_list_select(&mut self) {
+        if let Some(i) = self.list_current()
+            && !self.list_selected.insert(i)
+        {
+            self.list_selected.remove(&i);
+        }
+    }
+
+    /// Check every comment, or clear the selection if all are already checked.
+    pub fn select_all_or_none(&mut self) {
+        let order = self.list_order();
+        if order.iter().all(|i| self.list_selected.contains(i)) {
+            self.list_selected.clear();
+        } else {
+            self.list_selected = order.into_iter().collect();
+        }
+    }
+
+    /// Resolve (remove) the checked comments, or the highlighted one if none are checked. Removes
+    /// in descending index order so earlier removals don't shift later targets.
+    pub fn resolve_selected(&mut self) {
+        let mut targets: Vec<usize> = if self.list_selected.is_empty() {
+            self.list_current().into_iter().collect()
+        } else {
+            self.list_selected.iter().copied().collect()
+        };
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.is_empty() {
+            return;
+        }
+        for &i in targets.iter().rev() {
+            self.store.take(i);
+        }
+        let n = targets.len();
+        self.list_selected.clear();
+        self.clamp_list_cursor();
+        if self.store.is_empty() {
+            self.close_list();
+        }
+        self.status = format!("resolved {n} ({} left)", self.store.len());
+    }
+
+    /// Restore the view+base a comment was authored under, then jump to it — the click / Enter
+    /// action in the list. Switching the base first puts the file back in the changeset so the
+    /// jump can land the diff cursor.
+    pub fn open_comment(&mut self, index: usize) {
+        let Some(c) = self.store.get(index) else { return };
+        let (diff_anchored, scope, base) = (c.diff_anchored, c.scope, c.base.clone());
+        let tab = if diff_anchored { Tab::Changes } else { Tab::AllFiles };
+        if self.tab != tab {
+            let _ = self.set_tab(tab);
+        }
+        if diff_anchored {
+            let _ = match scope {
+                Scope::Commit => self.set_commit(base.unwrap_or_default()),
+                Scope::Branch => self.set_branch(base.unwrap_or_default()),
+                Scope::LastTurn => self.set_scope(Scope::LastTurn),
+            };
+        }
+        self.jump_to_comment(index);
     }
 
     /// The store index of a comment whose range covers the current diff row, if any.
     pub(crate) fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
         let row = self.visible.get(self.diff_cursor)?;
-        self.store.iter().position(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
+        self.store.iter().position(|c| c.file == file && self.comment_matches_current(c) && line_in(c, row))
     }
 
     pub fn request_editor(&mut self) {
@@ -1922,6 +2094,7 @@ impl App {
     /// "Comments (0)" overlay, matching `export`.
     fn remove_comment(&mut self, i: usize) {
         self.store.take(i);
+        self.list_selected.clear();
         self.clamp_list_cursor();
         if self.store.is_empty() {
             self.close_list();
@@ -2039,6 +2212,7 @@ impl App {
     pub fn open_list(&mut self) {
         if !self.store.is_empty() {
             self.list_cursor = 0;
+            self.list_selected.clear();
             self.mode = Mode::List;
         }
     }
@@ -2069,11 +2243,11 @@ impl App {
             Mode::List => {
                 return vec![
                     (A::Send, Primary),
-                    (A::Resolve, Normal),
+                    (A::ResolveSelected, Normal),
+                    (A::SelectAll, Normal),
                     (A::CloseList, Normal),
                     (A::Copy, Normal),
                     (A::EditComment, Normal),
-                    (A::DeleteComment, Normal),
                 ];
             }
             Mode::CommitPick => {
@@ -2211,20 +2385,35 @@ impl App {
     /// Send/copy every written comment to `target`; consume the whole set only on
     /// success. A failed export leaves all comments in place (`specs/review-model.md`).
     pub fn export(&mut self, target: &dyn ExportTarget) {
-        if self.store.is_empty() {
-            self.status = "no comments to send".to_string();
+        // A dispatch to the agent carries only the un-sent ("fresh") comments and marks them sent,
+        // so a second Send never re-delivers the whole review. Copy is a manual grab of everything.
+        let indices: Vec<usize> = if target.marks_sent() {
+            self.store.iter().enumerate().filter(|(_, c)| !c.sent).map(|(i, _)| i).collect()
+        } else {
+            (0..self.store.len()).collect()
+        };
+        if indices.is_empty() {
+            self.status = if self.store.is_empty() {
+                "no comments to send".to_string()
+            } else {
+                "nothing new to send".to_string()
+            };
             return;
         }
-        let refs: Vec<&Comment> = self.store.iter().collect();
+        let refs: Vec<&Comment> = indices.iter().filter_map(|&i| self.store.get(i)).collect();
         let text = format_all(&refs);
         let n = refs.len();
         logln!("export ({n}) -> {} ::\n{text}", target.label());
         match target.export(&text) {
             Ok(()) => {
-                // Keep the comments after sending: they are a review checklist the round-trip
-                // status (`○` pending / `✓` addressed) tracks as the agent edits. Dismiss a
-                // finished one with `d` in the comments list.
-                self.status = format!("sent {n} comment(s) to {} — tracking in the list", target.label());
+                if target.marks_sent() {
+                    // The comments stay in the list as a tracking checklist; resolve a finished one
+                    // with `r`. They're now sent, so the next Send only carries newer comments.
+                    self.store.mark_unsent_as_sent();
+                    self.status = format!("sent {n} to agent — {} tracked", self.store.len());
+                } else {
+                    self.status = format!("copied {n} comment(s) to {}", target.label());
+                }
                 logln!("export OK");
             }
             Err(e) => {
@@ -2245,20 +2434,16 @@ impl App {
         self.changed.keys().any(|p| p.strip_prefix(path).is_some_and(|rest| rest.starts_with('/')))
     }
 
-    /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
-    /// the changeset; a File-view (content) comment only once its file is gone from the
-    /// worktree, since it was never tied to the changeset (specs/review-model.md).
-    /// Whether the code a comment anchors to is gone. New-side comments are worktree-anchored, so
-    /// they age only when the file or the line itself disappears — a base change never orphans
-    /// them. Old-side (removed-line) comments only exist relative to their base, so they orphan
-    /// when that base changes or the file is deleted.
+    /// Whether the code a comment anchors to is gone: the file was deleted, or (New-side) the file
+    /// shrank past the anchored line. Off-base comments are hidden by filtering and grouped in the
+    /// list, so staleness is now purely about vanished code, not the base.
     pub fn is_stale(&self, c: &Comment) -> bool {
         if !self.repo.join(&c.file).exists() {
             return true;
         }
         match c.side {
             Side::New => c.end > worktree_content(&self.repo, &c.file).lines().count() as u32,
-            Side::Old => c.base.as_deref() != self.resolved_base.as_deref(),
+            Side::Old => false,
         }
     }
 
@@ -2440,29 +2625,34 @@ fn line_in(c: &Comment, row: &Row) -> bool {
 ///
 /// New-side numbers win when present (insertion/context rows); a pure deletion
 /// anchors to the old side. The snippet keeps each row's `+`/`−`/space marker.
-fn anchor(selected: &[&Row]) -> Option<(Side, u32, u32, String)> {
+fn anchor(selected: &[&Row], markers: bool) -> Option<(Side, u32, u32, String)> {
     // A selection may straddle a collapsed fold; anchor only over its content rows.
     let selected: Vec<&Row> = selected.iter().copied().filter(|r| r.is_content()).collect();
     if selected.is_empty() {
         return None;
     }
-    // The snippet is the marker-free content of the anchored side: worktree text for a New-side
-    // comment (context + insertions), base text for an Old-side one (context + deletions). Diff
-    // markers are base-relative, so they never enter the stored snapshot — only the code does.
-    let side_text = |on_side: fn(&Row) -> Option<u32>| -> String {
-        selected
-            .iter()
-            .filter(|r| on_side(r).is_some())
-            .map(|r| r.text())
-            .collect::<Vec<_>>()
-            .join("\n")
+    // On the Changes diff the snippet keeps the `+/-` hunk verbatim (both sides) so the agent sees
+    // the change; in the File view (All files) it is the marker-free content of the anchored side.
+    let snippet = if markers {
+        selected.iter().map(|r| r.marker_text()).collect::<Vec<_>>().join("\n")
+    } else {
+        let side_text = |on_side: fn(&Row) -> Option<u32>| -> String {
+            selected
+                .iter()
+                .filter(|r| on_side(r).is_some())
+                .map(|r| r.text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let has_new = selected.iter().any(|r| r.new_no().is_some());
+        side_text(if has_new { Row::new_no } else { Row::old_no })
     };
     let new_nos: Vec<u32> = selected.iter().filter_map(|r| r.new_no()).collect();
     if let (Some(&min), Some(&max)) = (new_nos.iter().min(), new_nos.iter().max()) {
-        return Some((Side::New, min, max, side_text(Row::new_no)));
+        return Some((Side::New, min, max, snippet));
     }
     let old_nos: Vec<u32> = selected.iter().filter_map(|r| r.old_no()).collect();
     let min = *old_nos.iter().min()?;
     let max = *old_nos.iter().max()?;
-    Some((Side::Old, min, max, side_text(Row::old_no)))
+    Some((Side::Old, min, max, snippet))
 }

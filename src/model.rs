@@ -83,11 +83,17 @@ pub struct Comment {
     pub lines: String,
     pub text: String,
     /// True when anchored to a diff (the `Changes` tab); false for a File-view content comment
-    /// (the `All files` tab). Gates which view renders the comment inline (specs/review-model.md).
+    /// (the `All files` tab). The first half of a comment's view identity (specs/review-model.md).
     pub diff_anchored: bool,
-    /// The resolved diff base the comment was anchored against; identifies an `Old`-side
-    /// comment's removed-line snapshot. `None` for last-turn or worktree-only anchors.
+    /// The scope the comment was authored in. With `base`, it pins a Changes comment to the exact
+    /// diff it was made against, so cycling commits/branches only shows that diff's comments.
+    pub scope: Scope,
+    /// The restore key for the comment's diff: the commit SHA (`Commit` scope), the branch name
+    /// (`Branch` scope), or `None` (`LastTurn` / an All-files comment).
     pub base: Option<String>,
+    /// Set once the comment has been dispatched to the agent. Sent comments are resolve-only (no
+    /// edit); un-sent ("fresh") comments are what the next Send dispatches.
+    pub sent: bool,
 }
 
 impl Comment {
@@ -148,6 +154,24 @@ impl CommentStore {
         }
     }
 
+    /// Mutable access to the comment at `index`, for toggling its `sent` flag.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Comment> {
+        self.items.get_mut(index)
+    }
+
+    /// Mark every un-sent comment as sent; returns how many flipped. Called after a successful
+    /// dispatch to the agent so the next Send only carries newly-added comments.
+    pub fn mark_unsent_as_sent(&mut self) -> usize {
+        let mut n = 0;
+        for c in &mut self.items {
+            if !c.sent {
+                c.sent = true;
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Remove and return the comment at `index` (delete, or consume one on export).
     pub fn take(&mut self, index: usize) -> Option<Comment> {
         if index < self.items.len() { Some(self.items.remove(index)) } else { None }
@@ -172,7 +196,9 @@ mod tests {
             lines: "x".into(),
             text: text.into(),
             diff_anchored: true,
+            scope: Scope::Commit,
             base: None,
+            sent: false,
         }
     }
 
