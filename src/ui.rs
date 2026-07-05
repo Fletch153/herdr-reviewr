@@ -1573,6 +1573,7 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
                 ("Tab", "switch files ⇄ diff"),
                 ("← / →", "collapse/expand dir · expand fold · scroll diff"),
                 ("Enter", "expand/collapse the tree under a folder"),
+                ("x", "expand every folder with changes · again collapses back"),
                 ("backspace", "delete the file / folder under the cursor (confirms first)"),
                 ("w", "toggle line wrap"),
                 ("[ / ]", "narrow / widen the file list"),

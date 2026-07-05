@@ -511,6 +511,8 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('p'), false) => app.open_preview(),
         (Char('+'), _) => app.send_path_to_agent(),
         (Char(' '), _) => app.review_advance(),
+        // `x` expands every folder containing a change; press again to collapse back.
+        (Char('x'), _) => app.expand_changes(),
         (Char('?'), _) => app.open_help(),
         (Backspace, _) => app.request_delete(),
         (Char('/'), false) => app.start_filter(),

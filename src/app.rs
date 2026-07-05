@@ -74,6 +74,7 @@ struct TabStash {
     file_cursor: usize,
     file_scroll: usize,
     toggled_dirs: HashSet<String>,
+    expand_snapshot: Option<HashSet<String>>,
     reviewed: HashMap<String, u64>,
     diff: FileDiff,
     visible: Vec<Row>,
@@ -238,6 +239,10 @@ pub struct App {
     /// (expanded by default), expanded in `All files` (collapsed by default). Keyed by path,
     /// so it survives a poll that rebuilds the tree.
     toggled_dirs: HashSet<String>,
+    /// The `toggled_dirs` snapshot saved when `x` expanded every change-containing folder, so a
+    /// second `x` restores the tree to exactly its pre-expand state. `None` when `x` is not
+    /// holding an expansion open. Per-tab (stashed on a tab switch); survives a poll.
+    expand_snapshot: Option<HashSet<String>>,
     /// Changed files marked reviewed → the worktree-content hash at review time, so the mark
     /// clears when the agent edits the file again. Keyed by path; survives a poll.
     reviewed: HashMap<String, u64>,
@@ -346,6 +351,7 @@ impl App {
             reveal_diff: false,
             resume_list: false,
             toggled_dirs: HashSet::new(),
+            expand_snapshot: None,
             reviewed: HashMap::new(),
             stash: TabStash::default(),
             changed: HashMap::new(),
@@ -1424,6 +1430,7 @@ impl App {
         std::mem::swap(&mut self.file_cursor, &mut self.stash.file_cursor);
         std::mem::swap(&mut self.file_scroll, &mut self.stash.file_scroll);
         std::mem::swap(&mut self.toggled_dirs, &mut self.stash.toggled_dirs);
+        std::mem::swap(&mut self.expand_snapshot, &mut self.stash.expand_snapshot);
         std::mem::swap(&mut self.reviewed, &mut self.stash.reviewed);
         std::mem::swap(&mut self.diff, &mut self.stash.diff);
         std::mem::swap(&mut self.visible, &mut self.stash.visible);
@@ -1559,6 +1566,49 @@ impl App {
         if changed {
             self.apply_dir_change();
         }
+    }
+
+    /// `x`: expand every folder that contains a change (each ancestor directory of a changed
+    /// file), remembering the tree's prior state so a second `x` collapses back to exactly that
+    /// state. Recomputed from the live tree each press: when those folders are already all open,
+    /// `x` restores the saved state if this feature opened them, and otherwise does nothing.
+    pub fn expand_changes(&mut self) {
+        if !self.tab.is_file_tab() {
+            return;
+        }
+        let dirs = self.change_ancestor_dirs();
+        if dirs.is_empty() {
+            return; // no changes -> nothing to expand
+        }
+        if dirs.iter().all(|d| self.dir_expanded(d)) {
+            // Already fully expanded: collapse back only if a prior `x` opened it.
+            if let Some(prior) = self.expand_snapshot.take() {
+                self.toggled_dirs = prior;
+                self.apply_dir_change();
+            }
+            return;
+        }
+        let prior = self.toggled_dirs.clone();
+        for d in &dirs {
+            self.set_dir_expanded(d, true);
+        }
+        self.expand_snapshot = Some(prior);
+        self.apply_dir_change();
+    }
+
+    /// Every ancestor directory of a changed file (the folders that "contain changes"), e.g.
+    /// `a/b/c.rs` yields `a` and `a/b`. Deduplicated; order is unspecified.
+    fn change_ancestor_dirs(&self) -> Vec<String> {
+        let mut set = HashSet::new();
+        for path in self.changed.keys() {
+            let mut idx = 0;
+            while let Some(rel) = path[idx..].find('/') {
+                idx += rel;
+                set.insert(path[..idx].to_string());
+                idx += 1;
+            }
+        }
+        set.into_iter().collect()
     }
 
     fn direct_child_dirs(&self, folder: &str) -> Vec<String> {

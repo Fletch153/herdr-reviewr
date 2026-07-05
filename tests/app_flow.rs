@@ -2983,3 +2983,64 @@ fn jump_to_comment_opens_file_and_sets_diff_cursor() {
         "the cursor sits on the commented line",
     );
 }
+
+// --- `x` expand-all-changes toggle ---------------------------------------------------
+
+fn row_visible(app: &App, needle: &str) -> bool {
+    app.file_rows.iter().any(|r| r.name.contains(needle))
+}
+
+#[test]
+fn x_expands_change_folders_then_collapses_back_to_the_prior_state() {
+    let r = Repo::init();
+    r.write("src/deep/a.rs", "one\n");
+    r.write("top.rs", "t\n");
+    r.commit_all("init");
+    r.write("src/deep/a.rs", "ONE\n"); // a change nested under collapsed folders
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.set_tab(Tab::AllFiles).unwrap(); // default-collapsed tab, so expansion is observable
+    app.reload().unwrap();
+
+    assert!(!row_visible(&app, "a.rs"), "nested change is hidden under a collapsed folder");
+
+    app.expand_changes();
+    assert!(row_visible(&app, "a.rs"), "x expands the folders leading to the change");
+
+    app.expand_changes();
+    assert!(!row_visible(&app, "a.rs"), "x again collapses back to the prior state");
+}
+
+#[test]
+fn x_is_a_noop_when_the_change_folders_are_already_expanded() {
+    let r = Repo::init();
+    r.write("src/deep/a.rs", "one\n");
+    r.commit_all("init");
+    r.write("src/deep/a.rs", "ONE\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap(); // Changes tab: folders open by default
+
+    assert!(row_visible(&app, "a.rs"), "changes tab shows the nested change already");
+    let before: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+
+    app.expand_changes(); // already fully expanded -> nothing to do
+    let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(before, after, "x does nothing when change folders are already expanded");
+
+    app.expand_changes(); // and must not spuriously collapse on a second press
+    let after2: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(before, after2, "a second x still does nothing");
+}
+
+#[test]
+fn x_does_nothing_with_no_changes() {
+    let r = Repo::init();
+    r.write("src/deep/a.rs", "one\n");
+    r.commit_all("init");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.reload().unwrap();
+    let before: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    app.expand_changes();
+    let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(before, after, "no changes -> x is inert");
+}
