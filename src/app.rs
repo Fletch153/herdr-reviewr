@@ -310,8 +310,7 @@ impl App {
         let theme = theme::resolve(None);
         // Commit scope defaults to the tip (HEAD) — the uncommitted view — so building straight
         // into it shows a diff without a later `set_scope` call.
-        let selected_commit =
-            (scope == Scope::Commit).then(|| git::head_commit(&repo)).flatten();
+        let selected_commit = (scope == Scope::Commit).then(|| git::head_commit(&repo)).flatten();
         Self {
             repo,
             branch_choices: Vec::new(),
@@ -1053,7 +1052,8 @@ impl App {
 
     pub fn comparing_tip(&self) -> bool {
         self.scope == Scope::Commit
-            && self.selected_commit.as_deref() == self.commit_choices.first().map(|c| c.sha.as_str())
+            && self.selected_commit.as_deref()
+                == self.commit_choices.first().map(|c| c.sha.as_str())
     }
 
     pub fn open_commit_picker(&mut self) {
@@ -1856,7 +1856,18 @@ impl App {
             Scope::Branch => self.base.clone(),
             Scope::LastTurn => None,
         };
-        Some(Comment { file, side, start, end, lines, text, diff_anchored, scope: self.scope, base, sent: false })
+        Some(Comment {
+            file,
+            side,
+            start,
+            end,
+            lines,
+            text,
+            diff_anchored,
+            scope: self.scope,
+            base,
+            sent: false,
+        })
     }
 
     /// The `path:line` the composer is anchored to (selection for a new comment,
@@ -2111,7 +2122,9 @@ impl App {
     pub(crate) fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
         let row = self.visible.get(self.diff_cursor)?;
-        self.store.iter().position(|c| c.file == file && self.comment_matches_current(c) && line_in(c, row))
+        self.store
+            .iter()
+            .position(|c| c.file == file && self.comment_matches_current(c) && line_in(c, row))
     }
 
     pub fn request_editor(&mut self) {
@@ -2317,7 +2330,11 @@ impl App {
                 return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
             }
             Mode::Preview => {
-                return vec![(A::ExitPreview, Primary), (A::Tabs, Orientation), (A::Quit, Orientation)];
+                return vec![
+                    (A::ExitPreview, Primary),
+                    (A::Tabs, Orientation),
+                    (A::Quit, Orientation),
+                ];
             }
             Mode::Help => {
                 return vec![(A::CloseHelp, Primary)];
@@ -2551,9 +2568,8 @@ impl App {
     /// changeset, so a mark on an unchanged file (the `All files` tab) survives a poll.
     fn prune_reviewed(&mut self) {
         let repo = &self.repo;
-        self.reviewed.retain(|path, hash| {
-            repo.join(path).exists() && content_hash(repo, path) == *hash
-        });
+        self.reviewed
+            .retain(|path, hash| repo.join(path).exists() && content_hash(repo, path) == *hash);
     }
 
     fn clamp_list_cursor(&mut self) {

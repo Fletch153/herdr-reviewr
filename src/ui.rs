@@ -1258,7 +1258,13 @@ fn cells_to_spans(cells: &[Cell], emph_bg: Color) -> Vec<Span<'static>> {
     spans
 }
 
-fn cell_span(text: String, fg: Color, emph: bool, modifier: Modifier, emph_bg: Color) -> Span<'static> {
+fn cell_span(
+    text: String,
+    fg: Color,
+    emph: bool,
+    modifier: Modifier,
+    emph_bg: Color,
+) -> Span<'static> {
     let style = Style::default().fg(fg).add_modifier(modifier);
     Span::styled(text, if emph { style.bg(emph_bg) } else { style })
 }
@@ -1292,7 +1298,10 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Resolve | A::ResolveSelected => ("r", "resolve"),
         A::SelectAll => ("a", "select all"),
         A::Review => {
-            return ("space".into(), if app.focus == Focus::Diff { "next block" } else { "review" }.into());
+            return (
+                "space".into(),
+                if app.focus == Focus::Diff { "next block" } else { "review" }.into(),
+            );
         }
         A::JumpComment => ("n/N", "jump"),
         A::ExpandFold => ("→", "expand fold"),

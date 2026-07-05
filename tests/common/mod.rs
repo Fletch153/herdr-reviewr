@@ -1,8 +1,3 @@
-//! A real on-disk git repo for integration tests. Every helper shells out to the
-//! actual `git` binary, so tests exercise the same surface the app does at runtime.
-//!
-//! `dead_code`/`unreachable_pub` are allowed because each test binary includes this
-//! module and uses only the subset of helpers it needs.
 #![allow(dead_code, unreachable_pub)]
 
 use std::path::{Path, PathBuf};
@@ -15,14 +10,11 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// A fresh repo on branch `main` with an identity configured.
     pub fn init() -> Self {
         let repo = Self { dir: TempDir::new().expect("tempdir") };
         repo.git(&["init", "-q", "-b", "main"]);
         repo.git(&["config", "user.email", "test@herdr.test"]);
         repo.git(&["config", "user.name", "Test"]);
-        // Hermetic against host-global signing config (a machine-wide gpgsign=true with an
-        // unavailable signer would hang every fixture commit).
         repo.git(&["config", "commit.gpgsign", "false"]);
         repo
     }
@@ -35,7 +27,6 @@ impl Repo {
         self.dir.path().to_path_buf()
     }
 
-    /// Run `git -C <repo> <args>`, asserting success, returning stdout.
     pub fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git").arg("-C").arg(self.path()).args(args).output().expect("git");
         assert!(
@@ -58,7 +49,6 @@ impl Repo {
         std::fs::remove_file(self.path().join(rel)).expect("remove");
     }
 
-    /// Stage everything and commit.
     pub fn commit_all(&self, message: &str) {
         self.git(&["add", "-A"]);
         self.git(&["commit", "-q", "-m", message]);

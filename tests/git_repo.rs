@@ -1,5 +1,3 @@
-//! Integration tests for `git.rs` against real repositories.
-
 mod common;
 
 use std::collections::HashMap;
@@ -23,11 +21,11 @@ fn lists_every_change_kind_with_stats() {
     r.write("edit.rs", "one\ntwo\nthree\n");
     r.commit_all("init");
 
-    r.write("edit.rs", "one\nTWO\nthree\nfour\n"); // modify
-    r.write("added.rs", "new\n"); // staged add
+    r.write("edit.rs", "one\nTWO\nthree\nfour\n");
+    r.write("added.rs", "new\n");
     r.git(&["add", "added.rs"]);
-    r.remove("gone.rs"); // delete
-    r.write("untracked.rs", "u\n"); // untracked
+    r.remove("gone.rs");
+    r.write("untracked.rs", "u\n");
 
     let files = changed_files(r.path(), Scope::Commit, Some("HEAD")).unwrap();
     let files = by_path(&files);
@@ -45,9 +43,8 @@ fn file_content_reads_the_committed_version_not_the_worktree() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\ngamma\n");
     r.commit_all("init");
-    r.write("a.rs", "alpha\nBETA\ngamma\n"); // the worktree moves on
+    r.write("a.rs", "alpha\nBETA\ngamma\n");
 
-    // The old side of a diff: HEAD's content, not the working tree.
     assert_eq!(file_content(r.path(), "HEAD", "a.rs"), "alpha\nbeta\ngamma\n");
 }
 
@@ -56,9 +53,8 @@ fn file_content_is_empty_for_a_path_absent_at_that_rev() {
     let r = Repo::init();
     r.write("seed.rs", "x\n");
     r.commit_all("init");
-    r.write("fresh.rs", "line one\nline two\n"); // untracked — not in HEAD
+    r.write("fresh.rs", "line one\nline two\n");
 
-    // An added/untracked file has no old side, so its HEAD content is empty.
     assert_eq!(file_content(r.path(), "HEAD", "fresh.rs"), "");
     let files = changed_files(r.path(), Scope::Commit, Some("HEAD")).unwrap();
     assert_eq!(by_path(&files)["fresh.rs"].additions, 2);
@@ -85,8 +81,8 @@ fn branch_scope_is_a_superset_of_uncommitted() {
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("committed.rs", "new\n");
     r.commit_all("feature work");
-    r.write("dirty.rs", "wip\n"); // uncommitted edit
-    r.write("untracked.rs", "scratch\n"); // untracked, not yet added
+    r.write("dirty.rs", "wip\n");
+    r.write("untracked.rs", "scratch\n");
 
     let branch = changed_files(r.path(), Scope::Branch, Some("main")).unwrap();
     let names: Vec<&str> = branch.iter().map(|f| f.path.as_str()).collect();
@@ -94,7 +90,6 @@ fn branch_scope_is_a_superset_of_uncommitted() {
     assert!(names.contains(&"dirty.rs"), "branch shows uncommitted edits");
     assert!(names.contains(&"untracked.rs"), "branch shows untracked files");
 
-    // Branch is a superset of uncommitted.
     let uncommitted = changed_files(r.path(), Scope::Commit, Some("HEAD")).unwrap();
     for f in &uncommitted {
         assert!(names.contains(&f.path.as_str()), "branch contains uncommitted {}", f.path);
@@ -103,12 +98,10 @@ fn branch_scope_is_a_superset_of_uncommitted() {
 
 #[test]
 fn branch_scope_equals_uncommitted_when_head_is_the_base() {
-    // HEAD sits exactly on the base, so the merge-base is HEAD: branch shows the
-    // working-tree changes rather than going empty.
     let r = Repo::init();
     r.write("base.rs", "1\n");
     r.commit_all("base");
-    r.write("base.rs", "1\nchanged\n"); // uncommitted edit to a tracked file
+    r.write("base.rs", "1\nchanged\n");
 
     let branch = changed_files(r.path(), Scope::Branch, Some("main")).unwrap();
     assert!(branch.iter().any(|f| f.path == "base.rs"), "branch is not empty at the base");
@@ -122,8 +115,6 @@ fn ignored_paths_never_enter_changes() {
     r.write("ignored/note.md", "scratch\n");
     r.write("build/out.o", "junk\n");
 
-    // Every scope respects .gitignore, without exception: a path git ignores is not a
-    // change. To review a file, track it (specs/review-model.md).
     let has_ignored = |files: &[ChangedFile]| {
         files.iter().any(|f| f.path.starts_with("ignored/") || f.path.starts_with("build/"))
     };
@@ -133,8 +124,6 @@ fn ignored_paths_never_enter_changes() {
     );
     assert!(!has_ignored(&changed_files(r.path(), Scope::Branch, Some("main")).unwrap()), "branch");
 
-    // last-turn: even an ignored file that changes within the turn stays out, because the
-    // baseline snapshot and the live snapshot both honor .gitignore.
     let base = snapshot_worktree(r.path()).unwrap();
     r.write("ignored/note.md", "scratch v2\n");
     assert!(!has_ignored(&changed_against_tree(r.path(), &base).unwrap()), "last-turn");
@@ -145,22 +134,18 @@ fn branch_scope_falls_back_to_master_when_main_is_absent() {
     let r = Repo::init();
     r.write("base.rs", "1\n");
     r.commit_all("base");
-    r.git(&["branch", "-m", "main", "master"]); // no `main` ref exists anymore
+    r.git(&["branch", "-m", "main", "master"]);
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("feature.rs", "x\n");
     r.commit_all("feature work");
 
-    // base = None → master is the nearest ancestor branch (feature forked from it), so it resolves
-    // as the base even though `main` is gone.
     let files = changed_files(r.path(), Scope::Branch, None).unwrap();
     assert!(files.iter().any(|f| f.path == "feature.rs"), "resolved master as the base ref");
 }
 
 #[test]
 fn branch_scope_auto_base_is_the_nearest_fork_not_mainline() {
-    // Lineage main(A) → parent(B) → feature(C): the auto base is `parent`, the fork point, so the
-    // default diff is feature's own work — not everything inherited since main.
-    let r = Repo::init(); // main @ A
+    let r = Repo::init();
     r.write("a.rs", "1\n");
     r.commit_all("A");
     r.git(&["checkout", "-q", "-b", "parent"]);
@@ -180,10 +165,8 @@ fn branch_scope_auto_base_is_the_nearest_fork_not_mainline() {
     assert!(files.contains_key("c.rs"), "feature's own change is shown");
     assert!(!files.contains_key("b.rs"), "parent's inherited change is not in the diff");
 
-    // An explicit base still overrides the nearest-fork default.
     assert_eq!(base_ref(r.path(), Some("main")).as_deref(), Some("main"), "explicit base wins");
 
-    // On the trunk branch itself nothing forks below HEAD, so auto falls back to trunk (`main`).
     r.git(&["checkout", "-q", "main"]);
     assert_eq!(
         base_ref(r.path(), None).as_deref(),
@@ -202,19 +185,16 @@ fn rename_is_reported_at_the_new_path() {
     let files = changed_files(r.path(), Scope::Commit, Some("HEAD")).unwrap();
     let renamed = files.iter().find(|f| f.kind == ChangeKind::Renamed).expect("a renamed file");
     assert_eq!(renamed.path, "new_name.rs");
-    // The old path is carried so the diff can read the old content and show `old → new`.
     assert_eq!(renamed.previous_path.as_deref(), Some("old_name.rs"));
 }
 
 #[test]
 fn a_directory_removing_rename_keeps_its_stats() {
-    // Regression for the `-z` migration: `a/b/f.rs -> a/f.rs` once produced a `a//f.rs`
-    // numstat key that never matched, so the renamed+edited file showed +0 -0.
     let r = Repo::init();
     r.write("a/b/file.rs", "one\ntwo\nthree\nfour\nfive\nsix\n");
     r.commit_all("init");
     r.git(&["mv", "a/b/file.rs", "a/file.rs"]);
-    r.write("a/file.rs", "one\nTWO\nthree\nfour\nfive\nsix\n"); // small edit keeps it a rename
+    r.write("a/file.rs", "one\nTWO\nthree\nfour\nfive\nsix\n");
 
     let files = changed_files(r.path(), Scope::Commit, Some("HEAD")).unwrap();
     let renamed = files.iter().find(|f| f.kind == ChangeKind::Renamed).expect("a renamed file");
@@ -225,7 +205,6 @@ fn a_directory_removing_rename_keeps_its_stats() {
 
 #[test]
 fn untracked_paths_with_spaces_survive_verbatim() {
-    // `-z` status never quotes or trims, so a name with spaces round-trips byte-for-byte.
     let r = Repo::init();
     r.write("seed.rs", "x\n");
     r.commit_all("init");
@@ -239,8 +218,6 @@ fn untracked_paths_with_spaces_survive_verbatim() {
 
 #[test]
 fn untracked_files_in_a_new_directory_are_listed_individually() {
-    // git collapses a brand-new directory to one `dir/` entry by default; `--untracked-files=all`
-    // expands it so each new file is reviewable, not the directory.
     let r = Repo::init();
     r.write("seed.rs", "x\n");
     r.commit_all("init");
@@ -257,8 +234,6 @@ fn untracked_files_in_a_new_directory_are_listed_individually() {
 
 #[test]
 fn a_repo_with_no_commits_lists_untracked_without_erroring() {
-    // A fresh `git init` has no HEAD; diffing against it would error and kill the process.
-    // Diffing against the empty tree lets a commitless repo list its files instead.
     let r = Repo::init();
     r.write("fresh.rs", "one\ntwo\n");
     let files = changed_files(r.path(), Scope::Commit, None).unwrap();
@@ -296,20 +271,16 @@ fn git_access_never_mutates_the_repo() {
     assert_eq!(status_before, r.git(&["status", "--porcelain"]), "working tree unchanged");
 }
 
-// --- turn baseline (last-turn scope) -------------------------------------------
-
 #[test]
 fn changed_against_tree_shows_edits_creates_and_deletes_since_the_snapshot() {
     let r = Repo::init();
     r.write("tracked.rs", "one\ntwo\n");
     r.write("doomed.rs", "bye\n");
     r.commit_all("init");
-    r.write("idle_untracked.rs", "u\n"); // untracked already at snapshot time
+    r.write("idle_untracked.rs", "u\n");
 
     let base = snapshot_worktree(r.path()).unwrap();
 
-    // The turn: edit a tracked file, create a new file, delete one, and leave the
-    // pre-existing untracked file untouched.
     r.write("tracked.rs", "one\nTWO\nthree\n");
     r.write("created.rs", "new\n");
     r.remove("doomed.rs");
@@ -327,8 +298,6 @@ fn changed_against_tree_shows_edits_creates_and_deletes_since_the_snapshot() {
 
 #[test]
 fn changed_against_tree_sees_an_untracked_only_turn() {
-    // A turn whose only act is creating a new file must register as a change — the
-    // promotion path depends on this being a real diff.
     let r = Repo::init();
     r.write("a.rs", "a\n");
     r.commit_all("init");
@@ -348,7 +317,6 @@ fn snapshot_worktree_never_mutates_the_repo() {
 
     let git_dir = r.git(&["rev-parse", "--absolute-git-dir"]);
     let git_dir = std::path::Path::new(git_dir.trim());
-    // The index's logical content (entries, not the racy stat cache `git status` rewrites).
     let staged_before = r.git(&["ls-files", "--stage"]);
     let status_before = r.git(&["status", "--porcelain"]);
     let head_before = r.git(&["rev-parse", "HEAD"]);
@@ -397,20 +365,18 @@ fn all_files_lists_tracked_untracked_and_ignored_dirs_collapsed() {
     r.write("src/app.rs", "fn main() {}\n");
     r.write("Cargo.toml", "[package]\n");
     r.commit_all("init");
-    r.write("untracked.rs", "u\n"); // untracked, not ignored
+    r.write("untracked.rs", "u\n");
     r.write(".gitignore", "target/\nbuild.log\n");
-    r.write("target/build.o", "binary\n"); // ignored, in a wholly-ignored dir
-    r.write("target/deep/x.o", "binary\n"); // ignored, deeper — must not be walked
-    r.write("build.log", "noise\n"); // ignored, individual file
+    r.write("target/build.o", "binary\n");
+    r.write("target/deep/x.o", "binary\n");
+    r.write("build.log", "noise\n");
 
     let files = all_files(r.path()).unwrap();
     let by = |p: &str| files.iter().find(|e| e.path == p);
     assert!(by("src/app.rs").is_some_and(|e| !e.ignored && !e.is_dir), "tracked file listed");
     assert!(by("untracked.rs").is_some_and(|e| !e.ignored), "untracked-not-ignored listed");
-    // A wholly-ignored directory collapses to one ignored placeholder — its contents are NOT listed.
     assert!(by("target").is_some_and(|e| e.ignored && e.is_dir), "ignored dir is a placeholder");
     assert!(!files.iter().any(|e| e.path.starts_with("target/")), "ignored dir is not walked");
-    // An individually-ignored file is listed as an ignored file.
     assert!(by("build.log").is_some_and(|e| e.ignored && !e.is_dir), "ignored file listed, dimmed");
 
     let paths: Vec<&str> = files.iter().map(|e| e.path.as_str()).collect();
@@ -440,9 +406,6 @@ fn branch_scope_follows_origin_head_when_mainline_is_develop() {
     let r = Repo::init();
     r.write("base.rs", "1\n");
     r.commit_all("base");
-    // A develop-mainline repo: no main/master anywhere, the remote's default branch recorded as
-    // any clone records it. feature forks from develop, so develop is the nearest ancestor and
-    // resolves as the base; its tip is origin/develop's, the mainline the diff is taken against.
     r.git(&["branch", "-m", "main", "develop"]);
     let develop_tip = r.git(&["rev-parse", "HEAD"]).trim().to_string();
     r.git(&["update-ref", "refs/remotes/origin/develop", "HEAD"]);
@@ -454,15 +417,12 @@ fn branch_scope_follows_origin_head_when_mainline_is_develop() {
     assert_eq!(merge_base(r.path(), None), Some(develop_tip.clone()));
     let files = changed_files(r.path(), Scope::Branch, None).expect("changed_files");
     assert!(by_path(&files).contains_key("feature.rs"), "branch diff must see the branch commit");
-    // An explicit base still wins over origin/HEAD.
     assert_eq!(merge_base(r.path(), Some("develop")), Some(develop_tip));
 }
 
 #[test]
 fn ancestor_branches_lists_the_lineage_nearest_first_and_excludes_siblings() {
-    // Lineage main(A) → b(B) → c(C), current branch `feature`(F) forked off c. A sibling `sib`
-    // forks off b and diverges, so it is NOT reachable from feature and must be excluded.
-    let r = Repo::init(); // main @ A
+    let r = Repo::init();
     r.write("a.rs", "1\n");
     r.commit_all("A");
     r.git(&["checkout", "-q", "-b", "b"]);
@@ -471,26 +431,21 @@ fn ancestor_branches_lists_the_lineage_nearest_first_and_excludes_siblings() {
     r.git(&["checkout", "-q", "-b", "c"]);
     r.write("c.rs", "1\n");
     r.commit_all("C");
-    // Sibling off b, with its own commit — a fork of the lineage that feature can't reach.
     r.git(&["checkout", "-q", "b"]);
     r.git(&["checkout", "-q", "-b", "sib"]);
     r.write("sib.rs", "1\n");
     r.commit_all("S");
-    // The checked-out branch: a fork of c.
     r.git(&["checkout", "-q", "c"]);
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("f.rs", "1\n");
     r.commit_all("F");
-    // A remote ancestor (origin/c at C) plus an origin/HEAD alias that must not leak.
     r.git(&["update-ref", "refs/remotes/origin/c", "c"]);
     r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/c"]);
 
     let a = herdr_reviewr::git::ancestor_branches(r.path());
-    // Local: nearest fork first — c (1 commit below F), then b (2), then main (3). No feature, no sib.
     assert_eq!(a.local, vec!["c", "b", "main"], "local ancestors, nearest fork first");
     assert!(!a.local.contains(&"sib".to_string()), "a sibling off the lineage is excluded");
     assert!(!a.local.contains(&"feature".to_string()), "the current branch is not a choice");
-    // Remote: origin/c is an ancestor; the origin/HEAD alias is skipped in both forms.
     assert!(a.remote.contains(&"origin/c".to_string()), "an origin ancestor is listed");
     assert!(!a.remote.iter().any(|b| b.ends_with("/HEAD")), "origin/HEAD alias must be skipped");
     assert!(!a.remote.iter().any(|b| b == "origin"), "origin/HEAD short alias must not leak");
@@ -498,9 +453,9 @@ fn ancestor_branches_lists_the_lineage_nearest_first_and_excludes_siblings() {
 
 #[test]
 fn recent_commits_lists_full_history_newest_first() {
-    let r = Repo::init(); // main
+    let r = Repo::init();
     r.write("a.rs", "one\n");
-    r.commit_all("base commit"); // on main — part of the history now, not excluded
+    r.commit_all("base commit");
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("b.rs", "two\n");
     r.commit_all("add b");
@@ -515,7 +470,7 @@ fn recent_commits_lists_full_history_newest_first() {
         assert!(c.sha.starts_with(&c.short), "short is a prefix of the full sha");
         assert_eq!(c.sha.len(), 40, "full sha");
         assert!(!c.author.is_empty(), "author name present");
-        assert_eq!(c.date.len(), 10, "author date is YYYY-MM-DD"); // e.g. 2026-07-04
+        assert_eq!(c.date.len(), 10, "author date is YYYY-MM-DD");
     }
 }
 
@@ -524,7 +479,6 @@ fn recent_commits_lists_history_even_on_the_base_branch() {
     let r = Repo::init();
     r.write("a.rs", "one\n");
     r.commit_all("only commit");
-    // No fork restriction: the branch's own commits are the history, so the list is not empty.
     let commits = recent_commits(r.path(), 50);
     assert_eq!(commits.len(), 1);
     assert_eq!(commits[0].title, "only commit");

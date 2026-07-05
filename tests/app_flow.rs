@@ -1,6 +1,3 @@
-//! End-to-end tests of the review loop: `App` driven against real repos, with a
-//! fake export target so consume-on-success is checked without a live agent.
-
 mod common;
 
 use std::cell::RefCell;
@@ -11,7 +8,6 @@ use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode, Tab};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
-/// An export target that records what it was handed and can be made to fail.
 struct FakeTarget {
     ok: bool,
     marks_sent: bool,
@@ -25,7 +21,6 @@ impl FakeTarget {
     fn failing() -> Self {
         Self { ok: false, marks_sent: true, captured: RefCell::new(Vec::new()) }
     }
-    /// A successful target that does not mark comments sent (models the clipboard).
     fn copy() -> Self {
         Self { ok: true, marks_sent: false, captured: RefCell::new(Vec::new()) }
     }
@@ -50,7 +45,6 @@ impl ExportTarget for FakeTarget {
     }
 }
 
-/// A repo whose single tracked file `a.rs` has an edit and an appended line.
 fn edited_repo() -> Repo {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n");
@@ -65,8 +59,6 @@ fn app_on(r: &Repo) -> App {
     app
 }
 
-/// Settle the diff scroll with one display row per logical row (no wrap), for tests that
-/// drive short-line diffs — reveal the cursor, then bound the offset, as the loop does.
 fn clamp(app: &mut App, viewport: usize) {
     let heights = vec![1usize; app.visible.len()];
     app.reveal_diff_cursor(&heights, viewport);
@@ -87,15 +79,11 @@ fn the_file_list_decouples_viewport_scroll_from_selection() {
     assert_eq!(app.file_rows.len(), 20);
     let viewport = 6;
 
-    // The first file is selected and its diff is open.
     assert_eq!(app.file_cursor, 0);
     let opened = app.diff_path.clone();
     assert!(opened.is_some());
 
-    // Wheel-scrolling moves the viewport only: the selection and the open diff stay put,
-    // so browsing the list never reloads a diff (the performance fix). It may leave the
-    // cursor off screen — it is not yanked back.
-    app.reveal_files = false; // clear the flag the initial reload set (no event loop here)
+    app.reveal_files = false;
     app.wheel_files(5);
     app.bound_file_scroll(viewport);
     assert_eq!(app.file_scroll, 5);
@@ -104,14 +92,12 @@ fn the_file_list_decouples_viewport_scroll_from_selection() {
     assert!(app.file_cursor < app.file_scroll);
     assert!(!app.reveal_files, "the wheel does not request a reveal");
 
-    // Moving the selection reveals it and opens that one file.
     app.move_cursor(1).unwrap();
     app.reveal_file_cursor(viewport);
     assert_eq!(app.file_cursor, 1);
     assert!(app.file_cursor >= app.file_scroll && app.file_cursor < app.file_scroll + viewport);
     assert_ne!(app.diff_path, opened);
 
-    // Keyboard nav to the bottom keeps the cursor visible (reveal on each move).
     for _ in 0..18 {
         app.move_cursor(1).unwrap();
     }
@@ -120,13 +106,11 @@ fn the_file_list_decouples_viewport_scroll_from_selection() {
     assert!(app.file_cursor < app.file_scroll + viewport);
     assert_eq!(app.file_scroll, 20 - viewport);
 
-    // An over-scroll is bounded so the window never shows a blank tail.
     app.wheel_files(100);
     app.bound_file_scroll(viewport);
     assert_eq!(app.file_scroll, 20 - viewport);
 }
 
-/// A repo whose single file has `n` lines, all changed, so the diff has many visible rows.
 fn long_diff_app(n: usize) -> App {
     use std::fmt::Write as _;
     let r = Repo::init();
@@ -145,12 +129,9 @@ fn long_diff_app(n: usize) -> App {
 
 #[test]
 fn bound_diff_scroll_keeps_a_wrapped_bottom_reachable() {
-    // 30 logical rows, each 3 display lines tall, in a 20-display-row viewport. A row-count
-    // cap would stop the scroll at 30-20=10, hiding the last ~13 rows; the height-aware cap
-    // must reach the offset that shows the last row.
     let mut app = long_diff_app(5);
     let heights = vec![3usize; 30];
-    app.diff_scroll = 999; // wheel over-scroll
+    app.diff_scroll = 999;
     app.bound_diff_scroll(&heights, 20);
     assert!(
         app.diff_scroll > 10,
@@ -176,7 +157,6 @@ fn the_wheel_scrolls_the_diff_without_moving_its_cursor() {
 
 #[test]
 fn a_boundary_move_reveals_the_cursor_after_wheeling() {
-    // The B1 regression: a navigation that clamps to the same index must still reveal.
     let r = Repo::init();
     for i in 0..20 {
         r.write(&format!("f{i:02}.txt"), "one\n");
@@ -191,7 +171,7 @@ fn a_boundary_move_reveals_the_cursor_after_wheeling() {
     app.bound_file_scroll(vp);
     assert!(app.file_cursor < app.file_scroll, "cursor (row 0) is wheeled off-screen above");
     app.reveal_files = false;
-    app.move_cursor(-1).unwrap(); // `k` at row 0 — index stays 0
+    app.move_cursor(-1).unwrap();
     assert_eq!(app.file_cursor, 0);
     assert!(app.reveal_files, "a clamp-to-same-index move still requests a reveal");
     app.reveal_file_cursor(vp);
@@ -218,14 +198,12 @@ fn toggling_a_directory_requests_a_reveal() {
 #[test]
 fn page_keys_move_the_cursor_in_both_panes() {
     let mut app = long_diff_app(40);
-    // File pane: page moves the selection (not just the viewport).
     app.focus = Focus::Files;
     app.file_cursor = 0;
     app.reveal_files = false;
     app.move_cursor(5).unwrap();
     assert_eq!(app.file_cursor, 5usize.min(app.file_rows.len() - 1));
     assert!(app.reveal_files);
-    // Diff pane: page moves the cursor.
     app.focus = Focus::Diff;
     app.diff_cursor = 0;
     app.reveal_diff = false;
@@ -266,7 +244,6 @@ fn a_poll_preserves_the_wheel_scroll_in_both_panes() {
     }
     let mut app = app_on(&r);
 
-    // Open the long file and wheel its diff down; the cursor stays at the top.
     app.select_file(file_row(&app, "big.rs")).unwrap();
     app.focus = Focus::Diff;
     app.wheel_diff(20);
@@ -274,14 +251,11 @@ fn a_poll_preserves_the_wheel_scroll_in_both_panes() {
     app.bound_diff_scroll(&h, 10);
     let diff_scroll = app.diff_scroll;
     assert!(diff_scroll > 0);
-    // Wheel the file list down too.
     app.wheel_files(8);
     app.bound_file_scroll(6);
     let file_scroll = app.file_scroll;
     assert!(file_scroll > 0);
 
-    // A poll reloads the same unchanged content. It must request no reveal, so the next
-    // frame leaves both wheel scrolls where they are (the regression snapped them to the top).
     app.reveal_diff = false;
     app.reveal_files = false;
     app.reload().unwrap();
@@ -294,12 +268,10 @@ fn a_poll_preserves_the_wheel_scroll_in_both_panes() {
     assert_eq!(app.file_scroll, file_scroll, "the file-list wheel scroll survives the poll");
 }
 
-/// The index of the first diff row with the given marker (`'+'`, `'-'`, or `' '`).
 fn row_with(app: &App, marker: char) -> usize {
     app.diff.rows.iter().position(|r| r.marker() == marker).expect("a row with that marker")
 }
 
-/// The visible file-list row index for `path`.
 fn file_row(app: &App, path: &str) -> usize {
     app.file_rows
         .iter()
@@ -319,12 +291,10 @@ fn editing_a_comment_surfaces_its_file_from_a_collapsed_directory() {
     r.write("root.rs", "2\n");
     let mut app = app_on(&r);
 
-    // Open src/foo.rs and comment on its changed line.
     app.select_file(file_row(&app, "src/foo.rs")).unwrap();
     comment_on(&mut app, '+', "note on foo");
     let commented_line = app.store.get(0).unwrap().start;
 
-    // Switch the open diff to root.rs, then collapse `src` so foo's row is hidden.
     app.select_file(file_row(&app, "root.rs")).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("root.rs"));
     app.file_cursor = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
@@ -336,8 +306,6 @@ fn editing_a_comment_surfaces_its_file_from_a_collapsed_directory() {
         "foo's row is hidden under the collapsed src/"
     );
 
-    // Edit the comment from the list: the diff must switch to foo and land on its line,
-    // even though foo has no visible row (the A2 bug opened the box over root.rs).
     app.open_list();
     app.start_edit();
     assert_eq!(app.diff_path.as_deref(), Some("src/foo.rs"), "edit surfaced the comment's file");
@@ -346,13 +314,11 @@ fn editing_a_comment_surfaces_its_file_from_a_collapsed_directory() {
     assert!(matches!(app.mode, Mode::Composing { editing: Some(_) }));
 }
 
-/// Expand the fold under the cursor with synthetic geometry (these tests don't render).
 fn expand_fold(app: &mut App) {
     let heights = vec![1usize; app.visible.len()];
     app.expand_fold(&heights, 80);
 }
 
-/// Place the diff cursor on the first row with `marker` and write a comment there.
 fn comment_on(app: &mut App, marker: char, text: &str) {
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(app, marker);
@@ -363,7 +329,6 @@ fn comment_on(app: &mut App, marker: char, text: &str) {
     app.submit_comment();
 }
 
-/// An app sitting in the comment composer on the first changed line, caret at 0.
 fn composing_app() -> App {
     let r = edited_repo();
     let mut app = app_on(&r);
@@ -385,11 +350,11 @@ fn the_editor_inserts_and_deletes_at_the_caret() {
     typed(&mut app, "ac");
     assert_eq!((app.input.as_str(), app.caret), ("ac", 2));
     app.caret_left();
-    app.input_push('b'); // insert mid-text, not at the end
+    app.input_push('b');
     assert_eq!((app.input.as_str(), app.caret), ("abc", 2));
-    app.input_backspace(); // deletes the char before the caret ('b')
+    app.input_backspace();
     assert_eq!((app.input.as_str(), app.caret), ("ac", 1));
-    app.input_delete_forward(); // deletes the char at the caret ('c')
+    app.input_delete_forward();
     assert_eq!((app.input.as_str(), app.caret), ("a", 1));
 }
 
@@ -414,12 +379,11 @@ fn the_editor_kills_to_line_bounds_and_pastes_multiline() {
     let mut app = composing_app();
     typed(&mut app, "alpha beta");
     app.caret_home();
-    app.caret_word_right(); // caret after "alpha"
+    app.caret_word_right();
     app.input_kill_to_end();
     assert_eq!(app.input, "alpha");
     app.input_kill_to_start();
     assert_eq!((app.input.as_str(), app.caret), ("", 0));
-    // A multi-line paste lands as one unit with normalized newlines.
     app.input_paste("x\r\ny");
     assert_eq!((app.input.as_str(), app.caret), ("x\ny", 3));
 }
@@ -427,20 +391,19 @@ fn the_editor_kills_to_line_bounds_and_pastes_multiline() {
 #[test]
 fn a_paste_outside_the_editor_is_ignored() {
     let r = edited_repo();
-    let mut app = app_on(&r); // Normal mode, not composing
+    let mut app = app_on(&r);
     app.input_paste("ignored");
     assert!(app.input.is_empty(), "paste does nothing outside the comment editor");
 }
 
-/// The primary (first) footer action for the current context.
 fn primary(app: &App) -> FooterAction {
     app.footer_actions().first().expect("a footer action").0
 }
 
 #[test]
 fn the_footer_offers_the_action_for_what_the_cursor_is_on() {
-    let mut app = composing_app(); // diff focus, on a changed line, composer open
-    app.cancel_comment(); // back to Normal, still on the changed line
+    let mut app = composing_app();
+    app.cancel_comment();
     assert_eq!(primary(&app), FooterAction::Comment, "a diff line offers comment");
 
     app.toggle_select();
@@ -452,7 +415,6 @@ fn the_footer_offers_the_action_for_what_the_cursor_is_on() {
     app.toggle_select();
 
     comment_on(&mut app, '+', "note");
-    // The cursor now sits on the line it just commented.
     assert_eq!(primary(&app), FooterAction::EditComment, "a commented line offers edit");
     assert!(
         app.footer_actions().iter().any(|&(a, _)| a == FooterAction::Send),
@@ -473,7 +435,7 @@ fn esc_clears_a_live_selection() {
 #[test]
 fn the_footer_offers_scope_everywhere_on_a_file_tab() {
     let mut app = composing_app();
-    app.cancel_comment(); // diff focus, on a content line
+    app.cancel_comment();
     let has_scope = |a: &App| a.footer_actions().iter().any(|&(x, _)| x == FooterAction::Scope);
     assert!(has_scope(&app), "scope shows while reviewing a diff line");
     app.focus = Focus::Files;
@@ -488,13 +450,11 @@ fn the_pr_footer_offers_open_for_any_resolved_pr() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.set_tab(Tab::Pr).unwrap();
-    // No resolved PR (still loading): nothing to open.
     assert!(
         !app.footer_actions().iter().any(|&(a, _)| a == FooterAction::OpenPr),
         "no resolved PR → no open action"
     );
 
-    // A resolved PR with zero comments still offers `o open` — `o` opens the PR URL, not a comment.
     app.pr = PrView::Pr(Box::new(PrSnapshot {
         number: 7,
         title: "t".into(),
@@ -531,8 +491,6 @@ fn the_footer_offers_send_only_once_a_comment_exists() {
     );
 }
 
-/// A repo whose `big.rs` has 40 lines with one change in the middle, so the head and
-/// tail unchanged runs fold.
 fn folded_repo() -> Repo {
     use std::fmt::Write as _;
     let r = Repo::init();
@@ -554,7 +512,6 @@ fn a_fold_expands_permanently_and_keeps_the_cursor_in_range() {
     let folded = app.visible.len();
     assert!(app.visible.iter().any(|row| row.hidden() > 0), "opens folded");
 
-    // Land on the leading fold and expand it (the `→` action) — the visible count grows.
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
     assert!(app.on_fold(), "`→` expands here");
     expand_fold(&mut app);
@@ -563,7 +520,6 @@ fn a_fold_expands_permanently_and_keeps_the_cursor_in_range() {
     assert!(app.diff_cursor < app.visible.len(), "cursor stays in range");
     assert!(!app.on_fold(), "the fold is gone, so `→` now scrolls instead");
 
-    // Expansion is permanent — pressing again on a revealed content line does nothing.
     expand_fold(&mut app);
     assert_eq!(app.visible.len(), expanded, "no collapse-back");
 }
@@ -574,7 +530,6 @@ fn a_selection_cannot_cross_a_fold() {
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
 
-    // Anchor just above the trailing fold, then try to select well past it.
     let tail = app.visible.iter().rposition(|row| row.hidden() > 0).unwrap();
     app.diff_cursor = tail - 1;
     app.toggle_select();
@@ -583,7 +538,6 @@ fn a_selection_cannot_cross_a_fold() {
     let (lo, hi) = app.selection_range();
     assert!((lo..=hi).all(|i| app.visible[i].is_content()), "no fold row is in the selection");
 
-    // The same upward, across the leading fold.
     let head = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
     app.select_anchor = None;
     app.diff_cursor = head + 1;
@@ -600,7 +554,7 @@ fn paging_the_diff_cannot_cross_a_fold() {
     let tail = app.visible.iter().rposition(|row| row.hidden() > 0).unwrap();
     app.diff_cursor = tail - 1;
     app.toggle_select();
-    app.move_cursor(50).unwrap(); // a big page that would jump well past the trailing fold
+    app.move_cursor(50).unwrap();
     assert_eq!(app.diff_cursor, tail - 1, "page stops shy of the fold while selecting");
 }
 
@@ -617,15 +571,13 @@ fn expanding_a_fold_does_not_bleed_into_another_file() {
     r.commit_all("init");
     r.write("a.rs", &body.replace("line 20", "A20"));
     r.write("b.rs", &body.replace("line 20", "B20"));
-    let mut app = app_on(&r); // a.rs opens first (sorted)
+    let mut app = app_on(&r);
 
-    // Expand a.rs's leading fold (its anchor is line 1, same as b.rs's leading fold).
     app.focus = Focus::Diff;
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
     expand_fold(&mut app);
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
-    // Switching to b.rs must not carry a.rs's expansion across (shared line-number key).
     app.focus = Focus::Files;
     app.move_cursor(1).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
@@ -636,7 +588,6 @@ fn expanding_a_fold_does_not_bleed_into_another_file() {
 fn expanding_a_fold_keeps_the_viewport_still() {
     let r = folded_repo();
 
-    // A fold in the top half grows upward: scroll advances so the lines below hold position.
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
     let head = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
@@ -647,14 +598,13 @@ fn expanding_a_fold_keeps_the_viewport_still() {
     app.expand_fold(&heights, 20);
     assert_eq!(app.diff_scroll, shift, "top-half fold grows upward");
 
-    // A fold in the bottom half grows downward: scroll holds so the lines above stay put.
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
     let tail = app.visible.iter().rposition(|row| row.hidden() > 0).unwrap();
     app.diff_cursor = tail;
     app.diff_scroll = 0;
     let heights = vec![1usize; app.visible.len()];
-    app.expand_fold(&heights, tail + 2); // the fold sits in the bottom half of the viewport
+    app.expand_fold(&heights, tail + 2);
     assert_eq!(app.diff_scroll, 0, "bottom-half fold grows downward");
 }
 
@@ -664,7 +614,6 @@ fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
 
-    // Comment on the changed line (new-side 21) while the rest is folded.
     app.diff_cursor = app.visible.iter().position(|row| row.text().contains("LINE 20")).unwrap();
     app.start_comment();
     for ch in "here".chars() {
@@ -674,7 +623,6 @@ fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
     let c = app.store.iter().next().unwrap();
     assert_eq!((c.side, c.start), (Side::New, 21));
 
-    // A fold expand plus a poll keeps the comment.
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
     expand_fold(&mut app);
     app.reload().unwrap();
@@ -684,7 +632,6 @@ fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
 
 #[test]
 fn comment_anchors_to_gits_real_line_numbers() {
-    // `edited_repo`: a.rs has beta→BETA on line 2 and epsilon appended as new line 5.
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
@@ -720,8 +667,6 @@ fn comments_on_added_and_removed_lines_keep_the_diff_marker() {
     comment_on(&mut app, '-', "why was this dropped?");
     assert_eq!(app.store.len(), 2);
 
-    // A Changes (diff) comment captures the enclosing hunk, so both sides of the change reach the
-    // agent regardless of which line was clicked.
     for c in app.store.iter() {
         let has_marker = c.lines.lines().any(|l| l.starts_with('+') || l.starts_with('-'));
         assert!(has_marker, "the hunk snippet carries the +/- change: {:?}", c.lines);
@@ -735,7 +680,7 @@ fn a_saved_comment_survives_a_refresh() {
     comment_on(&mut app, '+', "keep me");
     assert_eq!(app.store.len(), 1);
 
-    r.write("b.rs", "another change\n"); // the world moves on
+    r.write("b.rs", "another change\n");
     app.reload().unwrap();
 
     assert_eq!(app.store.len(), 1, "refresh must not drop a saved comment");
@@ -755,7 +700,7 @@ fn a_refresh_while_composing_freezes_input_and_diff() {
     }
     let frozen_diff = app.diff.clone();
 
-    r.write("a.rs", "alpha\nBETA\ngamma\ndelta\nepsilon\nzeta\n"); // diff shifts under us
+    r.write("a.rs", "alpha\nBETA\ngamma\ndelta\nepsilon\nzeta\n");
     r.write("c.rs", "c\n");
     app.reload().unwrap();
 
@@ -780,7 +725,6 @@ fn export_keeps_comments_so_the_round_trip_can_track_them() {
     app.export(&target);
     assert_eq!(app.store.len(), 2, "a successful send keeps the comments to track as addressed");
 
-    // The sent text is the real export block format, end to end through App::export.
     let sent = target.last();
     assert!(sent.contains("one") && sent.contains("two"), "both comment texts present: {sent:?}");
     assert!(sent.starts_with("<review>"), "leads with the review container: {sent:?}");
@@ -844,8 +788,6 @@ fn the_composer_reserve_keeps_the_anchored_line_visible() {
         app.input_push(ch);
     }
 
-    // Mirror the event loop: reserve the box's rows, then clamp. The anchored line must
-    // stay within the narrowed viewport so it renders above the box.
     let viewport = 12;
     let effective = viewport - herdr_reviewr::ui::composer_height(&app, 80);
     clamp(&mut app, effective);
@@ -868,7 +810,7 @@ fn a_comment_can_be_written_across_multiple_lines() {
     for ch in "first line".chars() {
         app.input_push(ch);
     }
-    app.input_push('\n'); // Alt/Shift+Enter inserts a newline
+    app.input_push('\n');
     for ch in "second line".chars() {
         app.input_push(ch);
     }
@@ -892,23 +834,20 @@ fn the_cursor_stays_on_a_folder_across_a_poll_and_toggle() {
     r.write("root.rs", "z\n");
     r.commit_all("init");
     r.write("src/a.rs", "x2\n");
-    r.write("src/b.rs", "y2\n"); // two changed files keep `src/` an expandable directory
+    r.write("src/b.rs", "y2\n");
     r.write("root.rs", "z2\n");
     let mut app = app_on(&r);
     app.focus = Focus::Files;
 
-    // Land the cursor on the `src` directory row; the open diff is some file.
     let dir_row = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
     app.file_cursor = dir_row;
     let open = app.diff_path.clone();
     assert!(open.is_some(), "a file diff is open");
 
-    // A poll must not yank the cursor onto the open file, nor blank the diff.
     app.reload().unwrap();
     assert_eq!(app.file_cursor, dir_row, "cursor stays on the folder across a poll");
     assert_eq!(app.diff_path, open, "the open diff is unchanged");
 
-    // Collapsing then a poll keeps the cursor on the (now collapsed) folder.
     app.collapse_dir();
     app.reload().unwrap();
     let dir_row = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
@@ -932,11 +871,11 @@ fn arrows_collapse_and_expand_a_folder() {
     assert!(app.on_folder(), "the cursor is on the folder");
     let expanded = app.file_rows.len();
 
-    app.collapse_dir(); // ←
+    app.collapse_dir();
     assert!(app.file_rows.len() < expanded, "collapsing hides the children");
     assert!(app.on_folder(), "the cursor stays on the folder row");
 
-    app.expand_dir(); // →
+    app.expand_dir();
     assert_eq!(app.file_rows.len(), expanded, "expanding shows them again");
 }
 
@@ -955,11 +894,9 @@ fn the_footer_offers_enter_to_expand_or_collapse_a_folder_tree() {
     app.file_cursor = dir_row;
     let has = |app: &App, a: FooterAction| app.footer_actions().iter().any(|&(x, _)| x == a);
 
-    // src and src/sub start expanded (the Changes default), so ⏎ collapses the whole subtree.
     assert!(has(&app, FooterAction::CollapseTree), "⏎ collapses the open subtree");
     assert!(!has(&app, FooterAction::ExpandTree));
 
-    // With the folder shut, ⏎ expands it and its child folders.
     app.collapse_dir();
     let dir_row = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
     app.file_cursor = dir_row;
@@ -974,7 +911,6 @@ fn the_pane_divider_resizes_and_clamps() {
     let start = app.list_pct;
     app.resize_list(4);
     assert_eq!(app.list_pct, start + 4, "[ / ] step the divider");
-    // Clamps: never collapses either pane however far it is pushed.
     for _ in 0..50 {
         app.resize_list(4);
     }
@@ -984,8 +920,7 @@ fn the_pane_divider_resizes_and_clamps() {
     }
     assert!(app.list_pct >= 15, "the diff never swallows the file list");
 
-    // A drag sets the width from the divider's body column.
-    app.drag_divider(100, 70); // list spans columns 70..100 → 30%
+    app.drag_divider(100, 70);
     assert_eq!(app.list_pct, 30);
 }
 
@@ -999,9 +934,9 @@ fn ctrl_w_deletes_the_previous_word_in_a_comment() {
     for ch in "needs a closer look".chars() {
         app.input_push(ch);
     }
-    app.input_delete_word(); // drops "look"
+    app.input_delete_word();
     assert_eq!(app.input, "needs a closer ");
-    app.input_delete_word(); // drops the space then "closer"
+    app.input_delete_word();
     assert_eq!(app.input, "needs a ");
 }
 
@@ -1012,8 +947,7 @@ fn the_comment_box_grows_as_a_long_line_wraps() {
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
     app.start_comment();
-    // A single long line with no explicit newline must still report more than one row.
-    let width = 30; // narrow diff pane
+    let width = 30;
     let one_word = herdr_reviewr::ui::composer_height(&app, width);
     for ch in "the quick brown fox jumps over the lazy dog again and again".chars() {
         app.input_push(ch);
@@ -1063,14 +997,12 @@ fn finishing_an_edit_returns_to_its_origin() {
     comment_on(&mut app, '+', "first");
     comment_on(&mut app, ' ', "second");
 
-    // Edit from the comments-list overlay → returns to the list.
     app.open_list();
     app.start_edit();
     app.input_push('!');
     app.submit_comment();
     assert_eq!(app.mode, Mode::List, "a list-initiated edit returns to the list");
 
-    // Edit from the diff → returns to Normal.
     app.close_list();
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
@@ -1090,7 +1022,6 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
-    // Comment on b.rs, then move the view to a.rs.
     let bi = app.entries.iter().position(|f| f.path == "b.rs").unwrap();
     app.select_file(bi).unwrap();
     app.focus = Focus::Diff;
@@ -1104,8 +1035,6 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     app.select_file(ai).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
-    // Editing the comment from the list pulls the view back to its file and lands the
-    // cursor on a real diff line there (so the inline box opens over the comment).
     app.open_list();
     app.start_edit();
     assert!(app.composing());
@@ -1120,14 +1049,12 @@ fn a_comment_on_a_reverted_file_stays_live_outside_the_diff() {
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
 
-    r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n"); // back to committed state
+    r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n");
     app.reload().unwrap();
 
     assert!(app.entries.iter().all(|f| f.path != "a.rs"), "file left the changeset");
     assert_eq!(app.store.len(), 1, "the comment still exists");
     let c = app.store.get(0).unwrap();
-    // The New-side line still exists in the worktree, so the comment is not orphaned — it's just
-    // no longer part of the current diff.
     assert!(!app.is_stale(c), "a worktree-anchored comment survives its file leaving the diff");
     assert!(!app.in_changeset("a.rs"), "and the file is outside the changeset");
 }
@@ -1140,14 +1067,13 @@ fn switching_scope_swaps_the_changeset() {
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("committed.rs", "c\n");
     r.commit_all("feature work");
-    r.write("dirty.rs", "d\n"); // uncommitted, untracked
+    r.write("dirty.rs", "d\n");
 
     let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
     assert!(app.entries.iter().any(|f| f.path == "dirty.rs"));
     assert!(app.entries.iter().all(|f| f.path != "committed.rs"), "uncommitted omits commits");
 
-    // Branch is a superset of uncommitted: it adds the committed work, keeps the dirty file.
     app.set_scope(Scope::Branch).unwrap();
     assert!(app.entries.iter().any(|f| f.path == "committed.rs"), "branch adds committed work");
     assert!(app.entries.iter().any(|f| f.path == "dirty.rs"), "branch keeps the working tree");
@@ -1159,7 +1085,6 @@ fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
 
-    // Anchor on the first changed line, then extend the selection down two rows.
     let first = row_with(&app, '-');
     app.diff_cursor = first;
     app.toggle_select();
@@ -1178,7 +1103,6 @@ fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     let c = app.store.iter().next().unwrap();
     assert!(c.end > c.start, "comment covers a line range: {}..{}", c.start, c.end);
     let snippet: Vec<&str> = c.lines.lines().collect();
-    // Exactly the selected content rows are captured — no more, no less.
     let selected_rows = app.visible[lo..=hi].iter().filter(|r| r.is_content()).count();
     assert_eq!(snippet.len(), selected_rows, "captures exactly the selected lines: {:?}", c.lines);
     assert!(snippet.len() >= 2, "the selection spanned multiple lines: {:?}", c.lines);
@@ -1214,8 +1138,6 @@ fn tab_cannot_change_while_composing() {
     app.start_comment();
     app.input_push('x');
 
-    // A tab switch mid-comment must be a no-op, so the panes never swap out from under the
-    // open composer (the compose-freeze invariant), matching set_scope.
     app.set_tab(Tab::AllFiles).unwrap();
     assert_eq!(app.tab, Tab::Changes, "the tab is frozen mid-comment");
     assert!(app.composing(), "still composing");
@@ -1238,8 +1160,6 @@ fn the_app_reads_branch_scoped_diffs_not_working_tree() {
         app.entries.iter().position(|f| f.path == "on_branch.rs").expect("branch file listed");
     app.select_file(idx).unwrap();
 
-    // The diff the App loaded for branch scope is base...HEAD, so it shows the
-    // committed branch content — which the uncommitted (working-tree) scope cannot.
     let on_branch = app
         .diff
         .rows
@@ -1269,22 +1189,18 @@ fn the_diff_scroll_is_sticky_and_only_follows_the_cursor_off_screen() {
     clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 0);
 
-    // Cursor moves but stays in view — the window does not scroll.
     app.diff_cursor = 5;
     clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 0, "no scroll while the cursor is visible");
 
-    // Cursor leaves the bottom — scroll just enough to reveal it, no recentering.
     app.diff_cursor = 12;
     clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 12 + 1 - height);
 
-    // Cursor jumps back above the window — scroll follows up to it.
     app.diff_cursor = 1;
     clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 1);
 
-    // A viewport taller than the whole diff never scrolls.
     app.diff_cursor = 0;
     let tall = app.visible.len() + 50;
     clamp(&mut app, tall);
@@ -1311,7 +1227,6 @@ fn a_refresh_keeps_the_diff_scroll_position() {
     let (cursor, scroll) = (app.diff_cursor, app.diff_scroll);
     assert!(scroll > 0, "we scrolled down into the diff");
 
-    // A poll refresh of the same, still-changed file must not snap back to the top.
     app.reload().unwrap();
     assert_eq!(app.diff_cursor, cursor, "refresh keeps the cursor line");
     assert_eq!(app.diff_scroll, scroll, "refresh keeps the scroll position");
@@ -1319,7 +1234,7 @@ fn a_refresh_keeps_the_diff_scroll_position() {
 
 #[test]
 fn the_diff_title_stays_on_the_composed_file_through_a_refresh() {
-    let r = edited_repo(); // a.rs is the only changed file
+    let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
@@ -1328,13 +1243,10 @@ fn the_diff_title_stays_on_the_composed_file_through_a_refresh() {
     app.start_comment();
     app.input_push('x');
 
-    // While composing, a.rs leaves the changeset and another file appears.
     r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n");
     r.write("z.rs", "new\n");
     app.reload().unwrap();
 
-    // The frozen diff — and its title — stay on the file being commented, even though
-    // the file cursor now points elsewhere. (No title/body mismatch.)
     assert!(app.composing());
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "diff title frozen on composed file");
     assert_ne!(app.current_entry().map(|f| f.path.as_str()), Some("a.rs"));
@@ -1342,7 +1254,7 @@ fn the_diff_title_stays_on_the_composed_file_through_a_refresh() {
 
 #[test]
 fn a_comment_submitted_after_its_file_left_the_changeset_anchors_to_that_file() {
-    let r = edited_repo(); // a.rs is the only changed file
+    let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
@@ -1351,7 +1263,6 @@ fn a_comment_submitted_after_its_file_left_the_changeset_anchors_to_that_file() 
         app.input_push(ch);
     }
 
-    // a.rs leaves the changeset and another file appears, drifting the file cursor.
     r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n");
     r.write("z.rs", "new\n");
     app.reload().unwrap();
@@ -1370,10 +1281,10 @@ fn deleting_the_last_listed_comment_clamps_the_list_cursor() {
     comment_on(&mut app, '-', "two");
 
     app.open_list();
-    app.list_move(1); // cursor on the last comment (index 1)
+    app.list_move(1);
     assert_eq!(app.list_cursor, 1);
 
-    app.delete_comment(); // removes index 1
+    app.delete_comment();
     assert_eq!(app.store.len(), 1);
     assert_eq!(app.list_cursor, 0, "list cursor clamps back into range");
 }
@@ -1399,8 +1310,6 @@ fn jump_moves_the_cursor_onto_a_commented_line() {
     assert!(app.commented_lines().contains(&app.diff_cursor), "cursor landed on a comment");
 }
 
-// --- last-turn scope -----------------------------------------------------------
-
 #[test]
 fn last_turn_is_empty_until_a_turn_is_observed() {
     let r = Repo::init();
@@ -1419,9 +1328,9 @@ fn last_turn_shows_a_change_producing_turn() {
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
     app.apply_agent_status(Some("idle"));
-    app.apply_agent_status(Some("working")); // turn start: candidate = "one"
+    app.apply_agent_status(Some("working"));
     r.write("a.rs", "one\ntwo\n");
-    app.apply_agent_status(Some("working")); // first change promotes the baseline
+    app.apply_agent_status(Some("working"));
     app.reload().unwrap();
     assert!(!app.awaiting_turn(), "the baseline is now set");
     assert!(app.entries.iter().any(|f| f.path == "a.rs"), "the turn's edit shows");
@@ -1433,12 +1342,10 @@ fn a_question_only_turn_keeps_the_previous_turns_diff() {
     r.write("a.rs", "one\n");
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
-    // Turn A edits a file.
     app.apply_agent_status(Some("idle"));
     app.apply_agent_status(Some("working"));
     r.write("a.rs", "one\ntwo\n");
     app.apply_agent_status(Some("working"));
-    // Turn B is a question — no file change.
     app.apply_agent_status(Some("idle"));
     app.apply_agent_status(Some("working"));
     app.apply_agent_status(Some("idle"));
@@ -1456,11 +1363,11 @@ fn a_permission_pause_stays_one_turn() {
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
     app.apply_agent_status(Some("idle"));
-    app.apply_agent_status(Some("working")); // turn start: candidate = "one"
-    r.write("a.rs", "one\nbefore\n"); // edit before the prompt
-    app.apply_agent_status(Some("blocked")); // permission prompt promotes baseline = "one"
-    app.apply_agent_status(Some("working")); // resume — must NOT re-baseline
-    r.write("a.rs", "one\nbefore\nafter\n"); // edit after the prompt
+    app.apply_agent_status(Some("working"));
+    r.write("a.rs", "one\nbefore\n");
+    app.apply_agent_status(Some("blocked"));
+    app.apply_agent_status(Some("working"));
+    r.write("a.rs", "one\nbefore\nafter\n");
     app.apply_agent_status(Some("working"));
     app.reload().unwrap();
     let a = app.entries.iter().find(|f| f.path == "a.rs").expect("a.rs changed");
@@ -1478,9 +1385,8 @@ fn the_baseline_survives_a_restart() {
         app.apply_agent_status(Some("idle"));
         app.apply_agent_status(Some("working"));
         r.write("a.rs", "one\ntwo\n");
-        app.apply_agent_status(Some("working")); // promotes and persists the ref
+        app.apply_agent_status(Some("working"));
     }
-    // A fresh App — a sidebar restart — resumes the persisted baseline.
     let mut restarted = App::new(r.path_buf(), Scope::LastTurn, None);
     restarted.reload().unwrap();
     assert!(!restarted.awaiting_turn(), "baseline resumed from the private ref");
@@ -1493,14 +1399,13 @@ fn no_agent_status_pauses_tracking() {
     r.write("a.rs", "one\n");
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
-    app.apply_agent_status(None); // no herdr / no resolvable agent
+    app.apply_agent_status(None);
     r.write("a.rs", "one\ntwo\n");
     app.apply_agent_status(None);
     app.reload().unwrap();
     assert!(app.awaiting_turn(), "without a status signal the baseline never forms");
 }
 
-/// The visible-row index of the file at `path`, or `None` when it is hidden/absent.
 fn file_row_of(app: &App, path: &str) -> Option<usize> {
     app.file_rows
         .iter()
@@ -1516,16 +1421,13 @@ fn all_files_tab_browses_the_whole_worktree_and_renders_content() {
     r.write("src/ui.rs", "fn render() {}\n");
     r.write("README.md", "# hi\n");
     r.commit_all("init");
-    r.write("README.md", "# changed\n"); // change a top-level file (no dir to reveal)
+    r.write("README.md", "# changed\n");
     let mut app = app_on(&r);
 
-    // Changes lists only the changed file and opens its diff.
     assert_eq!(app.tab, Tab::Changes);
     assert_eq!(app.entries.len(), 1);
     assert_eq!(app.diff_path.as_deref(), Some("README.md"));
 
-    // All files lists the whole worktree and opens its first file (README, the top-level one),
-    // so src/ stays collapsed by default.
     app.set_tab(Tab::AllFiles).unwrap();
     assert_eq!(app.tab, Tab::AllFiles);
     assert!(app.entries.iter().any(|e| e.path == "src/ui.rs"), "an unchanged file is listed");
@@ -1533,7 +1435,6 @@ fn all_files_tab_browses_the_whole_worktree_and_renders_content() {
     assert!(app.file_rows.iter().any(|row| row.dir_path() == Some("src")), "src/ is a dir row");
     assert!(file_row_of(&app, "src/ui.rs").is_none(), "a collapsed dir hides its children");
 
-    // Expanding src/ (a click on the directory) then opening a file shows its full content.
     let src_row = app.file_rows.iter().position(|row| row.dir_path() == Some("src")).unwrap();
     app.select_file(src_row).unwrap();
     let ui_row = file_row_of(&app, "src/ui.rs").expect("src/ui.rs visible once src/ is expanded");
@@ -1556,21 +1457,18 @@ fn switching_tabs_restores_each_tab_selection() {
     let changes_open = app.diff_path.clone();
     assert_eq!(changes_open.as_deref(), Some("src/app.rs"));
 
-    // In All files, open README.md.
     app.set_tab(Tab::AllFiles).unwrap();
     let readme_row = file_row_of(&app, "README.md").expect("README.md at the top level");
     app.select_file(readme_row).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("README.md"));
     assert_eq!(app.diff.view, View::File);
 
-    // Back to Changes: its own selection and diff are restored, not All files'.
     app.set_tab(Tab::Changes).unwrap();
     assert_eq!(app.tab, Tab::Changes);
     assert_eq!(app.entries.len(), 1, "Changes still lists only the changed file");
     assert_eq!(app.diff_path, changes_open);
     assert_eq!(app.diff.view, View::Diff);
 
-    // Forward again: All files restored README.md, not the Changes selection.
     app.set_tab(Tab::AllFiles).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("README.md"));
     assert_eq!(app.diff.view, View::File);
@@ -1584,11 +1482,10 @@ fn a_new_side_comment_survives_leaving_the_changeset() {
     r.write("a.rs", "one\n");
     r.write("b.rs", "two\n");
     r.commit_all("init");
-    r.write("a.rs", "ONE\n"); // exactly one changed file
+    r.write("a.rs", "ONE\n");
     let mut app = app_on(&r);
     assert_eq!(app.changed_count(), 1, "Changes counts the one changed file");
 
-    // A New-side comment on b.rs, which is in the worktree but not in the changeset.
     let comment = Comment {
         file: "b.rs".into(),
         side: Side::New,
@@ -1613,9 +1510,7 @@ fn a_new_side_comment_survives_leaving_the_changeset() {
     assert!(!app.in_changeset("b.rs"), "though b.rs is not part of the current diff");
 }
 
-/// The annotation on the `All files` row for `path`: `Some(Some(_))` annotated, `Some(None)`
-/// listed-but-unchanged, `None` not visible.
-#[allow(clippy::option_option)] // outer = row found, inner = its annotation
+#[allow(clippy::option_option)]
 fn annotation_of(app: &App, path: &str) -> Option<Option<herdr_reviewr::file_list::Annotation>> {
     use herdr_reviewr::file_list::RowKind;
     app.file_rows.iter().find_map(|row| match &row.kind {
@@ -1634,7 +1529,7 @@ fn all_files_annotates_changed_files_only() {
     r.write("a.rs", "one\n");
     r.write("b.rs", "two\n");
     r.commit_all("init");
-    r.write("a.rs", "ONE\n"); // a.rs changed, b.rs unchanged
+    r.write("a.rs", "ONE\n");
     let mut app = app_on(&r);
     app.set_tab(Tab::AllFiles).unwrap();
     assert!(
@@ -1657,8 +1552,8 @@ fn switching_scope_on_all_files_remarks_in_place() {
     r.commit_all("init");
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("b.rs", "TWO\n");
-    r.commit_all("committed change to b"); // committed on the branch
-    r.write("a.rs", "ONE\n"); // one uncommitted change
+    r.commit_all("committed change to b");
+    r.write("a.rs", "ONE\n");
     let mut app = app_on(&r);
     app.set_tab(Tab::AllFiles).unwrap();
     app.focus = Focus::Files;
@@ -1671,7 +1566,6 @@ fn switching_scope_on_all_files_remarks_in_place() {
     );
     assert_eq!(annotation_of(&app, "b.rs"), Some(None), "b.rs is unmarked under uncommitted");
 
-    // Branch is a superset: it adds the committed b.rs and keeps a.rs — re-marked in place.
     app.set_scope(Scope::Branch).unwrap();
     assert_eq!(app.file_cursor, cursor, "the cursor holds across a scope re-mark");
     assert_eq!(app.changed_count(), 2, "branch marks both the committed and the dirty file");
@@ -1692,11 +1586,9 @@ fn all_files_lazily_loads_an_expanded_ignored_directory() {
     app.set_tab(Tab::AllFiles).unwrap();
     app.focus = Focus::Files;
 
-    // target/ is a collapsed, ignored placeholder; its contents are not loaded yet.
     assert!(app.entries.iter().any(|e| e.path == "target" && e.is_dir && e.ignored));
     assert!(!app.entries.iter().any(|e| e.path.starts_with("target/")), "children not loaded yet");
 
-    // Expand it → immediate children load (one level only), still ignored/dimmed.
     let row = |a: &App| a.file_rows.iter().position(|r| r.dir_path() == Some("target")).unwrap();
     app.file_cursor = row(&app);
     app.expand_dir();
@@ -1710,7 +1602,6 @@ fn all_files_lazily_loads_an_expanded_ignored_directory() {
     );
     assert!(!app.entries.iter().any(|e| e.path == "target/sub/y.o"), "deeper level stays lazy");
 
-    // Collapse → children drop back out of the entry set.
     app.file_cursor = row(&app);
     app.collapse_dir();
     assert!(
@@ -1759,7 +1650,6 @@ fn anchor_stamps_scope_base_and_keeps_the_diff_marker() {
 
     let c = app.store.get(0).expect("a comment was made");
     assert_eq!(c.side, Side::New);
-    // Only the selected line is captured, with its `+` diff marker — not the whole hunk.
     assert_eq!(c.lines, "+fn main() { work(); }", "just the selected added line, marked");
     assert_eq!(c.scope, Scope::Commit, "stamped with the authoring scope");
     assert_eq!(c.base.as_deref(), app.selected_commit.as_deref(), "and the diff base");
@@ -1792,14 +1682,11 @@ fn a_changes_comment_matches_only_its_authoring_base() {
         base: Some(head.clone()),
         sent: false,
     };
-    // Authored against HEAD: matches now.
     assert!(app.comment_matches_current(&c), "matches under its own commit base");
 
-    // Switch the diff base to an older commit: the comment no longer belongs to this diff.
     app.set_commit(older).unwrap();
     assert!(!app.comment_matches_current(&c), "hidden once the base changes");
 
-    // Back to its base: it matches again.
     app.set_commit(head).unwrap();
     assert!(app.comment_matches_current(&c), "returns when its base is restored");
 }
@@ -1823,7 +1710,7 @@ fn all_files_comments_ignore_the_base() {
         end: 1,
         lines: "ONE".into(),
         text: "note".into(),
-        diff_anchored: false, // a File-view (All files) comment
+        diff_anchored: false,
         scope: Scope::Commit,
         base: None,
         sent: false,
@@ -1831,8 +1718,12 @@ fn all_files_comments_ignore_the_base() {
     assert!(app.comment_matches_current(&c), "an All-files comment shows in the File view");
 }
 
-/// A literal comment for list/selection tests that don't need to drive the diff UI.
-fn lit(file: &str, base: Option<&str>, diff_anchored: bool, text: &str) -> herdr_reviewr::model::Comment {
+fn lit(
+    file: &str,
+    base: Option<&str>,
+    diff_anchored: bool,
+    text: &str,
+) -> herdr_reviewr::model::Comment {
     herdr_reviewr::model::Comment {
         file: file.into(),
         side: Side::New,
@@ -1858,7 +1749,6 @@ fn send_dispatches_only_unsent_and_marks_them_sent() {
     assert_eq!(t.count(), 1, "the fresh comment is dispatched");
     assert!(app.store.get(0).unwrap().sent, "and marked sent");
 
-    // A second send with nothing new is a no-op.
     let t2 = FakeTarget::ok();
     app.export(&t2);
     assert_eq!(t2.count(), 0, "nothing new to send");
@@ -1925,9 +1815,7 @@ fn list_groups_by_view_and_base() {
     assert_eq!(groups.len(), 3, "two commit groups and one All-files group");
     assert_eq!(groups.iter().filter(|(l, _)| l.starts_with("commit ")).count(), 2);
     assert!(groups.iter().any(|(l, _)| l == "All files"));
-    // Diff groups come before the All-files group.
     assert!(groups.last().unwrap().0 == "All files");
-    // list_order flattens every comment exactly once.
     assert_eq!(app.list_order().len(), 3);
 }
 
@@ -1957,9 +1845,9 @@ fn resolve_selected_removes_the_checked_comments() {
     app.store.add(lit("a.rs", Some("base"), true, "three"));
     app.open_list();
 
-    app.toggle_list_select(); // row 0 (one)
+    app.toggle_list_select();
     app.list_move(1);
-    app.toggle_list_select(); // row 1 (two)
+    app.toggle_list_select();
     app.resolve_selected();
 
     assert_eq!(app.store.len(), 1, "the two checked comments are removed");
@@ -1974,17 +1862,17 @@ fn open_comment_restores_scope_and_base_then_jumps() {
     r.commit_all("c1");
     r.write("a.rs", "l1\nl2\n");
     r.commit_all("c2");
-    r.write("a.rs", "l1\nl2\nl3\n"); // uncommitted, so a diff exists against either commit
+    r.write("a.rs", "l1\nl2\nl3\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     let head = app.selected_commit.clone().unwrap();
     let older = app.commit_choices[1].sha.clone();
 
     goto_file(&mut app, "a.rs");
-    comment_on(&mut app, '+', "note"); // authored against HEAD
+    comment_on(&mut app, '+', "note");
     assert_eq!(app.store.get(0).unwrap().base.as_deref(), Some(head.as_str()));
 
-    app.set_commit(older).unwrap(); // switch away — the comment is now off-base
+    app.set_commit(older).unwrap();
     assert!(!app.comment_matches_current(app.store.get(0).unwrap()), "hidden off its base");
 
     app.open_list();
@@ -2018,10 +1906,13 @@ fn a_changes_snippet_captures_only_the_selected_lines() {
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     goto_file(&mut app, "a.rs");
-    comment_on(&mut app, '+', "why the change?"); // select only the +new line
+    comment_on(&mut app, '+', "why the change?");
 
     let c = app.store.get(0).unwrap();
-    assert_eq!(c.lines, "+new", "just the selected line, with its marker — not the surrounding hunk");
+    assert_eq!(
+        c.lines, "+new",
+        "just the selected line, with its marker — not the surrounding hunk"
+    );
 }
 
 #[test]
@@ -2032,7 +1923,6 @@ fn list_cursor_row_counts_group_headers() {
     app.store.add(lit("a.rs", Some("bbbb"), true, "group two"));
     app.open_list();
 
-    // display: [Header(a), Item0, Header(b), Item1]
     assert_eq!(app.list_cursor_row(), 1, "the first comment sits below its header");
     app.list_move(1);
     assert_eq!(app.list_cursor_row(), 3, "the second, in a new group, below a second header");
@@ -2043,7 +1933,7 @@ fn the_tabs_keep_independent_selections() {
     use herdr_reviewr::app::Tab;
     let r = Repo::init();
     r.write("a.rs", "one\n");
-    r.commit_all("init"); // a clean worktree — no changes
+    r.commit_all("init");
     let mut app = app_on(&r);
     assert_eq!(app.changed_count(), 0);
     assert!(app.diff_path.is_none(), "Changes opens nothing with an empty changeset");
@@ -2053,7 +1943,6 @@ fn the_tabs_keep_independent_selections() {
     app.select_file(row).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "viewing a.rs in All files");
 
-    // Back to Changes: nothing carries over, so its own (empty) state stands.
     app.set_tab(Tab::Changes).unwrap();
     assert!(app.diff_path.is_none(), "the All files selection does not carry into Changes");
 }
@@ -2069,7 +1958,7 @@ fn a_file_view_comment_exports_as_path_line_with_a_context_snippet() {
     let row = file_row_of(&app, "a.rs").expect("a.rs listed");
     app.select_file(row).unwrap();
     app.focus = Focus::Diff;
-    app.diff_cursor = 1; // the second line, "beta"
+    app.diff_cursor = 1;
     app.start_comment();
     for ch in "why".chars() {
         app.input_push(ch);
@@ -2090,7 +1979,7 @@ fn an_oversize_file_in_all_files_degrades_to_a_notice() {
     use herdr_reviewr::diff::{FileState, View};
     let r = Repo::init();
     r.write("small.rs", "fn main() {}\n");
-    r.write("big.bin", &"x\n".repeat(1_100_000)); // ~2.2 MB, over the 2 MB budget
+    r.write("big.bin", &"x\n".repeat(1_100_000));
     r.commit_all("init");
     let mut app = app_on(&r);
     app.set_tab(Tab::AllFiles).unwrap();
@@ -2107,9 +1996,9 @@ fn switching_to_an_empty_file_view_focuses_the_tree() {
     let r = Repo::init();
     r.write("a.rs", "alpha\n");
     r.commit_all("init");
-    r.remove("a.rs"); // deleted: still tracked (in ls-files) but empty on disk
+    r.remove("a.rs");
     let mut app = app_on(&r);
-    app.focus = Focus::Diff; // reader is in the diff pane on the deletion
+    app.focus = Focus::Diff;
     app.set_tab(Tab::AllFiles).unwrap();
     assert!(app.visible.is_empty(), "the deleted file's content view is empty");
     assert_eq!(app.focus, Focus::Files, "an empty left pane focuses the tree, not traps the keys");
@@ -2122,17 +2011,16 @@ fn a_diff_comment_does_not_render_in_the_file_view() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\ngamma\n");
     r.commit_all("init");
-    r.write("a.rs", "alpha\nBETA\ngamma\n"); // a.rs changed
+    r.write("a.rs", "alpha\nBETA\ngamma\n");
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = row_with(&app, '+'); // the +BETA insertion
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     app.input_push('x');
     app.submit_comment();
     assert!(app.store.get(0).unwrap().diff_anchored, "made in the Changes diff");
     assert!(!app.commented_lines().is_empty(), "renders in its own diff view");
 
-    // In All files, open a.rs as content: the diff-anchored comment must not bleed in.
     app.set_tab(Tab::AllFiles).unwrap();
     let row = file_row_of(&app, "a.rs").expect("a.rs listed");
     app.select_file(row).unwrap();
@@ -2153,7 +2041,6 @@ fn editing_a_comment_on_all_files_opens_the_file_view() {
     r.commit_all("init");
     let mut app = app_on(&r);
     app.set_tab(Tab::AllFiles).unwrap();
-    // A content comment on a.rs.
     let arow = file_row_of(&app, "a.rs").expect("a.rs listed");
     app.select_file(arow).unwrap();
     app.focus = Focus::Diff;
@@ -2161,12 +2048,10 @@ fn editing_a_comment_on_all_files_opens_the_file_view() {
     app.start_comment();
     app.input_push('x');
     app.submit_comment();
-    // Open b.rs, so the comment's file is not the one shown.
     let brow = file_row_of(&app, "b.rs").expect("b.rs listed");
     app.select_file(brow).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
 
-    // Edit the comment from the list: it must bring a.rs back as a File view, not a diff.
     app.open_list();
     app.start_edit();
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
@@ -2188,15 +2073,14 @@ fn changing_scope_on_all_files_snaps_the_changes_diff_to_the_top() {
     r.commit_all("base");
     r.git(&["checkout", "-b", "feature"]);
     r.write("a.rs", &body.replace("line 5", "LINE 5"));
-    r.commit_all("feature edit"); // a.rs differs from base → changed in branch scope
-    r.write("a.rs", &body.replace("line 5", "LINE 5").replace("line 30", "LINE 30")); // uncommitted
+    r.commit_all("feature edit");
+    r.write("a.rs", &body.replace("line 5", "LINE 5").replace("line 30", "LINE 30"));
 
-    let mut app = app_on(&r); // Uncommitted scope; a.rs open in Changes
+    let mut app = app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = 2;
     app.diff_scroll = 1;
 
-    // Change scope while on All files, then return to Changes.
     app.set_tab(Tab::AllFiles).unwrap();
     app.set_scope(Scope::Branch).unwrap();
     app.set_tab(Tab::Changes).unwrap();
@@ -2206,8 +2090,6 @@ fn changing_scope_on_all_files_snaps_the_changes_diff_to_the_top() {
     assert_eq!(app.diff_cursor, 0);
 }
 
-/// A PR-tab detour must not corrupt the two-tab diff stash: each file tab restores its own
-/// open file when returned to, even after passing through the read-only `PR` tab.
 #[test]
 fn the_pr_tab_detour_preserves_each_file_tab_state() {
     use herdr_reviewr::app::Tab;
@@ -2215,33 +2097,27 @@ fn the_pr_tab_detour_preserves_each_file_tab_state() {
     r.write("a.rs", "one\n");
     r.write("b.rs", "two\n");
     r.commit_all("init");
-    r.write("a.rs", "ONE\n"); // a.rs is the only changed file
+    r.write("a.rs", "ONE\n");
     let mut app = app_on(&r);
 
     assert_eq!(app.tab, Tab::Changes);
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
-    // All files can open b.rs, which Changes can never show (b.rs is unchanged).
     app.set_tab(Tab::AllFiles).unwrap();
     app.select_file(file_row(&app, "b.rs")).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
 
-    // Detour through the PR tab; the file tabs stay frozen.
     app.set_tab(Tab::Pr).unwrap();
     assert_eq!(app.tab, Tab::Pr);
 
-    // Returning to All files restores b.rs (active file tab unchanged → no swap).
     app.set_tab(Tab::AllFiles).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "All files restored after the PR detour");
 
-    // Returning to Changes swaps its state back — a.rs, never All files' b.rs.
     app.set_tab(Tab::Changes).unwrap();
     assert_eq!(app.tab, Tab::Changes);
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "Changes restored without bleeding b.rs");
 }
 
-/// The PR navigator cursor walks comments only (checks are a status display), the read pane
-/// tracks the selected comment, and `pr_move` clamps at both ends.
 #[test]
 fn pr_navigator_walks_comments_only_and_clamps() {
     use herdr_reviewr::app::Tab;
@@ -2285,7 +2161,6 @@ fn pr_navigator_walks_comments_only_and_clamps() {
     app.set_tab(Tab::Pr).unwrap();
     app.pr = PrView::Pr(Box::new(snap));
 
-    // The cursor starts on the first comment — checks are skipped entirely.
     assert_eq!(app.pr_row_count(), 2, "two comments; the two checks are not cursor stops");
     assert_eq!(app.pr_selected_comment().map(|c| c.author.as_str()), Some("first"));
     app.pr_move(1);
@@ -2343,7 +2218,6 @@ fn apply_pr_follows_the_selected_comment_across_a_refresh() {
     let mut app = app_on(&r);
     app.set_tab(Tab::Pr).unwrap();
 
-    // Newest-first [ann@10:00, bob@09:00]; the cursor lands on the newest, then move to bob.
     app.apply_pr(snap(vec![
         comment("ann", "2026-06-27T10:00:00Z"),
         comment("bob", "2026-06-27T09:00:00Z"),
@@ -2352,7 +2226,6 @@ fn apply_pr_follows_the_selected_comment_across_a_refresh() {
     app.pr_move(1);
     assert_eq!(app.pr_selected_comment().map(|c| c.author.as_str()), Some("bob"));
 
-    // A refresh prepends a newer comment: the cursor follows bob to its new index, not index 1.
     app.apply_pr(snap(vec![
         comment("cara", "2026-06-27T11:00:00Z"),
         comment("ann", "2026-06-27T10:00:00Z"),
@@ -2364,7 +2237,6 @@ fn apply_pr_follows_the_selected_comment_across_a_refresh() {
         "the cursor follows the same comment by identity, not its old index"
     );
 
-    // A refresh where bob is gone clamps the now-dangling cursor back into range.
     app.apply_pr(snap(vec![
         comment("cara", "2026-06-27T11:00:00Z"),
         comment("ann", "2026-06-27T10:00:00Z"),
@@ -2382,14 +2254,11 @@ fn theme_selection_swaps_the_palette_and_falls_back() {
     let repo = Repo::init();
     let mut app = App::new(repo.path_buf(), Scope::Commit, None);
 
-    // The default theme is catppuccin (Mocha).
     assert_eq!(*app.palette(), theme::resolve(Some("catppuccin")).palette);
 
-    // A --theme override (highest precedence) swaps the whole palette.
     app.set_cli_theme(Some("catppuccin-latte".to_string()));
     assert_eq!(*app.palette(), theme::resolve(Some("catppuccin-latte")).palette);
 
-    // An unknown name falls back to the default — never a half-applied palette.
     app.set_cli_theme(Some("nope".to_string()));
     assert_eq!(*app.palette(), theme::resolve(Some("catppuccin")).palette);
 }
@@ -2399,7 +2268,7 @@ fn e_requests_the_editor_for_the_file_under_the_cursor() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = row_with(&app, '+'); // a changed line with a worktree line number
+    app.diff_cursor = row_with(&app, '+');
     let expected_line = app.visible[app.diff_cursor].new_no();
     assert!(expected_line.is_some(), "an inserted line carries a new-side number");
 
@@ -2415,13 +2284,11 @@ fn e_requests_the_editor_for_the_file_under_the_cursor() {
 fn the_editor_request_needs_the_diff_pane_and_no_open_composer() {
     let r = edited_repo();
 
-    // The file list is not a file to edit.
     let mut app = app_on(&r);
     app.focus = Focus::Files;
     app.request_editor();
     assert!(app.take_pending_editor().is_none(), "no editor from the file list");
 
-    // Mid-comment, `e` types into the composer — it must not also launch an editor.
     let mut app = composing_app();
     app.request_editor();
     assert!(app.take_pending_editor().is_none(), "no editor while composing a comment");
@@ -2432,14 +2299,12 @@ fn the_editor_hint_shows_in_the_diff_and_yields_to_edit_on_a_comment() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = row_with(&app, '+'); // a plain changed line, no comment yet
+    app.diff_cursor = row_with(&app, '+');
     assert!(
         app.footer_actions().iter().any(|&(a, _)| a == FooterAction::OpenEditor),
         "the diff viewer offers `e editor`"
     );
 
-    // A commented line means `e` edits the comment, so the editor hint stands aside — `e` is
-    // never advertised twice.
     comment_on(&mut app, '+', "note");
     let acts = app.footer_actions();
     assert!(
@@ -2456,29 +2321,25 @@ fn the_editor_hint_shows_in_the_diff_and_yields_to_edit_on_a_comment() {
 fn the_base_picker_is_chip_click_only_no_footer_key() {
     let r = Repo::init();
     r.write("a.rs", "one\n");
-    r.commit_all("init"); // on main — the branch-scope base
+    r.commit_all("init");
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("b.rs", "two\n");
-    r.commit_all("add b"); // a change vs main
+    r.commit_all("add b");
 
     let mut app = App::new(r.path_buf(), Scope::Branch, None);
     app.reload().unwrap();
 
     assert!(!app.file_rows.is_empty(), "branch scope sees the feature commit's file");
-    // The base picker now opens only by clicking the base chip (like the commit picker), so no
-    // `B` key hint is offered in the footer.
     assert!(
         !app.footer_actions().iter().any(|&(a, _)| a == FooterAction::Base),
         "no base key hint — the picker is chip-click only"
     );
 }
 
-/// A repo on `feature` with commits `add a`, `add b`, `add c` atop `main` (the fork point),
-/// plus one uncommitted (untracked) worktree edit.
 fn commit_repo() -> Repo {
-    let r = Repo::init(); // main
+    let r = Repo::init();
     r.write("base.rs", "0\n");
-    r.commit_all("base"); // fork point on main
+    r.commit_all("base");
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("a.rs", "a\n");
     r.commit_all("add a");
@@ -2486,7 +2347,7 @@ fn commit_repo() -> Repo {
     r.commit_all("add b");
     r.write("c.rs", "c\n");
     r.commit_all("add c");
-    r.write("work.rs", "uncommitted\n"); // untracked worktree edit
+    r.write("work.rs", "uncommitted\n");
     r
 }
 
@@ -2501,13 +2362,11 @@ fn picking_a_commit_diffs_the_worktree_against_it() {
     let titles: Vec<&str> = app.commit_choices.iter().map(|c| c.title.as_str()).collect();
     assert_eq!(titles, vec!["add c", "add b", "add a", "base"], "full history, newest first");
 
-    // Newest commit is HEAD: only the uncommitted edit differs from it.
     app.pick_commit(0).unwrap();
     assert_eq!(app.scope, Scope::Commit);
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.changed_count(), 1, "vs HEAD: just the uncommitted work.rs");
 
-    // Oldest listed commit (`add a`): b.rs, c.rs, and the uncommitted edit all differ.
     app.open_commit_picker();
     app.pick_commit(2).unwrap();
     assert_eq!(app.changed_count(), 3, "vs add a: b.rs, c.rs, and work.rs");
@@ -2548,7 +2407,7 @@ fn the_commit_picker_cursor_moves_and_clamps() {
 
 #[test]
 fn the_commit_picker_lists_history_even_with_nothing_ahead_of_the_base() {
-    let r = Repo::init(); // main, no feature branch — nothing "ahead", but a history exists
+    let r = Repo::init();
     r.write("a.rs", "0\n");
     r.commit_all("only");
     let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
@@ -2566,7 +2425,7 @@ fn dir_has_changes_detects_a_nested_change_respecting_boundaries() {
     r.write("src/deep/a.rs", "1\n");
     r.write("other/b.rs", "1\n");
     r.commit_all("init");
-    r.write("src/deep/a.rs", "2\n"); // change only under src/deep
+    r.write("src/deep/a.rs", "2\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
@@ -2584,7 +2443,7 @@ fn filtering_narrows_the_tree_and_clearing_restores() {
     r.write("docs/readme.md", "1\n");
     r.commit_all("init");
     for f in ["contracts/evm_pool.rs", "contracts/sol_pool.rs", "docs/readme.md"] {
-        r.write(f, "2\n"); // modify all three so Changes shows them expanded
+        r.write(f, "2\n");
     }
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
@@ -2617,13 +2476,13 @@ fn a_leading_slash_is_ignored_when_filtering() {
     app.reload().unwrap();
 
     app.start_filter();
-    app.filter_push('/'); // the "restart search" reflex — must not insert a slash
+    app.filter_push('/');
     assert_eq!(app.filter, "", "a leading slash is dropped");
     for c in "evm".chars() {
         app.filter_push(c);
     }
     assert_eq!(app.filter, "evm", "no stray leading slash");
-    app.filter_push('/'); // mid-query slash is a real filter character
+    app.filter_push('/');
     assert_eq!(app.filter, "evm/", "a slash inside the query is kept");
 }
 
@@ -2639,7 +2498,7 @@ fn filtering_focuses_files_and_arrows_navigate_the_results() {
     }
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
-    app.focus = Focus::Diff; // pretend we were reviewing the diff
+    app.focus = Focus::Diff;
 
     app.start_filter();
     assert_eq!(app.focus, Focus::Files, "starting a search focuses the file list");
@@ -2647,9 +2506,9 @@ fn filtering_focuses_files_and_arrows_navigate_the_results() {
         app.filter_push(c);
     }
     let start = app.file_cursor;
-    app.move_cursor(1).unwrap(); // ↓ while the search box is open
+    app.move_cursor(1).unwrap();
     assert_eq!(app.file_cursor, start + 1, "down moves through the filtered results");
-    app.move_cursor(-1).unwrap(); // ↑
+    app.move_cursor(-1).unwrap();
     assert_eq!(app.file_cursor, start, "up moves back, without leaving the search");
 }
 
@@ -2692,8 +2551,8 @@ fn enter_expands_a_folder_and_its_child_folders_one_level() {
         r.write(f, "2\n");
     }
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.set_tab(Tab::AllFiles).unwrap(); // dirs start collapsed
-    app.file_cursor = 0; // the lone top-level `src` row
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.file_cursor = 0;
 
     app.toggle_dir_children();
     let names: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
@@ -2704,7 +2563,7 @@ fn enter_expands_a_folder_and_its_child_folders_one_level() {
         "the deeper deep/ folder stays collapsed: {names:?}"
     );
 
-    app.toggle_dir_children(); // enter again reverses
+    app.toggle_dir_children();
     let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(!after.iter().any(|n| n == "mod.rs"), "pressing enter again collapses: {after:?}");
 }
@@ -2722,27 +2581,26 @@ fn enter_completes_a_partial_expand_before_collapsing() {
     }
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.set_tab(Tab::AllFiles).unwrap();
-    app.file_cursor = 0; // the `src` row
+    app.file_cursor = 0;
 
-    app.expand_dir(); // `→` opens src only; its child folders stay shut
+    app.expand_dir();
     let opened: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(!opened.iter().any(|n| n == "mod.rs"), "-> left child folders shut: {opened:?}");
 
-    app.toggle_dir_children(); // Enter completes the expansion (does not collapse)
+    app.toggle_dir_children();
     let done: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(done.iter().any(|n| n == "mod.rs"), "enter fills in the shut child folders: {done:?}");
 
-    app.toggle_dir_children(); // now everything is open, so Enter collapses
+    app.toggle_dir_children();
     let shut: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert!(!shut.iter().any(|n| n == "mod.rs"), "enter again collapses: {shut:?}");
 }
 
 #[test]
 fn the_branch_picker_sections_lineage_skips_the_divider_and_picks_a_base() {
-    let r = Repo::init(); // main @ base
+    let r = Repo::init();
     r.write("a.rs", "1\n");
     r.commit_all("base");
-    // An origin twin of main, so the picker has both a local and an origin section (and a divider).
     r.git(&["update-ref", "refs/remotes/origin/main", "main"]);
     r.git(&["checkout", "-q", "-b", "feature"]);
     r.write("b.rs", "2\n");
@@ -2752,7 +2610,6 @@ fn the_branch_picker_sections_lineage_skips_the_divider_and_picks_a_base() {
 
     app.open_branch_picker();
     assert_eq!(app.mode, Mode::BranchPick, "the dropdown opens in branch scope");
-    // Rows: local main, a divider, then origin/main — feature (the current branch) is excluded.
     assert_eq!(
         app.branch_choices,
         vec![
@@ -2763,19 +2620,16 @@ fn the_branch_picker_sections_lineage_skips_the_divider_and_picks_a_base() {
         "local section, divider, origin section",
     );
 
-    // The cursor starts on the first item and steps over the divider on the way down and back up.
     assert_eq!(app.branch_cursor, 0);
     app.branch_move(1);
     assert_eq!(app.branch_cursor, 2, "moving down skips the divider onto origin/main");
     app.branch_move(-1);
     assert_eq!(app.branch_cursor, 0, "moving up skips the divider back onto main");
 
-    // Picking the divider row is a no-op: base and mode unchanged.
     app.pick_branch(1).unwrap();
     assert_eq!(app.mode, Mode::BranchPick, "a divider pick keeps the picker open");
     assert_eq!(app.base, None, "a divider pick sets no base");
 
-    // Picking the origin item keeps the origin/ label — the base is exactly what was chosen.
     app.pick_branch(2).unwrap();
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.base.as_deref(), Some("origin/main"), "picking sets the chosen ref as the base");
@@ -2837,7 +2691,6 @@ fn sending_a_path_requires_a_highlighted_file() {
         |app: &App| app.footer_actions().iter().any(|&(a, _)| a == FooterAction::SendPath);
     assert!(has_send(&app), "the send hint shows while a file is highlighted");
 
-    // Land the cursor on the `dir` row (no file under cursor): sending is refused.
     let dir = app.file_rows.iter().position(|row| row.dir_path() == Some("dir")).unwrap();
     app.file_cursor = dir;
     assert!(!has_send(&app), "no send hint on a directory row");
@@ -2863,7 +2716,7 @@ fn space_marks_a_file_reviewed_and_advances_to_the_next() {
     assert_eq!(app.reviewed_count(), 1);
     assert_eq!(app.current_entry().map(|e| e.path.as_str()), Some("b.rs"), "advanced to next");
 
-    r.write("a.rs", "3\n"); // agent re-edits a.rs
+    r.write("a.rs", "3\n");
     app.reload().unwrap();
     assert!(!app.is_reviewed("a.rs"), "mark clears when the file changes again");
 }
@@ -2872,7 +2725,7 @@ fn space_marks_a_file_reviewed_and_advances_to_the_next() {
 fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
     let r = Repo::init();
     r.write("keep.rs", "1\n");
-    r.commit_all("init"); // committed, unchanged — not in the changeset
+    r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.set_tab(Tab::AllFiles).unwrap();
@@ -2880,7 +2733,7 @@ fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
     goto_file(&mut app, "keep.rs");
     app.toggle_reviewed();
     assert!(app.is_reviewed("keep.rs"), "marked reviewed");
-    app.reload().unwrap(); // a poll must not strip an unchanged file's mark
+    app.reload().unwrap();
     assert!(app.is_reviewed("keep.rs"), "the mark survives a poll for an unchanged file");
 }
 
@@ -2891,7 +2744,7 @@ fn a_reviewed_tick_survives_a_base_switch_but_not_a_content_change() {
     r.commit_all("c1");
     r.write("a.rs", "l1\nl2\n");
     r.commit_all("c2");
-    r.write("a.rs", "l1\nl2\nl3\n"); // uncommitted, so a diff exists against either commit
+    r.write("a.rs", "l1\nl2\nl3\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     let older = app.commit_choices[1].sha.clone();
@@ -2900,11 +2753,9 @@ fn a_reviewed_tick_survives_a_base_switch_but_not_a_content_change() {
     app.toggle_reviewed();
     assert!(app.is_reviewed("a.rs"), "marked reviewed under the current base");
 
-    // Switching the diff base doesn't touch the worktree, so the tick stays.
     app.set_commit(older).unwrap();
     assert!(app.is_reviewed("a.rs"), "the tick survives switching the base");
 
-    // But an actual worktree content change clears it.
     r.write("a.rs", "l1\nl2\nCHANGED\n");
     app.reload().unwrap();
     assert!(!app.is_reviewed("a.rs"), "a worktree content change drops the tick");
@@ -2918,12 +2769,12 @@ fn a_reviewed_tick_follows_content_across_a_branch_switch() {
     r.write("diff.rs", "on-main\n");
     r.commit_all("main");
     r.git(&["checkout", "-q", "-b", "feature"]);
-    r.write("diff.rs", "on-feature\n"); // differs between the branches
+    r.write("diff.rs", "on-feature\n");
     r.commit_all("feature change");
 
     let mut app = App::new(r.path_buf(), Scope::Branch, None);
     app.reload().unwrap();
-    app.set_tab(Tab::AllFiles).unwrap(); // both files list here
+    app.set_tab(Tab::AllFiles).unwrap();
 
     let d = file_row(&app, "diff.rs");
     app.select_file(d).unwrap();
@@ -2933,21 +2784,19 @@ fn a_reviewed_tick_follows_content_across_a_branch_switch() {
     app.toggle_reviewed();
     assert!(app.is_reviewed("same.rs") && app.is_reviewed("diff.rs"), "both ticked on feature");
 
-    // Check out main: same.rs is byte-identical, diff.rs changes on disk.
     r.git(&["checkout", "-q", "main"]);
     app.reload().unwrap();
     assert!(app.is_reviewed("same.rs"), "an identical file keeps its tick across branches");
     assert!(!app.is_reviewed("diff.rs"), "a file whose content changed loses its tick");
 }
 
-/// A file whose first and last (of nine) lines change, giving two separate change blocks.
 fn two_block_app() -> (Repo, App) {
     let r = Repo::init();
     r.write("a.rs", "top\na\nb\nc\nd\ne\nf\ng\nbot\n");
     r.write("b.rs", "one\n");
     r.commit_all("init");
-    r.write("a.rs", "top\nA\nb\nc\nd\ne\nf\nG\nbot\n"); // lines 2 and 8 change
-    r.write("b.rs", "ONE\n"); // one block
+    r.write("a.rs", "top\nA\nb\nc\nd\ne\nf\nG\nbot\n");
+    r.write("b.rs", "ONE\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     (r, app)
@@ -2974,7 +2823,7 @@ fn space_steps_blocks_then_marks_file_and_lands_on_next_files_first_block() {
     app.review_advance();
     assert_eq!(app.diff_cursor, starts[1], "steps to the second block");
 
-    app.review_advance(); // past the last block
+    app.review_advance();
     assert!(app.is_reviewed("a.rs"), "the file is marked reviewed after its last block");
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "advances to the next file");
     assert_eq!(app.focus, Focus::Diff, "stays in the diff to keep stepping");
@@ -3010,7 +2859,6 @@ fn jump_to_comment_opens_file_and_sets_diff_cursor() {
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
-    // Comment on b.rs's changed line, then browse away to a.rs.
     goto_file(&mut app, "b.rs");
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
@@ -3020,7 +2868,7 @@ fn jump_to_comment_opens_file_and_sets_diff_cursor() {
     }
     app.submit_comment();
     let arow = file_row(&app, "a.rs");
-    app.select_file(arow).unwrap(); // browse away to a.rs
+    app.select_file(arow).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "browsed to another file");
 
     app.open_list();

@@ -100,7 +100,9 @@ impl Highlighter {
                     })
                     .collect(),
                 // A grammar error degrades to plain text rather than blocking the diff.
-                Err(_) => vec![Span::plain(line.trim_end_matches('\n').to_string(), self.default_fg)],
+                Err(_) => {
+                    vec![Span::plain(line.trim_end_matches('\n').to_string(), self.default_fg)]
+                }
             };
             out.push(spans);
         }

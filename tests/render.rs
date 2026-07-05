@@ -1,6 +1,3 @@
-//! Render tests: drive `ui::render` through ratatui's `TestBackend` and assert on
-//! the painted buffer, so the layout and component wiring are checked for real.
-
 mod common;
 
 use common::Repo;
@@ -32,26 +29,21 @@ fn render(app: &App) -> String {
     dump(terminal.backend().buffer())
 }
 
-/// Render and return the buffer, for cell-style assertions.
 fn render_buffer(app: &App) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
     terminal.draw(|f| ui::render(f, app)).unwrap();
     terminal.backend().buffer().clone()
 }
 
-/// Render at a specific width (height fixed), for footer fit-to-width assertions.
 fn render_at(app: &App, width: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
     terminal.draw(|f| ui::render(f, app)).unwrap();
     dump(terminal.backend().buffer())
 }
 
-/// Catppuccin surface2 — the shared selection/cursor fill.
 const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x58, 0x5b, 0x70);
-/// Catppuccin peach — the comment-editor caret block.
 const PEACH: ratatui::style::Color = ratatui::style::Color::Rgb(0xfa, 0xb3, 0x87);
 
-/// Open the comment composer on the first changed line of `edited_app`.
 fn composing(app: &mut App) {
     app.focus = Focus::Diff;
     app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
@@ -71,7 +63,7 @@ fn the_caret_block_sits_on_the_character_at_the_caret() {
     composing(&mut app);
     app.input_push('a');
     app.input_push('b');
-    app.caret_left(); // caret between 'a' and 'b' → block over 'b'
+    app.caret_left();
     let buf = render_buffer(&app);
     let mut found = false;
     for y in 0..40 {
@@ -86,7 +78,6 @@ fn the_caret_block_sits_on_the_character_at_the_caret() {
 
 #[test]
 fn caret_vertical_moves_between_wrapped_rows() {
-    // "abcdef" hard-wraps at width 3 to "abc"/"def"; caret 4 (def col 1) up → 1; 1 down → 4.
     assert_eq!(ui::caret_vertical("abcdef", 4, 3, false), 1);
     assert_eq!(ui::caret_vertical("abcdef", 1, 3, true), 4);
 }
@@ -101,7 +92,7 @@ fn the_fold_hint_names_the_arrow_key() {
     }
     r.write("f.rs", &body);
     r.commit_all("init");
-    r.write("f.rs", &body.replace("line 15", "LINE 15")); // one change, long runs fold
+    r.write("f.rs", &body.replace("line 15", "LINE 15"));
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
@@ -119,8 +110,6 @@ fn edited_app() -> App {
     r.write("hello.rs", "alpha\nBETA\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
-    // The repo is only needed through reload(); rendering reads cached state, so
-    // `r` can drop here and clean up its tempdir.
     app
 }
 
@@ -137,8 +126,6 @@ fn the_file_list_renders_as_a_directory_tree() {
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
-    // Scan only the file-list pane (the right third) so the diff header — which does show
-    // the open file's full path — doesn't confuse the assertions.
     let files_pane: String = render(&app)
         .lines()
         .map(|l| l.chars().skip(l.chars().count() * 70 / 100).collect::<String>())
@@ -165,7 +152,7 @@ fn a_saved_comment_renders_inline_as_a_card() {
     for ch in "memoize this".chars() {
         app.input_push(ch);
     }
-    app.submit_comment(); // box closes, comment saved
+    app.submit_comment();
 
     let out = render(&app);
     assert!(out.contains("memoize this"), "the saved comment stays visible inline: {out:?}");
@@ -191,30 +178,27 @@ fn tabs_expand_to_spaces_in_the_diff() {
     let r = Repo::init();
     r.write("t.rs", "x\n");
     r.commit_all("init");
-    r.write("t.rs", "x\n\tindented\n"); // a tab-indented added line
+    r.write("t.rs", "x\n\tindented\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     let out = render(&app);
     let line = out.lines().find(|l| l.contains("indented")).expect("the added line renders");
-    // The literal tab is gone; the word is preceded by spaces (4-col tab stop).
     assert!(!line.contains('\t'), "no literal tab in the rendered line");
     assert!(line.contains("    indented") || line.contains("   indented"), "tab became spaces");
 }
 
 #[test]
 fn a_long_line_wraps_across_display_rows() {
-    let long: String = std::iter::repeat_n("abcd", 60).collect(); // 240 cols, wider than the pane
+    let long: String = std::iter::repeat_n("abcd", 60).collect();
     let r = Repo::init();
     r.write("w.rs", "x\n");
     r.commit_all("init");
     r.write("w.rs", &format!("x\n{long}\n"));
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.reload().unwrap(); // wrap defaults on
+    app.reload().unwrap();
 
-    // The whole long line is visible (no truncation): every chunk renders.
     let shown: String = render(&app).chars().filter(|c| *c == 'a').collect();
     assert!(shown.len() >= 60, "all of the wrapped line is shown, not truncated");
-    // The logical row reports a display height > 1 (it wraps).
     let heights = ui::diff_row_heights(&app, AREA);
     let wrapped = app.visible.iter().position(|r| r.text().starts_with("abcd")).unwrap();
     assert!(heights[wrapped] > 1, "the long line spans multiple display rows");
@@ -222,8 +206,6 @@ fn a_long_line_wraps_across_display_rows() {
 
 #[test]
 fn wrapping_breaks_at_word_boundaries() {
-    // Words sized so the line must wrap, but no word is wider than the pane: every break
-    // should land on a space, so no word is split across two display rows.
     let words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima \
                  mike november oscar papa quebec romeo sierra tango";
     let r = Repo::init();
@@ -231,13 +213,12 @@ fn wrapping_breaks_at_word_boundaries() {
     r.commit_all("init");
     r.write("w.rs", &format!("x\n{words}\n"));
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.reload().unwrap(); // wrap defaults on
+    app.reload().unwrap();
 
     let heights = ui::diff_row_heights(&app, AREA);
     let wrapped = app.visible.iter().position(|r| r.text().starts_with("alpha")).unwrap();
     assert!(heights[wrapped] > 1, "the line wraps across rows");
 
-    // Every word survives intact on some rendered line (none straddles a wrap break).
     let out = render(&app);
     for word in words.split(' ') {
         assert!(out.lines().any(|l| l.contains(word)), "word {word:?} is not split across rows");
@@ -246,8 +227,6 @@ fn wrapping_breaks_at_word_boundaries() {
 
 #[test]
 fn wide_glyphs_wrap_by_column_width_not_char_count() {
-    // 50 wide CJK glyphs span 100 columns; 50 ASCII chars span 50. Width-aware wrapping
-    // must give the CJK line more display rows — a char-counting wrap would tie them.
     let cjk: String = std::iter::repeat_n('あ', 50).collect();
     let ascii: String = std::iter::repeat_n('a', 50).collect();
     let r = Repo::init();
@@ -255,7 +234,7 @@ fn wide_glyphs_wrap_by_column_width_not_char_count() {
     r.commit_all("init");
     r.write("w.rs", &format!("x\n{ascii}\n{cjk}\n"));
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.reload().unwrap(); // wrap defaults on
+    app.reload().unwrap();
 
     let heights = ui::diff_row_heights(&app, AREA);
     let ascii_h = heights[app.visible.iter().position(|r| r.text().starts_with('a')).unwrap()];
@@ -270,11 +249,11 @@ fn horizontal_scroll_shifts_the_diff_left() {
     r.commit_all("init");
     r.write("w.rs", "x\nAAAABBBBCCCCDDDD_marker\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.wrap = false; // horizontal scroll applies only with wrap off
+    app.wrap = false;
     app.reload().unwrap();
     assert!(render(&app).contains("AAAABBBB"), "the line head shows before scrolling");
 
-    app.scroll_h(8); // drop the first 8 code columns
+    app.scroll_h(8);
     let out = render(&app);
     assert!(!out.contains("AAAABBBB"), "the scrolled-off head is gone");
     assert!(out.contains("CCCCDDDD_marker"), "the later columns are now visible");
@@ -289,11 +268,9 @@ fn a_changed_word_gets_the_emphasis_background() {
     r.write("e.rs", "let x = bar(a, b);\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
-    app.focus = Focus::Files; // no diff cursor, so the emphasis bg shows
+    app.focus = Focus::Files;
     let buf = render_buffer(&app);
 
-    // Somewhere in the diff pane a cell carries the brighter insertion-emphasis bg,
-    // and it sits under a changed character (a `b` from `bar`), not the shared prefix.
     let mut found = false;
     for y in 0..40 {
         for x in 0..95 {
@@ -310,9 +287,8 @@ fn a_changed_word_gets_the_emphasis_background() {
 
 #[test]
 fn the_selected_file_row_fills_with_the_shared_selection_color() {
-    let app = edited_app(); // one file, file_cursor = 0, Files focused
+    let app = edited_app();
     let buf = render_buffer(&app);
-    // Files pane: right 32% of 140 cols; its border is at y=1, first content row at y=2.
     let files_x0 = 140 - 140 * 32 / 100 + 1;
     let selected =
         (files_x0..139).filter(|&x| buf.cell((x, 2)).is_some_and(|c| c.bg == SELECTION_BG)).count();
@@ -330,12 +306,10 @@ fn shows_tab_bar_file_list_and_diff() {
     assert!(out.contains("changed"), "the header shows the changed count");
 }
 
-/// The last non-blank rendered row — the footer band.
 fn footer_line(out: &str) -> String {
     out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_string()
 }
 
-/// Focus the diff on its first changed line.
 fn on_changed_line(app: &mut App) {
     app.focus = Focus::Diff;
     app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
@@ -354,14 +328,12 @@ fn the_footer_shows_the_action_for_the_context() {
 #[test]
 fn the_footer_drops_to_fit_and_marks_the_clip() {
     let mut app = edited_app();
-    on_changed_line(&mut app); // diff focus, content line → c comment · v select · …
-    // Wide: every action fits, nothing is clipped.
+    on_changed_line(&mut app);
     let wide = footer_line(&render_at(&app, 120));
     assert!(
         wide.contains("c comment") && wide.contains("v select") && !wide.contains('…'),
         "wide footer shows all actions, no clip marker:\n{wide}"
     );
-    // Narrow: the primary survives, the least-relevant actions are trimmed, and `…` marks it.
     let narrow = footer_line(&render_at(&app, 18));
     assert!(narrow.contains("c comment"), "the primary action is never dropped:\n{narrow}");
     assert!(narrow.contains('…'), "the clip is marked with …:\n{narrow}");
@@ -385,13 +357,12 @@ fn the_pr_footer_keeps_the_open_action_when_the_state_line_is_long() {
         state: PrState::Open,
         is_draft: false,
         base_ref: "main".into(),
-        merge: Merge::Conflicting, // a long state line: conflicts · behind · failing · +more
+        merge: Merge::Conflicting,
         sync: Sync::Behind(3),
         checks: vec![Check { name: "ci".into(), status: CheckStatus::Failure }],
         comments: vec![],
         truncated: true,
     }));
-    // At narrow width the state line is capped so the primary `o open ↗` is never crowded off.
     let footer = footer_line(&render_at(&app, 60));
     assert!(footer.contains("o open"), "the open action survives a long state line:\n{footer}");
 }
@@ -402,7 +373,6 @@ fn the_footer_keeps_its_actions_alongside_a_status() {
     on_changed_line(&mut app);
     app.status = "comment added".to_string();
     let footer = footer_line(&render(&app));
-    // A status sits among the actions, never replacing them.
     assert!(footer.contains("comment added"), "the status shows:\n{footer}");
     assert!(
         footer.contains("c comment"),
@@ -461,7 +431,6 @@ fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible() {
     let out = render(&app);
     assert!(out.contains("one") && out.contains("two") && out.contains("three"), "all box lines");
     let lines: Vec<&str> = out.lines().collect();
-    // The inserted line is the only one carrying an uppercase `B` (no `+` glyph now).
     let anchor = lines.iter().position(|l| l.contains('B')).expect("anchor line visible");
     let box_row = lines.iter().position(|l| l.contains("comment ·")).expect("box");
     assert!(anchor < box_row, "the commented line stays above the box as it grows");
@@ -494,9 +463,7 @@ const AREA: Rect = Rect { x: 0, y: 0, width: 140, height: 40 };
 #[test]
 fn header_clicks_map_to_scope_and_send() {
     let mut app = edited_app();
-    app.scope = Scope::LastTurn; // a chip-less scope, so the header is scope + send only
-    // Scan the header row instead of hardcoding columns, so the test survives changes
-    // to the label/button text.
+    app.scope = Scope::LastTurn;
     let scope: Vec<u16> = (0..AREA.width)
         .filter(|&c| ui::hit_header(AREA, &app, c, 0) == Some(HeaderHit::Scope))
         .collect();
@@ -517,28 +484,20 @@ fn header_clicks_map_to_scope_and_send() {
 #[test]
 fn file_and_diff_clicks_map_to_row_indices() {
     let app = edited_app();
-    // Right pane: the first file row maps to index 0; clicking past the list misses.
     assert_eq!(ui::hit_file(AREA, app.list_pct, 120, 2, app.file_rows.len(), 0), Some(0));
     assert_eq!(ui::hit_file(AREA, app.list_pct, 120, 9, app.file_rows.len(), 0), None);
-    // With the list scrolled down, the top visible row maps to that scrolled-to index.
     assert_eq!(ui::hit_file(AREA, app.list_pct, 120, 2, 50, 7), Some(7));
     assert_eq!(ui::hit_file(AREA, app.list_pct, 120, 3, 50, 7), Some(8));
-    // The wheel routes by pointer: a column in the right pane is "in" the file list,
-    // one in the left (diff) pane is not.
     assert!(ui::in_files_pane(AREA, app.list_pct, 120, 3));
     assert!(!ui::in_files_pane(AREA, app.list_pct, 10, 3));
-    // Left pane: diff rows map top-down to diff-line indices.
     assert!(app.visible.len() > 1);
     let heights = ui::diff_row_heights(&app, AREA);
     assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 2, &heights, 0), Some(0));
     assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 3, &heights, 0), Some(1));
-    // With a nonzero scroll and wrapped (multi-row) lines, the click must skip the
-    // scrolled-off rows and account for each visible row's display height. Rows are
-    // 2 tall each; diff_scroll=1 puts row index 1 at the top of the pane (inner.y == 2).
     let tall = [2usize, 2, 2, 2];
-    assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 2, &tall, 1), Some(1)); // top visible row
-    assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 3, &tall, 1), Some(1)); // its second display row
-    assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 4, &tall, 1), Some(2)); // next logical row
+    assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 2, &tall, 1), Some(1));
+    assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 3, &tall, 1), Some(1));
+    assert_eq!(ui::hit_diff(AREA, app.list_pct, 10, 4, &tall, 1), Some(2));
 }
 
 #[test]
@@ -572,7 +531,6 @@ fn the_comments_list_flags_a_stale_comment() {
     }
     app.submit_comment();
 
-    // Deleting a.rs removes the line the comment anchors to → it is truly orphaned.
     r.remove("a.rs");
     app.reload().unwrap();
     app.open_list();
@@ -657,7 +615,7 @@ fn all_files_tab_bar_footer_and_count_read_for_the_tab() {
     let r = Repo::init();
     r.write("a.rs", "one\n");
     r.commit_all("init");
-    r.write("a.rs", "ONE\n"); // one change
+    r.write("a.rs", "ONE\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     app.set_tab(Tab::AllFiles).unwrap();
@@ -686,15 +644,11 @@ fn a_narrow_overflowing_header_does_not_mis_map_a_click_to_send() {
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
 
-    // At a narrow sidebar width the two-tab header overflows and the Send button is off-screen.
-    // No on-screen column may map to Send — the old right-aligned hit-zone landed a phantom Send
-    // over the chip/tab region, swallowing those clicks as a Send.
     let width: u16 = 34;
     let area = Rect::new(0, 0, width, 40);
     let phantom = (0..width).any(|c| ui::hit_header(area, &app, c, 0) == Some(HeaderHit::Send));
     assert!(!phantom, "no on-screen column mis-maps to Send when the narrow header overflows");
 
-    // At a wide width the Send button is right-aligned and clickable.
     let wide = Rect::new(0, 0, 140, 40);
     let send = (0..140).any(|c| ui::hit_header(wide, &app, c, 0) == Some(HeaderHit::Send));
     assert!(send, "Send is clickable when the header fits");
@@ -705,11 +659,11 @@ fn all_files_empty_pane_reads_select_a_file() {
     use herdr_reviewr::app::Tab;
     let r = Repo::init();
     r.write("src/a.rs", "x\n");
-    r.write("src/b.rs", "y\n"); // two children so src/ is a real collapsed dir, not a folded file
+    r.write("src/b.rs", "y\n");
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
-    app.set_tab(Tab::AllFiles).unwrap(); // clean repo: no seed; cursor rests on collapsed src/
+    app.set_tab(Tab::AllFiles).unwrap();
 
     let out = render(&app);
     assert!(out.contains("select a file to read"), "the empty All files left pane copy:\n{out}");
@@ -720,8 +674,6 @@ fn all_files_empty_pane_reads_select_a_file() {
 fn renders_a_light_theme_without_panic() {
     let mut app = edited_app();
     app.set_cli_theme(Some("catppuccin-latte".to_string()));
-    // Driving the full render path with a derived light palette must not panic, and a Latte
-    // color (the focused pane's lavender border) reaches the painted buffer.
     let buf = render_buffer(&app);
     let latte_lavender = herdr_reviewr::theme::resolve(Some("catppuccin-latte")).palette.lavender;
     let painted = (0..40)
@@ -730,7 +682,6 @@ fn renders_a_light_theme_without_panic() {
     assert!(painted, "the Latte palette reaches the painted buffer");
 }
 
-/// A repo on `feature` with two commits atop `main`, for commit-picker rendering.
 fn commit_render_app() -> (Repo, App) {
     let r = Repo::init();
     r.write("base.rs", "0\n");
@@ -759,7 +710,7 @@ fn the_commit_picker_lists_hashes_and_titles() {
 fn the_commit_chip_shows_the_selected_commit() {
     let (_r, mut app) = commit_render_app();
     app.open_commit_picker();
-    app.pick_commit(1).unwrap(); // a historical commit (not the tip): "add alpha feature"
+    app.pick_commit(1).unwrap();
     let out = render(&app);
     assert!(
         out.contains(&format!("[>{}", app.commit_choices[1].short)),
@@ -785,7 +736,6 @@ fn entering_commit_scope_defaults_to_the_tip_without_the_picker() {
 
 #[test]
 fn icons_show_folder_and_file_glyphs_when_enabled() {
-    // Two files under src/ so the directory isn't folded into its single child.
     let r = Repo::init();
     r.write("src/a.rs", "1\n");
     r.write("src/b.rs", "2\n");
@@ -860,13 +810,11 @@ fn the_status_marker_sits_in_a_left_gutter_that_aligns_rows() {
     r.write("aaa.rs", "1\n");
     r.write("bbb.rs", "1\n");
     r.commit_all("init");
-    r.write("aaa.rs", "2\n"); // aaa.rs modified; bbb.rs unchanged
+    r.write("aaa.rs", "2\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
-    app.set_tab(Tab::AllFiles).unwrap(); // shows changed and unchanged files together
+    app.set_tab(Tab::AllFiles).unwrap();
 
     let out = render(&app);
-    // Find each name in the file-list pane (rightmost occurrence; skip the diff pane's title
-    // border), as a character column so multibyte box-drawing on the left doesn't skew it.
     let column_of = |name: &str| -> (String, usize) {
         let line = out
             .lines()
@@ -879,7 +827,6 @@ fn the_status_marker_sits_in_a_left_gutter_that_aligns_rows() {
     let (a_line, a_col) = column_of("aaa.rs");
     let (_b_line, b_col) = column_of("bbb.rs");
     assert_eq!(a_col, b_col, "the fixed gutter keeps the changed and unchanged names aligned");
-    // Gutter layout is `M│` before the name: marker then rule.
     let chars: Vec<char> = a_line.chars().collect();
     assert_eq!(chars[a_col - 2], 'M', "the M marker leads the gutter");
     assert_eq!(chars[a_col - 1], '│', "a vertical rule closes the gutter");
