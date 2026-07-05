@@ -1813,43 +1813,28 @@ impl App {
         let (lo, hi) = self.selection_range();
         let selected: Vec<&Row> = self.visible.get(lo..=hi)?.iter().collect();
         let (side, start, end) = anchor_range(&selected)?;
+        // Capture exactly the selected lines. On the Changes diff keep each line's `+/-`/space
+        // marker (a real unified-diff snippet); in the File view (All files) it's plain code.
         let lines = if self.diff.view == View::Diff {
-            // Widen to the enclosing hunk (bounded by folds) so the snippet carries the actual git
-            // change — the `-old`/`+new` lines and their context — not just the one clicked line.
-            let (a, b) = self.enclosing_hunk(lo, hi);
-            self.visible[a..=b]
+            selected
                 .iter()
+                .copied()
                 .filter(|r| r.is_content())
                 .map(Row::marker_text)
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {
-            // File view (All files): plain content of the anchored side, no markers.
-            let has_new = selected.iter().filter(|r| r.is_content()).any(|r| r.new_no().is_some());
+            let has_new = selected.iter().any(|r| r.is_content() && r.new_no().is_some());
             let pick: fn(&Row) -> Option<u32> = if has_new { Row::new_no } else { Row::old_no };
             selected
                 .iter()
+                .copied()
                 .filter(|r| r.is_content() && pick(r).is_some())
-                .map(|r| r.text())
+                .map(Row::text)
                 .collect::<Vec<_>>()
                 .join("\n")
         };
         Some((side, start, end, lines))
-    }
-
-    /// The bounds in `visible` of the hunk enclosing `[lo, hi]`: expand outward while the
-    /// neighbouring row is diff content, stopping at folds and the file edges.
-    fn enclosing_hunk(&self, lo: usize, hi: usize) -> (usize, usize) {
-        let last = self.visible.len().saturating_sub(1);
-        let mut a = lo.min(last);
-        while a > 0 && self.visible[a - 1].is_content() {
-            a -= 1;
-        }
-        let mut b = hi.min(last);
-        while b < last && self.visible[b + 1].is_content() {
-            b += 1;
-        }
-        (a, b)
     }
 
     fn build_comment(&self, text: String) -> Option<Comment> {

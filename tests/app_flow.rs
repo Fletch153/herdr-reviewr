@@ -1756,9 +1756,8 @@ fn anchor_stamps_scope_base_and_keeps_the_diff_marker() {
 
     let c = app.store.get(0).expect("a comment was made");
     assert_eq!(c.side, Side::New);
-    // The hunk snapshot carries both sides of the one-line change.
-    assert!(c.lines.contains("+fn main() { work(); }"), "keeps the added side: {:?}", c.lines);
-    assert!(c.lines.contains("-fn main() {}"), "and the removed side: {:?}", c.lines);
+    // Only the selected line is captured, with its `+` diff marker — not the whole hunk.
+    assert_eq!(c.lines, "+fn main() { work(); }", "just the selected added line, marked");
     assert_eq!(c.scope, Scope::Commit, "stamped with the authoring scope");
     assert_eq!(c.base.as_deref(), app.selected_commit.as_deref(), "and the diff base");
     assert!(!c.sent, "a fresh comment starts un-sent");
@@ -2008,7 +2007,7 @@ fn the_send_count_ignores_already_sent_comments() {
 }
 
 #[test]
-fn a_changes_snippet_captures_both_sides_of_the_hunk() {
+fn a_changes_snippet_captures_only_the_selected_lines() {
     let r = Repo::init();
     r.write("a.rs", "keep1\nold\nkeep2\n");
     r.commit_all("init");
@@ -2016,12 +2015,10 @@ fn a_changes_snippet_captures_both_sides_of_the_hunk() {
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
     goto_file(&mut app, "a.rs");
-    comment_on(&mut app, '+', "why the change?"); // click only the +new line
+    comment_on(&mut app, '+', "why the change?"); // select only the +new line
 
     let c = app.store.get(0).unwrap();
-    assert!(c.lines.lines().any(|l| l == "-old"), "captures the removed side: {:?}", c.lines);
-    assert!(c.lines.lines().any(|l| l == "+new"), "and the added side: {:?}", c.lines);
-    assert!(c.lines.lines().any(|l| l == " keep1"), "with surrounding context: {:?}", c.lines);
+    assert_eq!(c.lines, "+new", "just the selected line, with its marker — not the surrounding hunk");
 }
 
 #[test]
