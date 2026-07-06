@@ -110,6 +110,8 @@ struct NvimSession {
     last_sent: Option<String>,
     /// The diff base last published to the editor; a scope/base change re-diffs in place.
     last_base: Option<String>,
+    /// Whether the last-published view was focused (Changes) or plain (All files).
+    last_focus: Option<bool>,
     /// Each death grants one automatic respawn on the next open; after that the dead panel's
     /// `r` restarts manually (a crash-looping nvim must not spin).
     auto_respawned: bool,
@@ -227,10 +229,12 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     }
     let Some(rel) = app.diff_path.clone() else { return };
     let base = app.nvim_base_ref();
+    let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);
     let same_path = session.last_sent.as_deref() == Some(rel.as_str());
     let same_base = session.last_base.as_deref() == Some(base.as_str());
-    if !force && same_path && same_base {
+    let same_focus = session.last_focus == Some(focus);
+    if !force && same_path && same_base && same_focus {
         return;
     }
     if session.engine_alive().is_none() {
@@ -252,14 +256,13 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     }
     if let Some(engine) = session.engine_alive() {
         if !force && same_path && app.repo.join(&rel).exists() {
-            // Only the scope/base moved: re-diff the open buffer, no :edit (which would
-            // prompt on a modified buffer for no reason).
-            let _ = engine.rebase(&base);
+            // Only the scope/base or the tab's presentation moved: sync the open buffer in
+            // place, no :edit (which would prompt on a modified buffer for no reason).
+            let _ = engine.sync_view(&base, focus);
         } else if app.repo.join(&rel).exists() {
             // The Changes tab opens into the focused view (unchanged regions folded, cursor
             // on the first change — the diff-pane experience); All files opens plain.
-            let _ =
-                engine.open_file(&app.repo.join(&rel), &base, app.tab == crate::app::Tab::Changes);
+            let _ = engine.open_file(&app.repo.join(&rel), &base, focus);
             session.last_sent = Some(rel);
         } else {
             // Deleted in the worktree: an all-red scratch view of the base content, never a
@@ -268,6 +271,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             session.last_sent = Some(rel);
         }
         session.last_base = Some(base);
+        session.last_focus = Some(focus);
     }
 }
 

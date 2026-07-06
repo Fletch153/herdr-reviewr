@@ -125,11 +125,13 @@ fn open_file_command(abs: &Path, base: &str, focus_changes: bool) -> String {
     )
 }
 
-/// The scope-changed payload (same file stays open): publish the new base and re-diff the
-/// current buffer in place, refreshing any active review folds.
-fn rebase_command(base: &str) -> String {
+/// The same-file view-sync payload (scope/base or tab changed): publish the new base and put
+/// the open buffer in the right presentation — focused (Changes: marks + folds) or plain
+/// (All files: the file as it exists now, undecorated).
+fn sync_view_command(base: &str, focused: bool) -> String {
     format!(
-        "let g:reviewr_base='{}' | silent! checktime | lua require('reviewr.diff').rebase()",
+        "let g:reviewr_base='{}' | silent! checktime \
+         | lua require('reviewr.diff').set_view({focused})",
         sq(base)
     )
 }
@@ -325,10 +327,10 @@ impl Nvim {
         self.command_fire(&open_file_command(abs, base, focus_changes))
     }
 
-    /// The reviewer's scope changed while the same file stays open: publish the new diff base
-    /// and re-diff in place.
-    pub fn rebase(&self, base: &str) -> Result<(), RpcFailure> {
-        self.command_fire(&rebase_command(base))
+    /// The reviewer's scope or tab changed while the same file stays open: publish the new
+    /// diff base and switch the buffer's presentation in place.
+    pub fn sync_view(&self, base: &str, focused: bool) -> Result<(), RpcFailure> {
+        self.command_fire(&sync_view_command(base, focused))
     }
 
     /// Show a file that no longer exists in the worktree as the base's all-red scratch view.
@@ -560,11 +562,16 @@ mod tests {
     }
 
     #[test]
-    fn rebase_command_publishes_the_base_and_rediffs() {
+    fn sync_view_command_publishes_the_base_and_presentation() {
         assert_eq!(
-            rebase_command("deadbeef"),
+            sync_view_command("deadbeef", true),
             "let g:reviewr_base='deadbeef' | silent! checktime \
-             | lua require('reviewr.diff').rebase()"
+             | lua require('reviewr.diff').set_view(true)"
+        );
+        assert_eq!(
+            sync_view_command("HEAD", false),
+            "let g:reviewr_base='HEAD' | silent! checktime \
+             | lua require('reviewr.diff').set_view(false)"
         );
     }
 

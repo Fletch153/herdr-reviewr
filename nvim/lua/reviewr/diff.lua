@@ -44,7 +44,9 @@ M._hunks = {}
 local CONTEXT = 3
 
 -- Recompute and repaint the diff markers for `bufnr` (default: current). A no-op on scratch/
--- unnamed buffers; clears markers when there is no base (new file) so stale paint never lingers.
+-- unnamed buffers; a buffer in plain mode (opened from All files — the file as it exists now,
+-- undecorated) keeps no marks at all; clears markers when there is no base (new file) so stale
+-- paint never lingers.
 function M.refresh(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) or vim.bo[bufnr].buftype ~= "" then
@@ -56,6 +58,9 @@ function M.refresh(bufnr)
   end
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
   M._hunks[bufnr] = {}
+  if vim.b[bufnr].reviewr_plain then
+    return
+  end
   local rel = vim.fn.fnamemodify(abs, ":.") -- relative to cwd; the review pane's cwd is the repo root
   local base = base_lines(rel)
   if not base then
@@ -139,14 +144,7 @@ end
 -- The Changes-tab view: fold unchanged regions away (the reviewer's hunk view, vim-native —
 -- `zR`/`zo` reveal the rest) and land the cursor on the first change. A no-op for a file with
 -- no changes vs the base.
-function M.focus()
-  local bufnr = vim.api.nvim_get_current_buf()
-  M.refresh(bufnr)
-  local ranges = M._hunks[bufnr]
-  if not ranges or #ranges == 0 then
-    return
-  end
-  local win = vim.api.nvim_get_current_win()
+local function apply_folds(win)
   local function setw(name, value)
     vim.api.nvim_set_option_value(name, value, { win = win })
   end
@@ -155,8 +153,46 @@ function M.focus()
   setw("foldtext", "v:lua.require'reviewr.diff'.foldtext()")
   setw("foldenable", true)
   setw("foldlevel", 0)
+end
+
+-- Drop our expression folds (and only ours — a user-configured foldmethod is left alone).
+local function drop_folds(win)
+  local expr = vim.api.nvim_get_option_value("foldexpr", { win = win })
+  if expr:find("reviewr", 1, true) then
+    vim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
+    vim.api.nvim_set_option_value("foldenable", false, { win = win })
+  end
+end
+
+function M.focus()
+  local bufnr = vim.api.nvim_get_current_buf()
+  vim.b[bufnr].reviewr_plain = false
+  M.refresh(bufnr)
+  local ranges = M._hunks[bufnr]
+  if not ranges or #ranges == 0 then
+    return
+  end
+  local win = vim.api.nvim_get_current_win()
+  apply_folds(win)
   local first = math.min(ranges[1].lo, vim.api.nvim_buf_line_count(bufnr))
   vim.api.nvim_win_set_cursor(win, { first, 0 })
+end
+
+-- Switch the current buffer between the review presentations without moving the cursor:
+-- focused (Changes — marks + folds) or plain (All files — the file exactly as it exists now,
+-- no decoration). Also the scope-changed re-diff path, hence the fold recompute (`zx`).
+function M.set_view(focused)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
+  vim.b[bufnr].reviewr_plain = not focused
+  M.refresh(bufnr) -- plain: clears every mark; focused: repaints vs the current base
+  local ranges = M._hunks[bufnr]
+  if focused and ranges and #ranges > 0 then
+    apply_folds(win)
+    vim.cmd("silent! normal! zx")
+  else
+    drop_folds(win)
+  end
 end
 
 -- Show a file that exists only in the base (deleted in the worktree) as a read-only, all-red
@@ -192,30 +228,14 @@ end
 -- The reviewer's scope/base changed while this file stays open: re-diff against the new base
 -- and, when our review folds are active, recompute them for the new hunks (`zx` re-evaluates
 -- expression folds); the cursor stays put.
-function M.rebase()
-  local bufnr = vim.api.nvim_get_current_buf()
-  M.refresh(bufnr)
-  local win = vim.api.nvim_get_current_win()
-  local expr = vim.api.nvim_get_option_value("foldexpr", { win = win })
-  if expr:find("reviewr", 1, true) then
-    local ranges = M._hunks[bufnr]
-    if not ranges or #ranges == 0 then
-      M.unfocus() -- nothing changed vs the new base: show the plain file
-    else
-      vim.cmd("silent! normal! zx")
-    end
-  end
-end
-
--- Leave the focused view when a file is opened outside the Changes tab: drop our folds (and
--- only ours — a user-configured foldmethod is left alone).
+-- Leave the focused view when a file is opened outside the Changes tab: mark the buffer
+-- plain (no diff decoration — All files shows the file as it exists now), clear its marks,
+-- and drop our folds (and only ours — a user-configured foldmethod is left alone).
 function M.unfocus()
-  local win = vim.api.nvim_get_current_win()
-  local expr = vim.api.nvim_get_option_value("foldexpr", { win = win })
-  if expr:find("reviewr", 1, true) then
-    vim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
-    vim.api.nvim_set_option_value("foldenable", false, { win = win })
-  end
+  local bufnr = vim.api.nvim_get_current_buf()
+  vim.b[bufnr].reviewr_plain = true
+  M.refresh(bufnr) -- plain flag set: clears the buffer's marks
+  drop_folds(vim.api.nvim_get_current_win())
 end
 
 -- Install the autocmd that keeps the markers current. Scoped to review-mode nvim because this

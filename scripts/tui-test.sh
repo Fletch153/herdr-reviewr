@@ -161,6 +161,21 @@ keys j # zz_new.txt (sorts last)
 wait_for "NFXALPHA one"
 frame | grep -q "+ NFXALPHA" || fail "added file lacks the + add signs"
 ok "added file renders fully green"
+
+# 8b. All files shows the file as it exists now — no diff decoration; Changes re-decorates.
+keys 2 # All files tab (tree starts collapsed)
+sleep 0.5
+keys Right # expand src/
+sleep 0.3
+keys j
+keys j
+keys j # zz_new.txt in the full tree (src/ dir, hello, other, zz_new)
+wait_for "NFXALPHA one"
+wait_gone "+ NFXALPHA" # marks clear once the plain open repaints
+ok "All files renders the plain file (no diff marks)"
+keys 1 # back to Changes: the same buffer re-decorates in place
+wait_for "+ NFXALPHA"
+ok "Changes re-decorates the same buffer"
 keys k # back past the deleted file...
 wait_for "UGONE alpha"
 keys k # ...to the second file for the comment flow
