@@ -113,12 +113,19 @@ struct NvimSession {
     auto_respawned: bool,
     /// A left-button press landed in the grid, so drags/release route to nvim.
     mouse_down: bool,
+    /// The colorscheme leaves `Normal` without a background: the blit paints the terminal
+    /// default instead of nvim's reported black, so transparent themes (e.g. catppuccin's
+    /// `transparent_background`) look exactly as they do in a plain terminal nvim. Sampled
+    /// once per engine start; a mid-session `:colorscheme` change refreshes on restart.
+    transparent: bool,
 }
 
 impl NvimSession {
     fn start(&mut self, repo: &Path, cols: u16, rows: u16) -> anyhow::Result<()> {
         let opts = nvim::StartOpts { clean: false, rtp: nvim::plugin_nvim_dir() };
-        self.engine = Some(nvim::Nvim::start(repo, cols, rows, &opts)?);
+        let mut engine = nvim::Nvim::start(repo, cols, rows, &opts)?;
+        self.transparent = engine.normal_bg_transparent().unwrap_or(false);
+        self.engine = Some(engine);
         self.last_size = Some((cols, rows));
         self.last_sent = None;
         Ok(())
@@ -354,7 +361,9 @@ fn event_loop(
         app.nvim_dead = app.editor_nvim && session.engine_alive().is_none();
         let view = if app.editor_nvim {
             Some(match &session.engine {
-                Some(e) if e.is_running() => ui::NvimView::Grid(e),
+                Some(e) if e.is_running() => {
+                    ui::NvimView::Grid { engine: e, transparent: session.transparent }
+                }
                 Some(e) => ui::NvimView::Dead(e.died()),
                 None => ui::NvimView::Dead(None),
             })

@@ -26,7 +26,12 @@ use crate::theme::Palette;
 /// only during the blit), a startup placeholder, or the dead-editor panel with a reason.
 #[derive(Debug)]
 pub enum NvimView<'a> {
-    Grid(&'a crate::nvim::Nvim),
+    Grid {
+        engine: &'a crate::nvim::Nvim,
+        /// The colorscheme's `Normal` has no background: paint the terminal default under the
+        /// cells (matching how a transparent theme looks in a plain terminal nvim).
+        transparent: bool,
+    },
     Starting,
     Dead(Option<String>),
 }
@@ -924,7 +929,9 @@ fn render_nvim_view(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>>, a
         return;
     }
     match nvim {
-        Some(NvimView::Grid(engine)) => blit_nvim_grid(frame, app, engine, inner),
+        Some(NvimView::Grid { engine, transparent }) => {
+            blit_nvim_grid(frame, app, engine, *transparent, inner);
+        }
         Some(NvimView::Starting) | None => {
             let msg = Paragraph::new(Line::from(Span::styled(
                 "starting nvim…",
@@ -973,11 +980,20 @@ fn render_nvim_view(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>>, a
 /// marked skip. nvim's own default colors fill the rect (no reviewer bg underneath — the
 /// border row is the themed seam), which also covers resize transients where grid and rect
 /// briefly disagree.
-fn blit_nvim_grid(frame: &mut Frame, app: &App, engine: &crate::nvim::Nvim, inner: Rect) {
+fn blit_nvim_grid(
+    frame: &mut Frame,
+    app: &App,
+    engine: &crate::nvim::Nvim,
+    transparent: bool,
+    inner: Rect,
+) {
     use crate::nvim::CellText;
     let grid = engine.grid();
     let fg_def = rgb(grid.default_fg);
-    let bg_def = rgb(grid.default_bg);
+    // A transparent theme (Normal without a bg) means "the terminal's background shows
+    // through" — nvim reports black in that case, so substitute the terminal default and the
+    // embedded editor blends like a plain terminal nvim.
+    let bg_def = if transparent { Color::Reset } else { rgb(grid.default_bg) };
     let buf = frame.buffer_mut();
     for y in inner.top()..inner.bottom() {
         for x in inner.left()..inner.right() {

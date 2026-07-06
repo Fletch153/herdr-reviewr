@@ -288,6 +288,15 @@ impl Nvim {
         self.command_fire(&open_file_command(abs))
     }
 
+    /// Whether the colorscheme leaves `Normal` without a background (a "transparent" theme,
+    /// e.g. catppuccin's `transparent_background`). In a terminal that means "show the
+    /// terminal's background"; an embedded UI would render it black, so the blit substitutes
+    /// the terminal default instead. Sampled after startup (requests queue behind config
+    /// sourcing, so the user's colorscheme has applied by the time this answers).
+    pub fn normal_bg_transparent(&mut self) -> Result<bool, RpcFailure> {
+        self.eval("empty(synIDattr(hlID('Normal'), 'bg#'))").map(|v| v.as_i64().unwrap_or(0) != 0)
+    }
+
     /// Stop the editor. `force`: `qa!` then reap — always succeeds. Non-force: `confirm qall`;
     /// if nvim is still alive after the grace (a save-prompt is showing), returns `Timeout` and
     /// leaves the pane interactive so the user can answer.
