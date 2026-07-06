@@ -2584,6 +2584,20 @@ impl App {
 
     /// The actions the footer offers for the current context, most-relevant first, each tagged
     /// with its visual tier. Pure — a context → action mapping, unit-tested without a terminal.
+    /// The ref the embedded editor's inline diff compares against — the same old side
+    /// [`Self::content_sides`] gives the built-in diff pane: the merge-base on the branch
+    /// scope, the turn-baseline tree on last-turn, the selected commit (else `HEAD`) on the
+    /// commit scope. Always `git show <ref>:<path>`-resolvable.
+    #[must_use]
+    pub fn nvim_base_ref(&self) -> String {
+        match self.scope {
+            Scope::Branch => git::merge_base(&self.repo, self.resolved_base.as_deref()),
+            Scope::LastTurn => self.turn.baseline().map(str::to_owned),
+            Scope::Commit => self.resolved_base.clone(),
+        }
+        .unwrap_or_else(|| "HEAD".to_string())
+    }
+
     /// The renderer maps each to a key+label, styles it by tier, and drops the least relevant
     /// (orientation first) to fit one line (`specs/tui.md`).
     #[must_use]

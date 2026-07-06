@@ -11,6 +11,10 @@ local agent = require("reviewr.agent")
 -- The git ref the diff/changed-file views compare against. v1 uses HEAD (the reviewer's default
 -- Commit@HEAD): shows uncommitted work as red/green.
 local function base_ref()
+  local b = vim.g.reviewr_base
+  if type(b) == "string" and b ~= "" then
+    return b
+  end
   return "HEAD"
 end
 

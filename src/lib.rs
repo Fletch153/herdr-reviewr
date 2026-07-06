@@ -108,6 +108,8 @@ struct NvimSession {
     last_size: Option<(u16, u16)>,
     /// Repo-relative path last opened — the per-frame watcher's change detector.
     last_sent: Option<String>,
+    /// The diff base last published to the editor; a scope/base change re-diffs in place.
+    last_base: Option<String>,
     /// Each death grants one automatic respawn on the next open; after that the dead panel's
     /// `r` restarts manually (a crash-looping nvim must not spin).
     auto_respawned: bool,
@@ -214,18 +216,21 @@ fn request_quit(app: &mut App, session: &mut dyn NvimBridge) {
     }
 }
 
-/// Make the editor follow the reviewer's selection: open `diff_path` in nvim when it changes
-/// (or a click re-requested it), respawning a dead editor once per death. `:confirm edit`'s
-/// unsaved prompt renders inside the grid; `last_sent` is set optimistically so the watcher
-/// never re-sends against a showing prompt — a cancel is the user's call, and re-clicking the
-/// file retries via `nvim_reopen`.
+/// Make the editor follow the reviewer's selection and scope: open `diff_path` in nvim when it
+/// changes (or a click re-requested it), re-diff in place when only the scope/base changed, and
+/// respawn a dead editor once per death. `:confirm edit`'s unsaved prompt renders inside the
+/// grid; `last_sent` is set optimistically so the watcher never re-sends against a showing
+/// prompt — a cancel is the user's call, and re-clicking the file retries via `nvim_reopen`.
 fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     if !app.editor_nvim || !app.tab.is_file_tab() {
         return;
     }
     let Some(rel) = app.diff_path.clone() else { return };
+    let base = app.nvim_base_ref();
     let force = std::mem::take(&mut app.nvim_reopen);
-    if !force && session.last_sent.as_deref() == Some(rel.as_str()) {
+    let same_path = session.last_sent.as_deref() == Some(rel.as_str());
+    let same_base = session.last_base.as_deref() == Some(base.as_str());
+    if !force && same_path && same_base {
         return;
     }
     if session.engine_alive().is_none() {
@@ -246,10 +251,18 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         session.auto_respawned = false;
     }
     if let Some(engine) = session.engine_alive() {
-        // The Changes tab opens into the focused view (unchanged regions folded, cursor on the
-        // first change — the diff-pane experience); All files opens plain.
-        let _ = engine.open_file(&app.repo.join(&rel), app.tab == crate::app::Tab::Changes);
-        session.last_sent = Some(rel);
+        if !force && same_path {
+            // Only the scope/base moved: re-diff the open buffer, no :edit (which would
+            // prompt on a modified buffer for no reason).
+            let _ = engine.rebase(&base);
+        } else {
+            // The Changes tab opens into the focused view (unchanged regions folded, cursor
+            // on the first change — the diff-pane experience); All files opens plain.
+            let _ =
+                engine.open_file(&app.repo.join(&rel), &base, app.tab == crate::app::Tab::Changes);
+            session.last_sent = Some(rel);
+        }
+        session.last_base = Some(base);
     }
 }
 

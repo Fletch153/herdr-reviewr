@@ -64,7 +64,7 @@ fn open_file_renders_and_modified_flag_tracks() {
     // Open from insert mode: the payload's `stopinsert` prefix must normalize it first.
     nv.input("i").unwrap();
     wait_for(&mut nv, "insert mode", |nv| nv.grid().mode.starts_with("insert"));
-    nv.open_file(&file, false).unwrap();
+    nv.open_file(&file, "HEAD", false).unwrap();
     wait_for(&mut nv, "file contents", |nv| grid_contains(nv, "sentinel-content"));
     wait_for(&mut nv, "unmodified flag", |nv| {
         nv.eval("&modified").ok().and_then(|v| v.as_i64()) == Some(0)

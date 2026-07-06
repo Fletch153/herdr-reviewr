@@ -7,9 +7,14 @@
 local M = {}
 local ns = vim.api.nvim_create_namespace("reviewr_diff")
 
--- The base ref the diff compares against. v1 uses HEAD — the reviewer's default Commit@HEAD scope,
--- i.e. uncommitted work shows as changes. (Overridable later if the reviewer passes its scope.)
+-- The git ref the diff compares against: the reviewer publishes its scope's old side into
+-- `g:reviewr_base` with every open/scope change (branch merge-base, turn-baseline tree,
+-- picked commit); `HEAD` covers standalone nvim use.
 local function base_ref()
+  local b = vim.g.reviewr_base
+  if type(b) == "string" and b ~= "" then
+    return b
+  end
   return vim.env.REVIEWR_BASE or "HEAD"
 end
 
@@ -145,6 +150,24 @@ function M.focus()
   setw("foldlevel", 0)
   local first = math.min(ranges[1].lo, vim.api.nvim_buf_line_count(bufnr))
   vim.api.nvim_win_set_cursor(win, { first, 0 })
+end
+
+-- The reviewer's scope/base changed while this file stays open: re-diff against the new base
+-- and, when our review folds are active, recompute them for the new hunks (`zx` re-evaluates
+-- expression folds); the cursor stays put.
+function M.rebase()
+  local bufnr = vim.api.nvim_get_current_buf()
+  M.refresh(bufnr)
+  local win = vim.api.nvim_get_current_win()
+  local expr = vim.api.nvim_get_option_value("foldexpr", { win = win })
+  if expr:find("reviewr", 1, true) then
+    local ranges = M._hunks[bufnr]
+    if not ranges or #ranges == 0 then
+      M.unfocus() -- nothing changed vs the new base: show the plain file
+    else
+      vim.cmd("silent! normal! zx")
+    end
+  end
 end
 
 -- Leave the focused view when a file is opened outside the Changes tab: drop our folds (and

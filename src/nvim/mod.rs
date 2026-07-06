@@ -102,19 +102,36 @@ fn spawn_command(repo: &Path, opts: &StartOpts) -> Command {
     cmd
 }
 
+/// Double single quotes for a vimscript `'…'` string literal.
+fn sq(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 /// The `:confirm edit` command payload for `abs`: `fnameescape` (computed inside nvim) handles
 /// vim-special characters, so only single quotes need doubling for the outer vimscript string;
-/// `stopinsert` first normalizes insert mode so the Ex command lands cleanly. With
-/// `focus_changes` (the Changes tab) the open lands in reviewr.nvim's focused view — unchanged
+/// `stopinsert` first normalizes insert mode so the Ex command lands cleanly. The payload also
+/// publishes the reviewer's diff `base` ref for reviewr.nvim's inline diff (the reviewer's
+/// scope decides it — branch merge-base, turn baseline, picked commit) and runs a silenced
+/// `checktime` so files the agent rewrote reload instead of raising "file changed" prompts.
+/// With `focus_changes` (the Changes tab) the open lands in the focused view — unchanged
 /// regions folded, cursor on the first change; otherwise any focused-view folds are dropped.
-fn open_file_command(abs: &Path, focus_changes: bool) -> String {
-    let path = abs.to_string_lossy().replace('\'', "''");
-    let tail = if focus_changes {
-        " | lua require('reviewr.diff').focus()"
-    } else {
-        " | lua require('reviewr.diff').unfocus()"
-    };
-    format!("stopinsert | exe 'confirm edit ' . fnameescape('{path}'){tail}")
+fn open_file_command(abs: &Path, base: &str, focus_changes: bool) -> String {
+    let path = sq(&abs.to_string_lossy());
+    let tail = if focus_changes { "focus" } else { "unfocus" };
+    format!(
+        "let g:reviewr_base='{}' | silent! checktime | stopinsert \
+         | exe 'confirm edit ' . fnameescape('{path}') | lua require('reviewr.diff').{tail}()",
+        sq(base)
+    )
+}
+
+/// The scope-changed payload (same file stays open): publish the new base and re-diff the
+/// current buffer in place, refreshing any active review folds.
+fn rebase_command(base: &str) -> String {
+    format!(
+        "let g:reviewr_base='{}' | silent! checktime | lua require('reviewr.diff').rebase()",
+        sq(base)
+    )
 }
 
 struct RpcResponse {
@@ -291,8 +308,14 @@ impl Nvim {
 
     /// Show `abs` in the editor, prompting on unsaved changes (`:confirm edit`, fire-and-forget
     /// by design — the prompt renders in the grid and forwarded keys answer it).
-    pub fn open_file(&self, abs: &Path, focus_changes: bool) -> Result<(), RpcFailure> {
-        self.command_fire(&open_file_command(abs, focus_changes))
+    pub fn open_file(&self, abs: &Path, base: &str, focus_changes: bool) -> Result<(), RpcFailure> {
+        self.command_fire(&open_file_command(abs, base, focus_changes))
+    }
+
+    /// The reviewer's scope changed while the same file stays open: publish the new diff base
+    /// and re-diff in place.
+    pub fn rebase(&self, base: &str) -> Result<(), RpcFailure> {
+        self.command_fire(&rebase_command(base))
     }
 
     /// Whether the colorscheme leaves `Normal` without a background (a "transparent" theme,
@@ -503,16 +526,27 @@ mod tests {
     #[test]
     fn open_file_command_confirm_edits_via_fnameescape() {
         assert_eq!(
-            open_file_command(Path::new("/repo/src/a b.rs"), true),
-            "stopinsert | exe 'confirm edit ' . fnameescape('/repo/src/a b.rs') \
+            open_file_command(Path::new("/repo/src/a b.rs"), "abc123", true),
+            "let g:reviewr_base='abc123' | silent! checktime | stopinsert \
+             | exe 'confirm edit ' . fnameescape('/repo/src/a b.rs') \
              | lua require('reviewr.diff').focus()"
         );
         // Single quotes double for the vimscript string literal; a non-Changes open drops the
         // focused view instead of entering it.
         assert_eq!(
-            open_file_command(Path::new("/repo/o'brien.rs"), false),
-            "stopinsert | exe 'confirm edit ' . fnameescape('/repo/o''brien.rs') \
+            open_file_command(Path::new("/repo/o'brien.rs"), "HEAD", false),
+            "let g:reviewr_base='HEAD' | silent! checktime | stopinsert \
+             | exe 'confirm edit ' . fnameescape('/repo/o''brien.rs') \
              | lua require('reviewr.diff').unfocus()"
+        );
+    }
+
+    #[test]
+    fn rebase_command_publishes_the_base_and_rediffs() {
+        assert_eq!(
+            rebase_command("deadbeef"),
+            "let g:reviewr_base='deadbeef' | silent! checktime \
+             | lua require('reviewr.diff').rebase()"
         );
     }
 }
