@@ -151,7 +151,10 @@ keys j # uu_gone.txt (deleted)
 wait_for "UGONE alpha"
 frame | grep -q "_ UGONE" || fail "deleted file lacks the _ deletion signs"
 frame | grep -q "New File" && fail "deleted file opened as a phantom [New File]"
-ok "deleted file renders as the red base view"
+# The list row for a scope-deleted file strikes through its name (SGR 9).
+$TMUX capture-pane -pet0 | grep "uu_gone" | grep -qE '(\[|;)9m' \
+  || fail "deleted file's list row lacks strikethrough"
+ok "deleted file renders as the red base view (struck through in the list)"
 
 # 5c. An added (untracked) file is fully green: every line carries the "+" add sign.
 keys j # zz_new.txt (sorts last)

@@ -725,9 +725,19 @@ fn file_row_item(row: FileRow) -> ListItem<'static> {
         spans.push(Span::styled(dim.to_string(), Style::default().fg(p.overlay0)));
     }
     // A git-ignored file recedes into a dim basename; its change marker and stats keep their
-    // color so a kept ignored file still reads as a change (file-list.md).
-    let base_style =
-        if ignored || reviewed { Style::default().fg(p.overlay0) } else { text_style(p) };
+    // color so a kept ignored file still reads as a change (file-list.md). A file the SCOPE
+    // deletes (committed or not) greys out and strikes through — the list-level "this is gone"
+    // idiom. Deliberately keyed on the scope annotation, not git status: the marker column
+    // stays a pure staging affordance, and a committed branch-deletion has nothing to stage.
+    let deleted = annotation.is_some_and(|a| a.change == crate::model::ChangeKind::Deleted);
+    let mut base_style = if ignored || reviewed || deleted {
+        Style::default().fg(p.overlay0)
+    } else {
+        text_style(p)
+    };
+    if deleted {
+        base_style = base_style.add_modifier(Modifier::CROSSED_OUT);
+    }
     spans.push(Span::styled(base.to_string(), base_style));
     if !stats.is_empty() {
         let used: usize = spans.iter().map(Span::width).sum();
