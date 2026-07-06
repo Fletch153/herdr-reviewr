@@ -21,7 +21,24 @@ fn herdr(args: &[&str]) -> Result<String> {
     if !out.status.success() {
         bail!("herdr {args:?} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    ok_or_api_error(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The herdr socket API reports failures as a JSON `{"error": {...}}` envelope on stdout *with a
+/// zero exit code* — e.g. a Send to a stale or non-agent pane returns `agent_not_found` and still
+/// exits 0. So the exit status alone can't be trusted: surface an error envelope as the failure it
+/// is, otherwise pass the output through unchanged (not every call returns JSON).
+fn ok_or_api_error(stdout: String) -> Result<String> {
+    if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&stdout)
+        && let Some(err) = obj.get("error")
+    {
+        let msg = err
+            .get("message")
+            .and_then(Value::as_str)
+            .map_or_else(|| err.to_string(), str::to_owned);
+        bail!("{msg}");
+    }
+    Ok(stdout)
 }
 
 /// The (tab, workspace, pane) id trio identifying this sidebar in the herdr environment.
@@ -107,6 +124,10 @@ fn sole_agent<'a>(
     let want = want?;
     let mut matches = agents
         .iter()
+        // Only real agents are send targets — herdr also lists plain shell/editor panes (no
+        // `agent` field, `agent_status` "unknown"), which must never be picked or counted toward
+        // ambiguity, or a Send lands in an editor instead of the agent's input.
+        .filter(|a| a.get("agent").is_some())
         .filter(|a| a.get(key).and_then(Value::as_str) == Some(want))
         .filter(|a| pane_id(a).as_deref() != me);
     let first = matches.next()?;
@@ -142,8 +163,32 @@ pub fn focus(pane: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_agents, pick_agent_pane, sole_pane};
+    use super::{ok_or_api_error, parse_agents, pick_agent_pane, sole_pane};
     use serde_json::{Value, json};
+
+    #[test]
+    fn an_error_envelope_fails_even_though_herdr_exits_zero() {
+        // `herdr agent send` to a stale/invalid pane returns this on stdout and exits 0.
+        let err = r#"{"error":{"code":"agent_not_found","message":"agent target x not found"},"id":"cli:agent:send"}"#;
+        let e = ok_or_api_error(err.to_string()).unwrap_err();
+        assert!(e.to_string().contains("not found"), "surfaces the herdr message: {e}");
+        // A normal result envelope and any non-JSON output pass through unchanged.
+        let ok = r#"{"result":{"agents":[]},"type":"agent_list"}"#;
+        assert_eq!(ok_or_api_error(ok.to_string()).unwrap(), ok);
+        assert_eq!(ok_or_api_error("plain".to_string()).unwrap(), "plain");
+    }
+
+    #[test]
+    fn a_non_agent_pane_in_the_tab_is_never_a_send_target() {
+        // A plain shell/editor pane (no `agent` field) shares our tab beside the real agent.
+        let code = json!({ "agent_status": "unknown", "pane_id": "w8:p9", "tab_id": "w8:t1", "workspace_id": "w8" });
+        let agents = vec![agent("w8:p1", "w8:t1", "w8"), code];
+        // It is ignored, so the real agent still resolves rather than looking ambiguous.
+        assert_eq!(
+            pick_agent_pane(&agents, Some("w8:t1"), Some("w8"), None),
+            Some("w8:p1".to_string())
+        );
+    }
 
     /// One agent entry shaped like the real `herdr agent list` output (api notes).
     fn agent(pane: &str, tab: &str, ws: &str) -> Value {
