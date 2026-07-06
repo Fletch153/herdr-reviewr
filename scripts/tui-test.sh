@@ -53,6 +53,8 @@ git -C "$REPO" add -A && git -C "$REPO" commit -qm base
 sed -i '1i uncommitted change ZQX' "$REPO/src/hello.txt"
 sed -i '/alpha filler 9/d' "$REPO/src/hello.txt" # a deletion: renders as a red virtual line
 printf 'uncommitted change ZQY\n' >> "$REPO/src/other.txt"
+# An untracked (added) file: absent from the base, must render fully green ("+" signs).
+printf 'NFXALPHA one\nNFXALPHA two\n' > "$REPO/src/zz_new.txt"
 
 # --- environment: stub herdr, plugin root = this checkout ---------------------------------
 export HERDR_BIN_PATH="$ROOT/nvim/tests/stub_herdr.sh"
@@ -137,7 +139,14 @@ ok "second file opens; the modified buffer hides in the background"
 keys k
 wait_for "XYZTEST"
 ok "unsaved edits survive the file switch"
-keys j # onto the second file again for the comment flow
+
+# 5b. An added (untracked) file is fully green: every line carries the "+" add sign.
+keys j
+keys j # zz_new.txt (sorts last)
+wait_for "NFXALPHA one"
+frame | grep -q "+ NFXALPHA" || fail "added file lacks the + add signs"
+ok "added file renders fully green"
+keys k # back to the second file for the comment flow
 wait_for "bravo line one"
 
 # 6. Comment flow inside nvim: focus the editor, space rc, type the note, Enter; the extmark

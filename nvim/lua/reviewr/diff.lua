@@ -18,14 +18,21 @@ local function base_ref()
   return vim.env.REVIEWR_BASE or "HEAD"
 end
 
--- The base blob's lines for `rel` at `base_ref()`, or nil when the file is untracked/new
--- (nothing to diff). Kept as a list so deleted lines can be rendered back as virtual lines.
+-- The base blob's lines for `rel` at `base_ref()`. A path absent from a resolvable base is an
+-- added/untracked file: diff against an empty base so the whole file shows green (the
+-- reviewer's semantics). nil only when the base itself doesn't resolve (no repo, bad ref) —
+-- then there is nothing meaningful to diff. Kept as a list so deleted lines can be rendered
+-- back as virtual lines.
 local function base_lines(rel)
   local out = vim.fn.systemlist({ "git", "show", base_ref() .. ":" .. rel })
-  if vim.v.shell_error ~= 0 then
-    return nil
+  if vim.v.shell_error == 0 then
+    return out
   end
-  return out
+  vim.fn.system({ "git", "rev-parse", "--verify", "--quiet", base_ref() .. "^{tree}" })
+  if vim.v.shell_error == 0 then
+    return {}
+  end
+  return nil
 end
 
 -- Changed line ranges per buffer ({ {lo, hi}, ... }, 1-based inclusive, buffer side), kept by
