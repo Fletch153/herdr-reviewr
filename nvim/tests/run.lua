@@ -70,6 +70,19 @@ check("yank marks comments sent", #comments.pending() == 0)
 comments.clear()
 check("clear empties the store", #comments.items == 0)
 
+-- The focused (Changes) view's fold expression: changed lines and their 3-line context stay
+-- visible (0); everything else folds (1); buffers without hunk data never fold.
+local diff = require("reviewr.diff")
+local dbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_set_current_buf(dbuf)
+diff._hunks[dbuf] = { { lo = 10, hi = 12 } }
+check("far-away lines fold", diff.foldexpr(3) == 1 and diff.foldexpr(20) == 1)
+check("context stays visible", diff.foldexpr(7) == 0 and diff.foldexpr(15) == 0)
+check("changed lines stay visible", diff.foldexpr(10) == 0 and diff.foldexpr(12) == 0)
+check("edge of context folds", diff.foldexpr(6) == 1 and diff.foldexpr(16) == 1)
+diff._hunks[dbuf] = {}
+check("no hunks, no folds", diff.foldexpr(3) == 0)
+
 -- agent.send resolves via the focused pane (the tab is otherwise ambiguous) and delivers the
 -- payload through the stub.
 local agent = require("reviewr.agent")

@@ -22,6 +22,14 @@ local function base_text(rel)
   return table.concat(out, "\n")
 end
 
+-- Changed line ranges per buffer ({ {lo, hi}, ... }, 1-based inclusive, buffer side), kept by
+-- `refresh` for the fold expression and the first-change jump.
+M._hunks = {}
+
+-- Unchanged lines further than this from a change fold away in the focused (Changes) view —
+-- the same context the reviewer's own diff pane shows.
+local CONTEXT = 3
+
 -- Recompute and repaint the diff markers for `bufnr` (default: current). A no-op on scratch/
 -- unnamed buffers; clears markers when there is no base (new file) so stale paint never lingers.
 function M.refresh(bufnr)
@@ -34,6 +42,7 @@ function M.refresh(bufnr)
     return
   end
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  M._hunks[bufnr] = {}
   local rel = vim.fn.fnamemodify(abs, ":.") -- relative to cwd; the review pane's cwd is the repo root
   local base = base_text(rel)
   if not base then
@@ -45,17 +54,20 @@ function M.refresh(bufnr)
     return
   end
   local last = vim.api.nvim_buf_line_count(bufnr)
+  local ranges = M._hunks[bufnr]
   for _, h in ipairs(hunks) do
     -- {start_a, count_a, start_b, count_b}: *_a is the base, *_b the buffer (1-based, 0 = at boundary).
     local count_a, start_b, count_b = h[2], h[3], h[4]
     if count_b == 0 then
       -- Pure deletion: no buffer line to mark, so flag the surviving line at the boundary.
-      local l = math.min(math.max(start_b, 1), last) - 1
-      vim.api.nvim_buf_set_extmark(bufnr, ns, l, 0, {
+      local l = math.min(math.max(start_b, 1), last)
+      ranges[#ranges + 1] = { lo = l, hi = l }
+      vim.api.nvim_buf_set_extmark(bufnr, ns, l - 1, 0, {
         sign_text = "_",
         sign_hl_group = "DiffDelete",
       })
     else
+      ranges[#ranges + 1] = { lo = start_b, hi = start_b + count_b - 1 }
       local added = count_a == 0
       local sign = added and "+" or "~"
       local hl = added and "DiffAdd" or "DiffChange"
@@ -70,6 +82,60 @@ function M.refresh(bufnr)
         end
       end
     end
+  end
+end
+
+-- Fold expression for the focused view: unchanged lines outside the context window of every
+-- change fold to level 1; changed lines and their context stay visible. Buffers without hunk
+-- data (unchanged or never refreshed) never fold.
+function M.foldexpr(lnum)
+  local ranges = M._hunks[vim.api.nvim_get_current_buf()]
+  if not ranges or #ranges == 0 then
+    return 0
+  end
+  for _, r in ipairs(ranges) do
+    if lnum >= r.lo - CONTEXT and lnum <= r.hi + CONTEXT then
+      return 0
+    end
+  end
+  return 1
+end
+
+function M.foldtext()
+  return ("╶─ %d unchanged lines ─╴"):format(vim.v.foldend - vim.v.foldstart + 1)
+end
+
+-- The Changes-tab view: fold unchanged regions away (the reviewer's hunk view, vim-native —
+-- `zR`/`zo` reveal the rest) and land the cursor on the first change. A no-op for a file with
+-- no changes vs the base.
+function M.focus()
+  local bufnr = vim.api.nvim_get_current_buf()
+  M.refresh(bufnr)
+  local ranges = M._hunks[bufnr]
+  if not ranges or #ranges == 0 then
+    return
+  end
+  local win = vim.api.nvim_get_current_win()
+  local function setw(name, value)
+    vim.api.nvim_set_option_value(name, value, { win = win })
+  end
+  setw("foldmethod", "expr")
+  setw("foldexpr", "v:lua.require'reviewr.diff'.foldexpr(v:lnum)")
+  setw("foldtext", "v:lua.require'reviewr.diff'.foldtext()")
+  setw("foldenable", true)
+  setw("foldlevel", 0)
+  local first = math.min(ranges[1].lo, vim.api.nvim_buf_line_count(bufnr))
+  vim.api.nvim_win_set_cursor(win, { first, 0 })
+end
+
+-- Leave the focused view when a file is opened outside the Changes tab: drop our folds (and
+-- only ours — a user-configured foldmethod is left alone).
+function M.unfocus()
+  local win = vim.api.nvim_get_current_win()
+  local expr = vim.api.nvim_get_option_value("foldexpr", { win = win })
+  if expr:find("reviewr", 1, true) then
+    vim.api.nvim_set_option_value("foldmethod", "manual", { win = win })
+    vim.api.nvim_set_option_value("foldenable", false, { win = win })
   end
 end
 

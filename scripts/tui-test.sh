@@ -42,10 +42,15 @@ git -C "$REPO" init -q
 git -C "$REPO" config user.email t@t
 git -C "$REPO" config user.name t
 git -C "$REPO" config commit.gpgsign false
-printf 'alpha line one\nalpha line two\nalpha line three\n' > "$REPO/src/hello.txt"
+# hello.txt is long enough that the Changes view's context folding is observable: the change
+# goes at the top, so lines 1-4 stay visible and the tail folds.
+{
+  printf 'alpha line one\nalpha line two\nalpha line three\n'
+  for i in $(seq 4 14); do printf 'alpha filler %d\n' "$i"; done
+} > "$REPO/src/hello.txt"
 printf 'bravo line one\nbravo line two\n' > "$REPO/src/other.txt"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm base
-printf 'uncommitted change ZQX\n' >> "$REPO/src/hello.txt"
+sed -i '1i uncommitted change ZQX' "$REPO/src/hello.txt"
 printf 'uncommitted change ZQY\n' >> "$REPO/src/other.txt"
 
 # --- environment: stub herdr, plugin root = this checkout ---------------------------------
@@ -94,10 +99,12 @@ wait_for "1 Changes"
 wait_for "hello.txt"
 ok "reviewer paints with the file list"
 
-# 2. Selecting a file opens it in the embedded nvim (left pane shows its content).
+# 2. Selecting a file opens it in the embedded nvim's Changes view: the change and its context
+#    are visible, the unchanged tail is folded away, and the cursor sits on the first change.
 keys j
 wait_for "alpha line one"
-ok "file opens in the embedded editor"
+wait_for "unchanged lines"
+ok "file opens focused on the diff (context visible, rest folded)"
 
 # 3. Keys reach nvim: Tab focuses the editor, insert-typing lands, Esc leaves insert.
 keys Tab

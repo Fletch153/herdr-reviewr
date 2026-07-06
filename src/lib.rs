@@ -246,7 +246,9 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         session.auto_respawned = false;
     }
     if let Some(engine) = session.engine_alive() {
-        let _ = engine.open_file(&app.repo.join(&rel));
+        // The Changes tab opens into the focused view (unchanged regions folded, cursor on the
+        // first change — the diff-pane experience); All files opens plain.
+        let _ = engine.open_file(&app.repo.join(&rel), app.tab == crate::app::Tab::Changes);
         session.last_sent = Some(rel);
     }
 }

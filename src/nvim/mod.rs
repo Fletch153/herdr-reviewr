@@ -104,10 +104,17 @@ fn spawn_command(repo: &Path, opts: &StartOpts) -> Command {
 
 /// The `:confirm edit` command payload for `abs`: `fnameescape` (computed inside nvim) handles
 /// vim-special characters, so only single quotes need doubling for the outer vimscript string;
-/// `stopinsert` first normalizes insert mode so the Ex command lands cleanly.
-fn open_file_command(abs: &Path) -> String {
+/// `stopinsert` first normalizes insert mode so the Ex command lands cleanly. With
+/// `focus_changes` (the Changes tab) the open lands in reviewr.nvim's focused view — unchanged
+/// regions folded, cursor on the first change; otherwise any focused-view folds are dropped.
+fn open_file_command(abs: &Path, focus_changes: bool) -> String {
     let path = abs.to_string_lossy().replace('\'', "''");
-    format!("stopinsert | exe 'confirm edit ' . fnameescape('{path}')")
+    let tail = if focus_changes {
+        " | lua require('reviewr.diff').focus()"
+    } else {
+        " | lua require('reviewr.diff').unfocus()"
+    };
+    format!("stopinsert | exe 'confirm edit ' . fnameescape('{path}'){tail}")
 }
 
 struct RpcResponse {
@@ -284,8 +291,8 @@ impl Nvim {
 
     /// Show `abs` in the editor, prompting on unsaved changes (`:confirm edit`, fire-and-forget
     /// by design — the prompt renders in the grid and forwarded keys answer it).
-    pub fn open_file(&self, abs: &Path) -> Result<(), RpcFailure> {
-        self.command_fire(&open_file_command(abs))
+    pub fn open_file(&self, abs: &Path, focus_changes: bool) -> Result<(), RpcFailure> {
+        self.command_fire(&open_file_command(abs, focus_changes))
     }
 
     /// Whether the colorscheme leaves `Normal` without a background (a "transparent" theme,
@@ -496,13 +503,16 @@ mod tests {
     #[test]
     fn open_file_command_confirm_edits_via_fnameescape() {
         assert_eq!(
-            open_file_command(Path::new("/repo/src/a b.rs")),
-            "stopinsert | exe 'confirm edit ' . fnameescape('/repo/src/a b.rs')"
+            open_file_command(Path::new("/repo/src/a b.rs"), true),
+            "stopinsert | exe 'confirm edit ' . fnameescape('/repo/src/a b.rs') \
+             | lua require('reviewr.diff').focus()"
         );
-        // Single quotes double for the vimscript string literal.
+        // Single quotes double for the vimscript string literal; a non-Changes open drops the
+        // focused view instead of entering it.
         assert_eq!(
-            open_file_command(Path::new("/repo/o'brien.rs")),
-            "stopinsert | exe 'confirm edit ' . fnameescape('/repo/o''brien.rs')"
+            open_file_command(Path::new("/repo/o'brien.rs"), false),
+            "stopinsert | exe 'confirm edit ' . fnameescape('/repo/o''brien.rs') \
+             | lua require('reviewr.diff').unfocus()"
         );
     }
 }
