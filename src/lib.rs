@@ -23,6 +23,7 @@ pub mod icons;
 #[macro_use]
 pub mod log;
 pub mod model;
+pub mod nvim;
 pub mod proc;
 pub mod theme;
 pub mod turn;
@@ -66,11 +67,21 @@ pub fn run() -> Result<()> {
     if let Some(icons) = cfg.icons.or_else(config::config_file_icons) {
         app.icons = icons;
     }
+    // Companion-nvim editor mode is opt-in (`editor = "nvim"`) and needs nvim on PATH; without it
+    // the reviewer would go list-only with a dead editor pane, so fall back to the built-in diff.
+    let want_nvim = cfg.editor.or_else(config::config_file_editor).as_deref() == Some("nvim");
+    app.editor_nvim = want_nvim && nvim::nvim_present();
+    if want_nvim && !app.editor_nvim {
+        app.status = "editor=nvim ignored: nvim not found on PATH".to_string();
+    }
+    logln!("editor_nvim={}", app.editor_nvim);
     app.reload()?;
 
+    let mut editor = nvim::EditorPane::new();
     let (mut terminal, kbd) = enter_tui();
-    let result = event_loop(&mut terminal, &mut app, cfg.poll, kbd);
+    let result = event_loop(&mut terminal, &mut app, cfg.poll, kbd, &mut editor);
     leave_tui(kbd);
+    editor.close();
     result
 }
 
@@ -110,6 +121,7 @@ fn event_loop(
     app: &mut App,
     poll: Duration,
     kbd: bool,
+    editor: &mut crate::nvim::EditorPane,
 ) -> Result<()> {
     let mut last_poll = Instant::now();
     let mut last_pr_poll = Instant::now();
@@ -140,9 +152,10 @@ fn event_loop(
         // keep revealing so the anchored line stays above the growing box.
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        let viewport = ui::diff_viewport_height(area, app.list_pct);
+        let viewport = ui::diff_viewport_height(area, app.effective_list_pct());
         let effective = if app.composing() {
-            let box_h = ui::composer_height(app, ui::diff_inner_width(area, app.list_pct));
+            let box_h =
+                ui::composer_height(app, ui::diff_inner_width(area, app.effective_list_pct()));
             viewport.saturating_sub(box_h).max(1)
         } else {
             viewport
@@ -152,13 +165,13 @@ fn event_loop(
             app.reveal_diff_cursor(&heights, effective);
         }
         app.bound_diff_scroll(&heights, effective);
-        let file_vp = ui::file_viewport_height(area, app.list_pct);
+        let file_vp = ui::file_viewport_height(area, app.effective_list_pct());
         if std::mem::take(&mut app.reveal_files) {
             app.reveal_file_cursor(file_vp);
         }
         app.bound_file_scroll(file_vp);
         if app.mode == Mode::Preview {
-            let (lines, vp) = ui::preview_metrics(app, area, app.list_pct);
+            let (lines, vp) = ui::preview_metrics(app, area, app.effective_list_pct());
             app.bound_preview_scroll(lines, vp);
         }
         if app.mode == Mode::Help {
@@ -166,6 +179,9 @@ fn event_loop(
             app.bound_help_scroll(lines, vp);
         }
         terminal.draw(|f| ui::render(f, app))?;
+        // In nvim-editor mode, make the companion nvim pane follow the selection (open it lazily
+        // on the first file). A cheap no-op otherwise and when the selection is unchanged.
+        editor.sync(app);
         // Deliver a completed background fetch, then trigger a new one when `pr_pending` is set
         // (panel open, tab entry, `r`, or the agent's turn-end) or the slow fallback poll elapses
         // — never more than one in flight, and never on the draw thread.
@@ -306,7 +322,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         let alt_or_shift = key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
         let word = alt || ctrl; // word-jump on Alt/Ctrl + arrow (terminal-dependent)
         // The wrapped width of the box, for vertical (wrapped-row) caret movement.
-        let cw = ui::composer_content_width(ui::diff_inner_width(area, app.list_pct));
+        let cw = ui::composer_content_width(ui::diff_inner_width(area, app.effective_list_pct()));
         match key.code {
             Esc => app.cancel_comment(),
             // Alt/Shift+Enter (and Ctrl+J) insert a newline; plain Enter submits.
@@ -465,6 +481,44 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    // Companion-nvim editor mode: the reviewer is a pure navigator — the diff, line-comments and
+    // send all live in the nvim pane — so only tree navigation, filter, scope and tabs are bound.
+    // (The `PR` tab keeps its own full keymap, handled earlier.)
+    if app.editor_nvim {
+        match (key.code, ctrl) {
+            (Char('u'), true) => app.move_cursor(-HALF_PAGE)?,
+            (Char('d'), true) => app.move_cursor(HALF_PAGE)?,
+            (Char('q'), _) => app.should_quit = true,
+            (Char('r'), _) => app.reload()?,
+            (Char('1'), _) => app.set_tab(crate::app::Tab::Changes)?,
+            (Char('2'), _) => app.set_tab(crate::app::Tab::AllFiles)?,
+            (Char('3'), _) => app.set_tab(crate::app::Tab::Pr)?,
+            (Char('j') | Down, _) => app.move_cursor(1)?,
+            (Char('k') | Up, _) => app.move_cursor(-1)?,
+            (PageDown, _) => app.move_cursor(PAGE)?,
+            (PageUp, _) => app.move_cursor(-PAGE)?,
+            (Enter, _) if app.on_folder() => app.toggle_dir_children(),
+            (Right, _) if app.on_folder() => app.expand_dir(),
+            (Left, _) if app.on_folder() => app.collapse_dir(),
+            (Char('x'), _) => app.expand_changes(),
+            (Char('b'), false) => app.set_scope(Scope::Branch)?,
+            (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
+            (Char('C'), false) => app.enter_commit_scope()?,
+            (Char('+'), _) => app.send_path_to_agent(),
+            (Char('/'), false) => app.slash(),
+            (Char('?'), _) => app.open_help(),
+            (Esc, _) => {
+                if app.filter.is_empty() {
+                    app.clear_selection();
+                } else {
+                    app.clear_filter();
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match (key.code, ctrl) {
         // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
         // keys move the focused pane's cursor (the view follows), like `j`/`k`.
@@ -498,7 +552,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Left, _) if app.on_folder() => app.collapse_dir(),
         (Right, _) if app.on_fold() => {
             let heights = ui::diff_row_heights(app, area);
-            app.expand_fold(&heights, ui::diff_viewport_height(area, app.list_pct));
+            app.expand_fold(&heights, ui::diff_viewport_height(area, app.effective_list_pct()));
         }
         (Right, _) => app.scroll_h(8),
         (Left, _) => app.scroll_h(-8),
@@ -627,11 +681,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 }
             }
             MouseEventKind::ScrollDown
-                if ui::in_files_pane(area, app.list_pct, m.column, m.row) =>
+                if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
             {
                 app.pr_move(3);
             }
-            MouseEventKind::ScrollUp if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
+            MouseEventKind::ScrollUp
+                if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
+            {
                 app.pr_move(-3);
             }
             MouseEventKind::ScrollDown => app.pr_scroll_read(3),
@@ -643,7 +699,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             // The divider is checked first: a grab there starts a resize, not a selection.
-            if ui::hit_divider(area, app.list_pct, m.column, m.row) {
+            if ui::hit_divider(area, app.effective_list_pct(), m.column, m.row) {
                 app.resizing = true;
             } else if let Some(hit) = ui::hit_header(area, app, m.column, m.row) {
                 match hit {
@@ -655,34 +711,45 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 }
             } else if let Some(i) = ui::hit_file(
                 area,
-                app.list_pct,
+                app.effective_list_pct(),
                 m.column,
                 m.row,
                 app.file_rows.len(),
                 app.file_scroll,
             ) {
                 // A click on the change marker toggles staging; anywhere else opens the file.
-                if !(ui::on_file_marker(area, app.list_pct, m.column, m.row) && app.stage_toggle(i))
+                if !(ui::on_file_marker(area, app.effective_list_pct(), m.column, m.row)
+                    && app.stage_toggle(i))
                 {
                     app.select_file(i)?;
                 }
-            } else if let Some(i) =
-                ui::hit_diff(area, app.list_pct, m.column, m.row, heights, app.diff_scroll)
-            {
+            } else if let Some(i) = ui::hit_diff(
+                area,
+                app.effective_list_pct(),
+                m.column,
+                m.row,
+                heights,
+                app.diff_scroll,
+            ) {
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;
                 // A click on a fold marker expands it, keeping the viewport still.
-                app.expand_fold(heights, ui::diff_viewport_height(area, app.list_pct));
+                app.expand_fold(heights, ui::diff_viewport_height(area, app.effective_list_pct()));
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if app.resizing {
                 let body = ui::body_rect(area);
                 app.drag_divider(body.width, m.column.saturating_sub(body.x));
-            } else if let Some(i) =
-                ui::hit_diff(area, app.list_pct, m.column, m.row, heights, app.diff_scroll)
-            {
+            } else if let Some(i) = ui::hit_diff(
+                area,
+                app.effective_list_pct(),
+                m.column,
+                m.row,
+                heights,
+                app.diff_scroll,
+            ) {
                 app.drag_select_to(i);
             }
         }
@@ -690,10 +757,14 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         // The wheel scrolls the viewport of whichever pane it is over — never the cursor, so
         // a comment is never anchored to a wheeled-past line. Horizontal scroll is
         // keyboard-only (`←`/`→`), since multiplexers don't reliably deliver h-wheel events.
-        MouseEventKind::ScrollDown if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
+        MouseEventKind::ScrollDown
+            if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
+        {
             app.wheel_files(3);
         }
-        MouseEventKind::ScrollUp if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
+        MouseEventKind::ScrollUp
+            if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
+        {
             app.wheel_files(-3);
         }
         MouseEventKind::ScrollDown => app.wheel_diff(3),

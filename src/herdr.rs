@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-fn herdr_bin() -> String {
+pub(crate) fn herdr_bin() -> String {
     env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".to_string())
 }
 
@@ -28,7 +28,7 @@ fn herdr(args: &[&str]) -> Result<String> {
 /// zero exit code* — e.g. a Send to a stale or non-agent pane returns `agent_not_found` and still
 /// exits 0. So the exit status alone can't be trusted: surface an error envelope as the failure it
 /// is, otherwise pass the output through unchanged (not every call returns JSON).
-fn ok_or_api_error(stdout: String) -> Result<String> {
+pub(crate) fn ok_or_api_error(stdout: String) -> Result<String> {
     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&stdout)
         && let Some(err) = obj.get("error")
     {

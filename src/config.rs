@@ -16,6 +16,9 @@ pub struct Config {
     /// `Some(false)` when `--wrap off` is passed; `None` keeps the default (wrap on).
     pub wrap: Option<bool>,
     pub icons: Option<bool>,
+    /// The review editor: `Some("nvim")` runs nvim in a companion pane instead of the built-in
+    /// read-only diff view; `None`/anything else keeps the reviewer (`specs/herdr-host.md`).
+    pub editor: Option<String>,
 }
 
 impl Config {
@@ -30,6 +33,7 @@ impl Config {
         let mut theme: Option<String> = None;
         let mut wrap: Option<bool> = None;
         let mut icons: Option<bool> = None;
+        let mut editor: Option<String> = None;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -42,13 +46,22 @@ impl Config {
                 "--theme" => theme = it.next(),
                 "--wrap" => wrap = it.next().map(|v| v != "off"),
                 "--icons" => icons = it.next().map(|v| v != "off"),
+                "--editor" => editor = it.next(),
                 other if !other.starts_with('-') => repo = Some(PathBuf::from(other)),
                 _ => {}
             }
         }
         let repo =
             repo.or_else(|| std::env::current_dir().ok()).unwrap_or_else(|| PathBuf::from("."));
-        Self { repo, poll: Duration::from_millis(poll_ms.max(200)), base, theme, wrap, icons }
+        Self {
+            repo,
+            poll: Duration::from_millis(poll_ms.max(200)),
+            base,
+            theme,
+            wrap,
+            icons,
+            editor,
+        }
     }
 
     /// Parse from the real process arguments.
@@ -71,6 +84,11 @@ pub fn config_file_base() -> Option<String> {
 
 pub fn config_file_icons() -> Option<bool> {
     config_icons_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?)
+}
+
+/// The `editor` value from reviewr's config file — `"nvim"` opts into the companion-nvim editor.
+pub fn config_file_editor() -> Option<String> {
+    config_key_in(std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")?, "editor")
 }
 
 fn config_key_in(dir: impl AsRef<std::path::Path>, key: &str) -> Option<String> {

@@ -24,7 +24,7 @@ use crate::theme::Palette;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let p = panes(area, app.list_pct);
+    let p = panes(area, app.effective_list_pct());
 
     if app.tab == Tab::Pr {
         render_pr_header(frame, app, p.tab);
@@ -32,12 +32,18 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_pr_nav(frame, app, p.files);
     } else {
         render_tab_bar(frame, app, p.tab);
-        if app.mode == Mode::Preview {
-            render_markdown_preview(frame, app, p.diff);
+        // In companion-nvim editor mode the reviewer is list-only: the diff lives in the nvim
+        // pane, so `p.diff` is zero-width and only the full-width file list is painted.
+        if app.editor_nvim {
+            render_file_list(frame, app, p.files);
         } else {
-            render_diff_view(frame, app, p.diff);
+            if app.mode == Mode::Preview {
+                render_markdown_preview(frame, app, p.diff);
+            } else {
+                render_diff_view(frame, app, p.diff);
+            }
+            render_file_list(frame, app, p.files);
         }
-        render_file_list(frame, app, p.files);
     }
     // One footer band on every tab, drawn after the per-tab base so it sits on both layouts;
     // then the comments-list modal on top when it is open.

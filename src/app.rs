@@ -287,6 +287,9 @@ pub struct App {
     /// The file-list pane's width as a percent of the body; the diff takes the rest. The
     /// reviewer resizes it by dragging the divider or with `[` / `]`.
     pub list_pct: u16,
+    /// Companion-nvim editor mode (`editor = "nvim"`): the reviewer runs list-only and drives a
+    /// separate nvim pane instead of painting a diff. Set once at startup (`specs/herdr-host.md`).
+    pub editor_nvim: bool,
     /// Whether a mouse drag is currently moving the pane divider.
     pub resizing: bool,
     pub select_anchor: Option<usize>,
@@ -379,6 +382,7 @@ impl App {
             wrap: true,
             icons: false,
             list_pct: DEFAULT_LIST_PCT,
+            editor_nvim: false,
             resizing: false,
             select_anchor: None,
             store: CommentStore::new(),
@@ -2558,6 +2562,14 @@ impl App {
     /// with its visual tier. Pure — a context → action mapping, unit-tested without a terminal.
     /// The renderer maps each to a key+label, styles it by tier, and drops the least relevant
     /// (orientation first) to fit one line (`specs/tui.md`).
+    /// The file-list width used for both paint and hit-testing. In nvim-editor mode the reviewer
+    /// is list-only (the diff pane moved to nvim), so the list fills the body; the PR tab keeps
+    /// its own two-pane layout regardless. One accessor so paint and geometry can't disagree.
+    #[must_use]
+    pub fn effective_list_pct(&self) -> u16 {
+        if self.editor_nvim && self.tab != Tab::Pr { 100 } else { self.list_pct }
+    }
+
     #[must_use]
     pub fn footer_actions(&self) -> Vec<(FooterAction, Tier)> {
         use FooterAction as A;
@@ -2619,6 +2631,25 @@ impl App {
             }
             out.push((A::Tabs, Orientation));
             out.push((A::Refresh, Orientation));
+            out.push((A::Quit, Orientation));
+            return out;
+        }
+
+        // Companion-nvim editor mode: the reviewer is a pure navigator — commenting and sending
+        // happen in nvim — so the bar offers only tree navigation, filter, tabs and quit.
+        if self.editor_nvim {
+            let mut out: Vec<(FooterAction, Tier)> = Vec::new();
+            if let Some(RowKind::Dir { expanded, .. }) =
+                self.file_rows.get(self.file_cursor).map(|r| &r.kind)
+            {
+                out.push((if *expanded { A::CollapseDir } else { A::ExpandDir }, Primary));
+            } else {
+                out.push((A::Scope, Primary));
+            }
+            if !self.file_rows.is_empty() || !self.filter.is_empty() {
+                out.push((A::Filter, Normal));
+            }
+            out.push((A::Tabs, Orientation));
             out.push((A::Quit, Orientation));
             return out;
         }

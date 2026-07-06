@@ -20,6 +20,15 @@ title = "reviewr"
 placement = "split"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-reviewr\""]
 
+# The `editor` pane runs nvim as the review editor (opt-in `editor = "nvim"` mode). The reviewer
+# opens it beside the sidebar and drives it over nvim's socket; see herdr/editor.sh. Adding this
+# entrypoint requires a herdr restart to register (herdr loads plugin manifests at startup).
+[[panes]]
+id = "editor"
+title = "editor"
+placement = "split"
+command = ["sh", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr/editor.sh\""]
+
 [[actions]]
 id = "toggle"
 title = "reviewr: toggle sidebar"

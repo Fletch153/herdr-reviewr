@@ -228,6 +228,24 @@ the terminal's background. Available:
 
 Names match herdr's where both ship a palette. An unknown name falls back to `catppuccin`.
 
+### Editor (companion nvim)
+
+By default the right pane is a read-only diff view. Set `editor = "nvim"` to replace it with a
+real Neovim editor in its own herdr pane: reviewr becomes a pure file-list navigator, and
+selecting a file (click or `j`/`k`) opens it in nvim, prompting if the current buffer has unsaved
+changes. Comment and send from nvim with the bundled `reviewr.nvim` (`:ReviewrComment` /
+`<leader>rc` on a line or selection, then `:ReviewrSend`); red/green via your gitsigns or
+`:ReviewrDiff`.
+
+```toml
+# $HERDR_PLUGIN_CONFIG_DIR/config.toml
+editor = "nvim"   # default: the built-in read-only diff view
+```
+
+Requires `nvim` on `PATH` — without it reviewr logs a note and keeps the diff view. The **first**
+time you enable this, restart the herdr server once so it registers the `editor` pane entrypoint
+(herdr caches plugin manifests at startup); after that, toggling the sidebar is enough.
+
 ### Sidebar placement
 
 By default the toggle opens reviewr as a split to the right of your agent. You can change how it
