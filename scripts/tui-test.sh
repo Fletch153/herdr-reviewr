@@ -51,6 +51,7 @@ git -C "$REPO" config commit.gpgsign false
 printf 'bravo line one\nbravo line two\n' > "$REPO/src/other.txt"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm base
 sed -i '1i uncommitted change ZQX' "$REPO/src/hello.txt"
+sed -i '/alpha filler 9/d' "$REPO/src/hello.txt" # a deletion: renders as a red virtual line
 printf 'uncommitted change ZQY\n' >> "$REPO/src/other.txt"
 
 # --- environment: stub herdr, plugin root = this checkout ---------------------------------
@@ -104,7 +105,9 @@ ok "reviewer paints with the file list"
 keys j
 wait_for "alpha line one"
 wait_for "unchanged lines"
-ok "file opens focused on the diff (context visible, rest folded)"
+# The deleted line no longer exists in the buffer — it must render as a virtual line.
+wait_for "alpha filler 9"
+ok "file opens focused on the diff (context, folds, deleted line shown)"
 
 # 3. Keys reach nvim: Tab focuses the editor, insert-typing lands, Esc leaves insert.
 keys Tab

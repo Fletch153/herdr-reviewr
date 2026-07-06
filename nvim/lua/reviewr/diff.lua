@@ -13,13 +13,14 @@ local function base_ref()
   return vim.env.REVIEWR_BASE or "HEAD"
 end
 
--- The base blob for `rel` at `base_ref()`, or nil when the file is untracked/new (nothing to diff).
-local function base_text(rel)
+-- The base blob's lines for `rel` at `base_ref()`, or nil when the file is untracked/new
+-- (nothing to diff). Kept as a list so deleted lines can be rendered back as virtual lines.
+local function base_lines(rel)
   local out = vim.fn.systemlist({ "git", "show", base_ref() .. ":" .. rel })
   if vim.v.shell_error ~= 0 then
     return nil
   end
-  return table.concat(out, "\n")
+  return out
 end
 
 -- Changed line ranges per buffer ({ {lo, hi}, ... }, 1-based inclusive, buffer side), kept by
@@ -44,12 +45,12 @@ function M.refresh(bufnr)
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
   M._hunks[bufnr] = {}
   local rel = vim.fn.fnamemodify(abs, ":.") -- relative to cwd; the review pane's cwd is the repo root
-  local base = base_text(rel)
+  local base = base_lines(rel)
   if not base then
     return
   end
   local cur = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
-  local ok, hunks = pcall(vim.diff, base, cur, { result_type = "indices" })
+  local ok, hunks = pcall(vim.diff, table.concat(base, "\n"), cur, { result_type = "indices" })
   if not ok or type(hunks) ~= "table" then
     return
   end
@@ -57,9 +58,27 @@ function M.refresh(bufnr)
   local ranges = M._hunks[bufnr]
   for _, h in ipairs(hunks) do
     -- {start_a, count_a, start_b, count_b}: *_a is the base, *_b the buffer (1-based, 0 = at boundary).
-    local count_a, start_b, count_b = h[2], h[3], h[4]
+    local start_a, count_a, start_b, count_b = h[1], h[2], h[3], h[4]
+    -- The old side: removed/replaced base lines render back as red virtual lines — above the
+    -- new text of a modification, at the boundary of a pure deletion (git-diff semantics).
+    if count_a > 0 then
+      local virt = {}
+      for i = start_a, math.min(start_a + count_a - 1, #base) do
+        virt[#virt + 1] = { { base[i], "DiffDelete" } }
+      end
+      local row, above
+      if count_b == 0 and start_b > 0 then
+        row, above = math.min(start_b, last) - 1, false -- below the line the deletion follows
+      else
+        row, above = math.max(start_b, 1) - 1, true
+      end
+      pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, 0, {
+        virt_lines = virt,
+        virt_lines_above = above,
+      })
+    end
     if count_b == 0 then
-      -- Pure deletion: no buffer line to mark, so flag the surviving line at the boundary.
+      -- Pure deletion: no buffer line to color, so flag the surviving boundary line.
       local l = math.min(math.max(start_b, 1), last)
       ranges[#ranges + 1] = { lo = l, hi = l }
       vim.api.nvim_buf_set_extmark(bufnr, ns, l - 1, 0, {
@@ -68,16 +87,16 @@ function M.refresh(bufnr)
       })
     else
       ranges[#ranges + 1] = { lo = start_b, hi = start_b + count_b - 1 }
-      local added = count_a == 0
-      local sign = added and "+" or "~"
-      local hl = added and "DiffAdd" or "DiffChange"
+      -- The new side is green whether added or replacing (old text shows red above); the sign
+      -- still distinguishes a pure add from a modification.
+      local sign = count_a == 0 and "+" or "~"
       for i = 0, count_b - 1 do
         local l = start_b - 1 + i
         if l >= 0 and l < last then
           vim.api.nvim_buf_set_extmark(bufnr, ns, l, 0, {
             sign_text = sign,
-            sign_hl_group = hl,
-            line_hl_group = hl,
+            sign_hl_group = "DiffAdd",
+            line_hl_group = "DiffAdd",
           })
         end
       end
