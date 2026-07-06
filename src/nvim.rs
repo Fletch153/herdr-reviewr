@@ -45,13 +45,14 @@ pub fn editor_socket() -> PathBuf {
 }
 
 /// The `herdr plugin pane open` argv that spawns the nvim editor beside the reviewer sidebar
-/// (`target_pane`), to its left so the layout reads `[editor][file list]`. Pure so it is unit-
-/// testable; the side effects (running it, parsing the pane id) live in [`open_editor_pane`].
+/// (`target_pane`). herdr only splits `right`/`down`, so the editor opens to the reviewer's right
+/// (`[file list][editor]`). Pure so it is unit-testable; the side effects (running it, parsing the
+/// pane id) live in [`open_editor_pane`].
 #[must_use]
 pub fn editor_open_command(target_pane: &str, repo: &Path) -> Command {
     let mut cmd = Command::new(herdr_bin());
     cmd.args(["plugin", "pane", "open", "--plugin", &plugin_id(), "--entrypoint", "editor"])
-        .args(["--placement", "split", "--target-pane", target_pane, "--direction", "left"])
+        .args(["--placement", "split", "--target-pane", target_pane, "--direction", "right"])
         .arg("--cwd")
         .arg(repo)
         .arg("--no-focus");
@@ -183,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn open_command_targets_the_editor_entrypoint_to_the_left() {
+    fn open_command_splits_the_editor_entrypoint_to_the_right() {
         let cmd = editor_open_command("wZ:p2", Path::new("/repo"));
         let (program, args) = argv(&cmd);
         assert!(program.ends_with("herdr"));
@@ -202,7 +203,7 @@ mod tests {
                 "--target-pane",
                 "wZ:p2",
                 "--direction",
-                "left",
+                "right",
                 "--cwd",
                 "/repo",
                 "--no-focus",
