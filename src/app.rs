@@ -60,7 +60,7 @@ pub enum Tab {
 impl Tab {
     /// Whether this tab uses the file-tree / diff machinery (and so the per-tab stash). The
     /// `PR` tab does not — it holds its own state and never swaps into the diff fields.
-    fn is_file_tab(self) -> bool {
+    pub(crate) fn is_file_tab(self) -> bool {
         matches!(self, Tab::Changes | Tab::AllFiles)
     }
 }
@@ -128,6 +128,8 @@ pub enum Mode {
     Help,
     /// Confirming a file/folder deletion; the target lives in `pending_delete`.
     ConfirmDelete,
+    /// nvim-editor mode: confirming quit while the editor holds unsaved buffers.
+    ConfirmQuit,
 }
 
 /// A file or folder the reviewer has asked to delete, awaiting confirmation.
@@ -172,6 +174,14 @@ pub enum FooterAction {
     Search,
     /// Enter in search mode: jump to the next match.
     SearchNext,
+    /// nvim-editor mode: `s` sends via the editor's `:ReviewrSend` (one store, one path).
+    NvimSend,
+    /// nvim-editor mode: the diff-focus hint that keys go to the editor.
+    NvimHint,
+    /// nvim-editor mode: restart a crashed editor.
+    RestartEditor,
+    /// `Mode::ConfirmQuit`: quit despite unsaved editor buffers.
+    QuitAnyway,
     Preview,
     ExitPreview,
     SendPath,
@@ -287,9 +297,15 @@ pub struct App {
     /// The file-list pane's width as a percent of the body; the diff takes the rest. The
     /// reviewer resizes it by dragging the divider or with `[` / `]`.
     pub list_pct: u16,
-    /// Companion-nvim editor mode (`editor = "nvim"`): the reviewer runs list-only and drives a
-    /// separate nvim pane instead of painting a diff. Set once at startup (`specs/herdr-host.md`).
+    /// Embedded-nvim editor mode (`editor = "nvim"`): the diff pane hosts an embedded nvim and
+    /// the reviewer routes input/paint to it. Set once at startup (`specs/herdr-host.md`).
     pub editor_nvim: bool,
+    /// nvim mode: a file-row click requests an editor open even when `diff_path` is unchanged
+    /// (retry after a cancelled `:confirm edit`). Taken by the per-frame editor sync.
+    pub nvim_reopen: bool,
+    /// nvim mode: whether the embedded editor is dead (synced each frame pre-draw), so the
+    /// footer can offer restart without `App` holding the engine.
+    pub nvim_dead: bool,
     /// Whether a mouse drag is currently moving the pane divider.
     pub resizing: bool,
     pub select_anchor: Option<usize>,
@@ -383,6 +399,8 @@ impl App {
             icons: false,
             list_pct: DEFAULT_LIST_PCT,
             editor_nvim: false,
+            nvim_reopen: false,
+            nvim_dead: false,
             resizing: false,
             select_anchor: None,
             store: CommentStore::new(),
@@ -1608,7 +1626,12 @@ impl App {
         self.file_cursor = index;
         self.reveal_files = true;
         match self.file_rows[index].kind {
-            RowKind::File { .. } => self.open_cursor_file(),
+            RowKind::File { .. } => {
+                // A click is explicit intent: in nvim mode, re-open the file in the editor even
+                // when it is already the shown one (retry after a cancelled :confirm edit).
+                self.nvim_reopen = self.editor_nvim;
+                self.open_cursor_file();
+            }
             RowKind::Dir { .. } => self.toggle_dir(),
         }
         Ok(())
@@ -2164,7 +2187,8 @@ impl App {
             | Mode::Search
             | Mode::Preview
             | Mode::Help
-            | Mode::ConfirmDelete => None,
+            | Mode::ConfirmDelete
+            | Mode::ConfirmQuit => None,
         }
     }
 
@@ -2562,14 +2586,6 @@ impl App {
     /// with its visual tier. Pure — a context → action mapping, unit-tested without a terminal.
     /// The renderer maps each to a key+label, styles it by tier, and drops the least relevant
     /// (orientation first) to fit one line (`specs/tui.md`).
-    /// The file-list width used for both paint and hit-testing. In nvim-editor mode the reviewer
-    /// is list-only (the diff pane moved to nvim), so the list fills the body; the PR tab keeps
-    /// its own two-pane layout regardless. One accessor so paint and geometry can't disagree.
-    #[must_use]
-    pub fn effective_list_pct(&self) -> u16 {
-        if self.editor_nvim && self.tab != Tab::Pr { 100 } else { self.list_pct }
-    }
-
     #[must_use]
     pub fn footer_actions(&self) -> Vec<(FooterAction, Tier)> {
         use FooterAction as A;
@@ -2618,6 +2634,9 @@ impl App {
             Mode::ConfirmDelete => {
                 return vec![(A::ConfirmDelete, Primary), (A::Cancel, Normal)];
             }
+            Mode::ConfirmQuit => {
+                return vec![(A::QuitAnyway, Primary), (A::Cancel, Normal)];
+            }
             Mode::Normal => {}
         }
 
@@ -2635,20 +2654,38 @@ impl App {
             return out;
         }
 
-        // Companion-nvim editor mode: the reviewer is a pure navigator — commenting and sending
-        // happen in nvim — so the bar offers only tree navigation, filter, tabs and quit.
+        // Embedded-nvim editor mode: commenting and its diff live inside the editor. With the
+        // editor focused the bar just orients (keys go to nvim); with the files pane focused it
+        // is the navigator bar, with send/list retargeted through reviewr.nvim.
         if self.editor_nvim {
+            if self.focus == Focus::Diff {
+                if self.nvim_dead {
+                    return vec![
+                        (A::RestartEditor, Primary),
+                        (A::TogglePane, Normal),
+                        (A::Quit, Orientation),
+                    ];
+                }
+                return vec![(A::TogglePane, Primary), (A::NvimHint, Orientation)];
+            }
             let mut out: Vec<(FooterAction, Tier)> = Vec::new();
             if let Some(RowKind::Dir { expanded, .. }) =
                 self.file_rows.get(self.file_cursor).map(|r| &r.kind)
             {
                 out.push((if *expanded { A::CollapseDir } else { A::ExpandDir }, Primary));
             } else {
-                out.push((A::Scope, Primary));
+                out.push((A::TogglePane, Primary));
             }
+            out.push((A::NvimSend, Normal));
+            out.push((A::List, Normal));
+            if self.tab == Tab::Changes {
+                out.push((A::Review, Normal));
+            }
+            out.push((A::Scope, Normal));
             if !self.file_rows.is_empty() || !self.filter.is_empty() {
                 out.push((A::Filter, Normal));
             }
+            out.push((A::Help, Orientation));
             out.push((A::Tabs, Orientation));
             out.push((A::Quit, Orientation));
             return out;

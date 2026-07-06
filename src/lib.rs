@@ -24,12 +24,14 @@ pub mod icons;
 pub mod log;
 pub mod model;
 pub mod nvim;
+pub mod nvim_keys;
 pub mod proc;
 pub mod theme;
 pub mod turn;
 pub mod ui;
 
 use std::io;
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -67,22 +69,179 @@ pub fn run() -> Result<()> {
     if let Some(icons) = cfg.icons.or_else(config::config_file_icons) {
         app.icons = icons;
     }
-    // Companion-nvim editor mode is opt-in (`editor = "nvim"`) and needs nvim on PATH; without it
-    // the reviewer would go list-only with a dead editor pane, so fall back to the built-in diff.
+    // Embedded-nvim editor mode is opt-in (`editor = "nvim"`) and needs nvim on PATH; on any
+    // startup failure the mode degrades to the built-in diff view with a status note.
     let want_nvim = cfg.editor.or_else(config::config_file_editor).as_deref() == Some("nvim");
     app.editor_nvim = want_nvim && nvim::nvim_present();
     if want_nvim && !app.editor_nvim {
         app.status = "editor=nvim ignored: nvim not found on PATH".to_string();
     }
+    let mut session = NvimSession::default();
+    if app.editor_nvim {
+        // Eager start: overlap nvim's spawn + init.lua load with the initial reload and first
+        // paint, so the first file click renders instantly. The real size syncs on frame 1.
+        match session.start(&app.repo, 80, 24) {
+            Ok(()) => {}
+            Err(e) => {
+                app.editor_nvim = false;
+                app.status = format!("editor=nvim disabled: {e}");
+            }
+        }
+    }
     logln!("editor_nvim={}", app.editor_nvim);
     app.reload()?;
 
-    let mut editor = nvim::EditorPane::new();
     let (mut terminal, kbd) = enter_tui();
-    let result = event_loop(&mut terminal, &mut app, cfg.poll, kbd, &mut editor);
+    let result = event_loop(&mut terminal, &mut app, cfg.poll, kbd, &mut session);
     leave_tui(kbd);
-    editor.close();
+    session.shutdown();
     result
+}
+
+/// The embedded editor's lifecycle state, owned by the event loop so [`App`] stays engine-free
+/// and unit-testable. Handlers talk to it through [`NvimBridge`], letting routing tests use a
+/// recorder instead of a live nvim.
+#[derive(Default)]
+struct NvimSession {
+    engine: Option<nvim::Nvim>,
+    /// Last (cols, rows) sent, so a divider drag doesn't spam resizes.
+    last_size: Option<(u16, u16)>,
+    /// Repo-relative path last opened — the per-frame watcher's change detector.
+    last_sent: Option<String>,
+    /// Each death grants one automatic respawn on the next open; after that the dead panel's
+    /// `r` restarts manually (a crash-looping nvim must not spin).
+    auto_respawned: bool,
+    /// A left-button press landed in the grid, so drags/release route to nvim.
+    mouse_down: bool,
+}
+
+impl NvimSession {
+    fn start(&mut self, repo: &Path, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let opts = nvim::StartOpts { clean: false, rtp: nvim::plugin_nvim_dir() };
+        self.engine = Some(nvim::Nvim::start(repo, cols, rows, &opts)?);
+        self.last_size = Some((cols, rows));
+        self.last_sent = None;
+        Ok(())
+    }
+
+    fn shutdown(&mut self) {
+        if let Some(mut engine) = self.engine.take() {
+            let _ = engine.shutdown(true);
+        }
+    }
+
+    fn engine_alive(&self) -> Option<&nvim::Nvim> {
+        self.engine.as_ref().filter(|e| e.is_running())
+    }
+}
+
+/// What the key/mouse handlers need from the editor — a seam so routing is unit-testable with
+/// a recorder implementation.
+trait NvimBridge {
+    fn alive(&self) -> bool;
+    /// The editor's current mode short-name ("normal", "insert", …); empty when unknown/dead.
+    fn mode(&self) -> String;
+    fn feed_keys(&mut self, notation: &str);
+    fn feed_paste(&mut self, text: &str);
+    fn feed_mouse(&mut self, button: &str, action: &str, modifier: &str, row: u16, col: u16);
+    /// Run an Ex command fire-and-forget (`ReviewrSend`, `ReviewrList`): outcomes paint in the
+    /// editor's own message area.
+    fn run_command(&mut self, cmd: &str);
+    /// How many buffers hold unsaved changes; `None` when the editor is gone or busy (a prompt
+    /// is up) — callers must not block quitting on it.
+    fn modified_count(&mut self) -> Option<i64>;
+    fn restart(&mut self, repo: &Path, cols: u16, rows: u16) -> bool;
+}
+
+impl NvimBridge for NvimSession {
+    fn alive(&self) -> bool {
+        self.engine_alive().is_some()
+    }
+
+    fn mode(&self) -> String {
+        self.engine_alive().map(|e| e.grid().mode.clone()).unwrap_or_default()
+    }
+
+    fn feed_keys(&mut self, notation: &str) {
+        if let Some(e) = self.engine_alive() {
+            let _ = e.input(notation);
+        }
+    }
+
+    fn feed_paste(&mut self, text: &str) {
+        if let Some(e) = self.engine_alive() {
+            let _ = e.paste(text);
+        }
+    }
+
+    fn feed_mouse(&mut self, button: &str, action: &str, modifier: &str, row: u16, col: u16) {
+        if let Some(e) = self.engine_alive() {
+            let _ = e.input_mouse(button, action, modifier, row, col);
+        }
+    }
+
+    fn run_command(&mut self, cmd: &str) {
+        if let Some(e) = self.engine_alive() {
+            let _ = e.command_fire(cmd);
+        }
+    }
+
+    fn modified_count(&mut self) -> Option<i64> {
+        let e = self.engine.as_mut().filter(|e| e.is_running())?;
+        e.eval("len(getbufinfo({'bufmodified':1}))").ok().and_then(|v| v.as_i64())
+    }
+
+    fn restart(&mut self, repo: &Path, cols: u16, rows: u16) -> bool {
+        self.engine = None;
+        self.auto_respawned = false;
+        self.start(repo, cols, rows).is_ok()
+    }
+}
+
+/// nvim mode's quit guard: ask before discarding unsaved editor buffers, but never block
+/// quitting on a dead or wedged editor (an unanswered eval means "unknown" — quit).
+fn request_quit(app: &mut App, session: &mut dyn NvimBridge) {
+    match session.modified_count() {
+        Some(n) if n > 0 => app.mode = Mode::ConfirmQuit,
+        _ => app.should_quit = true,
+    }
+}
+
+/// Make the editor follow the reviewer's selection: open `diff_path` in nvim when it changes
+/// (or a click re-requested it), respawning a dead editor once per death. `:confirm edit`'s
+/// unsaved prompt renders inside the grid; `last_sent` is set optimistically so the watcher
+/// never re-sends against a showing prompt — a cancel is the user's call, and re-clicking the
+/// file retries via `nvim_reopen`.
+fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
+    if !app.editor_nvim || !app.tab.is_file_tab() {
+        return;
+    }
+    let Some(rel) = app.diff_path.clone() else { return };
+    let force = std::mem::take(&mut app.nvim_reopen);
+    if !force && session.last_sent.as_deref() == Some(rel.as_str()) {
+        return;
+    }
+    if session.engine_alive().is_none() {
+        if session.auto_respawned {
+            return; // dead panel owns recovery now (its `r` key)
+        }
+        session.auto_respawned = true;
+        let (cols, rows) = (grid.width.max(12), grid.height.max(3));
+        match session.start(&app.repo, cols, rows) {
+            Ok(()) => app.status = "editor restarted".to_string(),
+            Err(e) => {
+                app.status = format!("editor restart failed: {e}");
+                return;
+            }
+        }
+    } else {
+        // A live open succeeded before this one: the next death earns a fresh respawn.
+        session.auto_respawned = false;
+    }
+    if let Some(engine) = session.engine_alive() {
+        let _ = engine.open_file(&app.repo.join(&rel));
+        session.last_sent = Some(rel);
+    }
 }
 
 fn enter_tui() -> (DefaultTerminal, bool) {
@@ -121,7 +280,7 @@ fn event_loop(
     app: &mut App,
     poll: Duration,
     kbd: bool,
-    editor: &mut crate::nvim::EditorPane,
+    session: &mut NvimSession,
 ) -> Result<()> {
     let mut last_poll = Instant::now();
     let mut last_pr_poll = Instant::now();
@@ -152,10 +311,9 @@ fn event_loop(
         // keep revealing so the anchored line stays above the growing box.
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
-        let viewport = ui::diff_viewport_height(area, app.effective_list_pct());
+        let viewport = ui::diff_viewport_height(area, app.list_pct);
         let effective = if app.composing() {
-            let box_h =
-                ui::composer_height(app, ui::diff_inner_width(area, app.effective_list_pct()));
+            let box_h = ui::composer_height(app, ui::diff_inner_width(area, app.list_pct));
             viewport.saturating_sub(box_h).max(1)
         } else {
             viewport
@@ -165,23 +323,48 @@ fn event_loop(
             app.reveal_diff_cursor(&heights, effective);
         }
         app.bound_diff_scroll(&heights, effective);
-        let file_vp = ui::file_viewport_height(area, app.effective_list_pct());
+        let file_vp = ui::file_viewport_height(area, app.list_pct);
         if std::mem::take(&mut app.reveal_files) {
             app.reveal_file_cursor(file_vp);
         }
         app.bound_file_scroll(file_vp);
         if app.mode == Mode::Preview {
-            let (lines, vp) = ui::preview_metrics(app, area, app.effective_list_pct());
+            let (lines, vp) = ui::preview_metrics(app, area, app.list_pct);
             app.bound_preview_scroll(lines, vp);
         }
         if app.mode == Mode::Help {
-            let (lines, vp) = ui::help_metrics(area);
+            let (lines, vp) = ui::help_metrics(area, app.editor_nvim);
             app.bound_help_scroll(lines, vp);
         }
-        terminal.draw(|f| ui::render(f, app))?;
-        // In nvim-editor mode, make the companion nvim pane follow the selection (open it lazily
-        // on the first file). A cheap no-op otherwise and when the selection is unchanged.
-        editor.sync(app);
+        // Embedded editor: keep its grid sized to the pane interior (dedup'd — nvim acks with
+        // a grid_resize event), surface death to the footer, then paint and drive it.
+        let grid_rect = ui::nvim_grid_rect(area, app.list_pct);
+        if app.editor_nvim
+            && app.tab.is_file_tab()
+            && grid_rect.width > 0
+            && grid_rect.height > 0
+            && let Some(engine) = session.engine.as_mut().filter(|e| e.is_running())
+        {
+            let want = (grid_rect.width.max(12), grid_rect.height.max(3));
+            if session.last_size != Some(want) {
+                let _ = engine.resize(want.0, want.1);
+                session.last_size = Some(want);
+            }
+        }
+        app.nvim_dead = app.editor_nvim && session.engine_alive().is_none();
+        let view = if app.editor_nvim {
+            Some(match &session.engine {
+                Some(e) if e.is_running() => ui::NvimView::Grid(e),
+                Some(e) => ui::NvimView::Dead(e.died()),
+                None => ui::NvimView::Dead(None),
+            })
+        } else {
+            None
+        };
+        terminal.draw(|f| ui::render_with_nvim(f, app, view.as_ref()))?;
+        drop(view);
+        // Make the editor follow the selection (open-on-change; one auto-respawn per death).
+        nvim_sync(app, session, grid_rect);
         // Deliver a completed background fetch, then trigger a new one when `pr_pending` is set
         // (panel open, tab entry, `r`, or the agent's turn-end) or the slow fallback poll elapses
         // — never more than one in flight, and never on the draw thread.
@@ -212,10 +395,16 @@ fn event_loop(
         if pr_inflight {
             timeout = timeout.min(Duration::from_millis(100));
         }
+        // The embedded editor has no waker: while it runs on a file tab, poll at ~30fps so its
+        // async repaints (LSP, timers, the :confirm prompt) land promptly. ratatui diffs
+        // unchanged frames to zero terminal writes, so the idle cost is negligible.
+        if app.editor_nvim && app.tab.is_file_tab() && session.engine_alive().is_some() {
+            timeout = timeout.min(nvim::FRAME_POLL);
+        }
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
-                    if let Err(e) = handle_key(app, k, area) {
+                    if let Err(e) = handle_key(app, session, k, area) {
                         app.status = format!("error: {e}");
                     }
                     logln!(
@@ -254,7 +443,7 @@ fn event_loop(
                 Event::Mouse(m) => {
                     // Reuse this frame's `area` and `heights` (computed above for the scroll
                     // settle) so a drag-select doesn't re-measure the whole diff per motion.
-                    if let Err(e) = handle_mouse(app, m, area, &heights) {
+                    if let Err(e) = handle_mouse(app, session, m, area, &heights) {
                         app.status = format!("error: {e}");
                     }
                     logln!(
@@ -269,9 +458,19 @@ fn event_loop(
                         app.select_anchor
                     );
                 }
-                // Bracketed paste: insert at the caret while composing, ignored otherwise.
+                // Bracketed paste: into the editor when it has focus (nvim_paste inserts
+                // literally, mode-appropriately, in one undo step); else the composer caret.
                 Event::Paste(text) => {
-                    app.input_paste(&text);
+                    if app.editor_nvim
+                        && app.tab.is_file_tab()
+                        && app.focus == Focus::Diff
+                        && app.mode == Mode::Normal
+                        && session.alive()
+                    {
+                        session.feed_paste(&text);
+                    } else {
+                        app.input_paste(&text);
+                    }
                     logln!("paste {} chars -> composing={}", text.len(), app.composing());
                 }
                 _ => {}
@@ -306,7 +505,7 @@ fn event_loop(
 const PAGE: isize = 15;
 const HALF_PAGE: isize = 8;
 
-fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
+fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rect) -> Result<()> {
     use KeyCode::{
         Backspace, Char, Delete, Down, End, Enter, Esc, Home, Left, PageDown, PageUp, Right, Tab,
         Up,
@@ -322,7 +521,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         let alt_or_shift = key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
         let word = alt || ctrl; // word-jump on Alt/Ctrl + arrow (terminal-dependent)
         // The wrapped width of the box, for vertical (wrapped-row) caret movement.
-        let cw = ui::composer_content_width(ui::diff_inner_width(area, app.effective_list_pct()));
+        let cw = ui::composer_content_width(ui::diff_inner_width(area, app.list_pct));
         match key.code {
             Esc => app.cancel_comment(),
             // Alt/Shift+Enter (and Ctrl+J) insert a newline; plain Enter submits.
@@ -481,18 +680,63 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
-    // Companion-nvim editor mode: the reviewer is a pure navigator — the diff, line-comments and
-    // send all live in the nvim pane — so only tree navigation, filter, scope and tabs are bound.
-    // (The `PR` tab keeps its own full keymap, handled earlier.)
+    if app.mode == Mode::ConfirmQuit {
+        match key.code {
+            Char('y') | Enter => app.should_quit = true,
+            Esc | Char('n' | 'q') => app.mode = Mode::Normal,
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    // Embedded-nvim editor mode (the `PR` tab keeps its own full keymap, handled earlier).
+    // Files focus is the navigator: the file-list keymap, with send/list retargeted through
+    // reviewr.nvim. Editor focus forwards everything to nvim except a mode-aware plain Tab.
     if app.editor_nvim {
+        if app.focus == Focus::Diff {
+            if session.alive() {
+                // Plain Tab returns to the file list only in nvim's normal-ish modes; while
+                // inserting or on the cmdline it must type (indent, completion). <C-i> stays
+                // distinct under the kitty protocol, so the jumplist survives.
+                let normal_ish = {
+                    let mode = session.mode();
+                    mode.starts_with("normal")
+                        || mode.starts_with("visual")
+                        || mode.starts_with("operator")
+                };
+                if key.code == Tab && key.modifiers.is_empty() && normal_ish {
+                    app.toggle_focus();
+                } else if let Some(notation) = nvim_keys::key_notation(&key) {
+                    session.feed_keys(&notation);
+                }
+            } else {
+                // The dead-editor panel: restart, leave, or quit.
+                match key.code {
+                    Char('r') => {
+                        let grid = ui::nvim_grid_rect(area, app.list_pct);
+                        if session.restart(&app.repo, grid.width.max(12), grid.height.max(3)) {
+                            app.status = "editor restarted".to_string();
+                            app.nvim_reopen = true; // re-open the shown file next frame
+                        } else {
+                            app.status = "editor restart failed".to_string();
+                        }
+                    }
+                    Char('q') => request_quit(app, session),
+                    Tab => app.toggle_focus(),
+                    _ => {}
+                }
+            }
+            return Ok(());
+        }
         match (key.code, ctrl) {
             (Char('u'), true) => app.move_cursor(-HALF_PAGE)?,
             (Char('d'), true) => app.move_cursor(HALF_PAGE)?,
-            (Char('q'), _) => app.should_quit = true,
+            (Char('q'), _) => request_quit(app, session),
             (Char('r'), _) => app.reload()?,
             (Char('1'), _) => app.set_tab(crate::app::Tab::Changes)?,
             (Char('2'), _) => app.set_tab(crate::app::Tab::AllFiles)?,
             (Char('3'), _) => app.set_tab(crate::app::Tab::Pr)?,
+            (Tab, _) => app.toggle_focus(),
             (Char('j') | Down, _) => app.move_cursor(1)?,
             (Char('k') | Up, _) => app.move_cursor(-1)?,
             (PageDown, _) => app.move_cursor(PAGE)?,
@@ -501,10 +745,29 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
             (Right, _) if app.on_folder() => app.expand_dir(),
             (Left, _) if app.on_folder() => app.collapse_dir(),
             (Char('x'), _) => app.expand_changes(),
+            (Char(']'), _) => app.resize_list(4),
+            (Char('['), _) => app.resize_list(-4),
             (Char('b'), false) => app.set_scope(Scope::Branch)?,
             (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
             (Char('C'), false) => app.enter_commit_scope()?,
+            (Char(' '), _) => app.review_advance(),
             (Char('+'), _) => app.send_path_to_agent(),
+            // One send path, one store: comments live in reviewr.nvim, so `s` and `l` drive
+            // the editor's commands; outcomes paint in its message area.
+            (Char('s' | 'S'), _) => {
+                if session.alive() {
+                    session.run_command("ReviewrSend");
+                } else {
+                    app.status = "editor not running".to_string();
+                }
+            }
+            (Char('l'), _) => {
+                if session.alive() {
+                    session.run_command("ReviewrList");
+                    app.focus = Focus::Diff; // the quickfix lives in nvim; put the keys there
+                }
+            }
+            (Backspace, _) => app.request_delete(),
             (Char('/'), false) => app.slash(),
             (Char('?'), _) => app.open_help(),
             (Esc, _) => {
@@ -552,7 +815,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Left, _) if app.on_folder() => app.collapse_dir(),
         (Right, _) if app.on_fold() => {
             let heights = ui::diff_row_heights(app, area);
-            app.expand_fold(&heights, ui::diff_viewport_height(area, app.effective_list_pct()));
+            app.expand_fold(&heights, ui::diff_viewport_height(area, app.list_pct));
         }
         (Right, _) => app.scroll_h(8),
         (Left, _) => app.scroll_h(-8),
@@ -594,7 +857,13 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
     Ok(())
 }
 
-fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> Result<()> {
+fn handle_mouse(
+    app: &mut App,
+    session: &mut NvimSession,
+    m: MouseEvent,
+    area: Rect,
+    heights: &[usize],
+) -> Result<()> {
     // The comment composer captures the screen and is keyboard-driven, so the mouse is inert
     // while it is open — otherwise clicks and the wheel would drive the panes drawn underneath.
     if app.composing() {
@@ -625,8 +894,8 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         }
         return Ok(());
     }
-    if app.mode == Mode::ConfirmDelete {
-        return Ok(()); // keyboard-only confirmation
+    if app.mode == Mode::ConfirmDelete || app.mode == Mode::ConfirmQuit {
+        return Ok(()); // keyboard-only confirmations
     }
     if app.mode == Mode::CommitPick {
         match m.kind {
@@ -681,13 +950,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 }
             }
             MouseEventKind::ScrollDown
-                if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
+                if ui::in_files_pane(area, app.list_pct, m.column, m.row) =>
             {
                 app.pr_move(3);
             }
-            MouseEventKind::ScrollUp
-                if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
-            {
+            MouseEventKind::ScrollUp if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
                 app.pr_move(-3);
             }
             MouseEventKind::ScrollDown => app.pr_scroll_read(3),
@@ -696,10 +963,108 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         }
         return Ok(());
     }
+    // Embedded-nvim editor mode: the grid rect swallows clicks/drags/wheel as nvim mouse input
+    // (drag-select, wheel scroll and prompts all behave nvim-natively); the file list, header
+    // and divider keep their exact default behavior.
+    if app.editor_nvim && app.tab.is_file_tab() {
+        let grid = ui::nvim_grid_rect(area, app.list_pct);
+        let rel = |col: u16, row: u16| {
+            let right = grid.x + grid.width.saturating_sub(1);
+            let bottom = grid.y + grid.height.saturating_sub(1);
+            (row.clamp(grid.y, bottom) - grid.y, col.clamp(grid.x, right) - grid.x)
+        };
+        let mods = nvim_keys::mouse_modifier(m.modifiers);
+        let in_grid = ui::in_nvim_grid(area, app.list_pct, m.column, m.row);
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if ui::hit_divider(area, app.list_pct, m.column, m.row) {
+                    app.resizing = true;
+                } else if let Some(hit) = ui::hit_header(area, app, m.column, m.row) {
+                    match hit {
+                        ui::HeaderHit::Tab(tab) => app.set_tab(tab)?,
+                        ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
+                        ui::HeaderHit::Base => app.open_branch_picker(),
+                        ui::HeaderHit::Commit => app.open_commit_picker(),
+                        // One send path: comments live in reviewr.nvim.
+                        ui::HeaderHit::Send => {
+                            if session.alive() {
+                                session.run_command("ReviewrSend");
+                            } else {
+                                app.status = "editor not running".to_string();
+                            }
+                        }
+                    }
+                } else if let Some(i) = ui::hit_file(
+                    area,
+                    app.list_pct,
+                    m.column,
+                    m.row,
+                    app.file_rows.len(),
+                    app.file_scroll,
+                ) {
+                    if !(ui::on_file_marker(area, app.list_pct, m.column, m.row)
+                        && app.stage_toggle(i))
+                    {
+                        app.select_file(i)?;
+                    }
+                } else if in_grid {
+                    app.focus = Focus::Diff; // a click claims focus, like the old diff pane
+                    session.mouse_down = true;
+                    let (row, col) = rel(m.column, m.row);
+                    session.feed_mouse("left", "press", &mods, row, col);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if app.resizing {
+                    let body = ui::body_rect(area);
+                    app.drag_divider(body.width, m.column.saturating_sub(body.x));
+                } else if session.mouse_down {
+                    // Clamp so a drag-select that leaves the pane keeps extending.
+                    let (row, col) = rel(m.column, m.row);
+                    session.feed_mouse("left", "drag", &mods, row, col);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                app.resizing = false;
+                if session.mouse_down {
+                    session.mouse_down = false;
+                    let (row, col) = rel(m.column, m.row);
+                    session.feed_mouse("left", "release", &mods, row, col);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) if in_grid => {
+                let (row, col) = rel(m.column, m.row);
+                session.feed_mouse("right", "press", &mods, row, col);
+            }
+            MouseEventKind::Up(MouseButton::Right) if in_grid => {
+                let (row, col) = rel(m.column, m.row);
+                session.feed_mouse("right", "release", &mods, row, col);
+            }
+            MouseEventKind::ScrollDown
+                if ui::in_files_pane(area, app.list_pct, m.column, m.row) =>
+            {
+                app.wheel_files(3);
+            }
+            MouseEventKind::ScrollUp if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
+                app.wheel_files(-3);
+            }
+            MouseEventKind::ScrollDown if in_grid => {
+                let (row, col) = rel(m.column, m.row);
+                session.feed_mouse("wheel", "down", &mods, row, col);
+            }
+            MouseEventKind::ScrollUp if in_grid => {
+                let (row, col) = rel(m.column, m.row);
+                session.feed_mouse("wheel", "up", &mods, row, col);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             // The divider is checked first: a grab there starts a resize, not a selection.
-            if ui::hit_divider(area, app.effective_list_pct(), m.column, m.row) {
+            if ui::hit_divider(area, app.list_pct, m.column, m.row) {
                 app.resizing = true;
             } else if let Some(hit) = ui::hit_header(area, app, m.column, m.row) {
                 match hit {
@@ -711,45 +1076,34 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
                 }
             } else if let Some(i) = ui::hit_file(
                 area,
-                app.effective_list_pct(),
+                app.list_pct,
                 m.column,
                 m.row,
                 app.file_rows.len(),
                 app.file_scroll,
             ) {
                 // A click on the change marker toggles staging; anywhere else opens the file.
-                if !(ui::on_file_marker(area, app.effective_list_pct(), m.column, m.row)
-                    && app.stage_toggle(i))
+                if !(ui::on_file_marker(area, app.list_pct, m.column, m.row) && app.stage_toggle(i))
                 {
                     app.select_file(i)?;
                 }
-            } else if let Some(i) = ui::hit_diff(
-                area,
-                app.effective_list_pct(),
-                m.column,
-                m.row,
-                heights,
-                app.diff_scroll,
-            ) {
+            } else if let Some(i) =
+                ui::hit_diff(area, app.list_pct, m.column, m.row, heights, app.diff_scroll)
+            {
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;
                 // A click on a fold marker expands it, keeping the viewport still.
-                app.expand_fold(heights, ui::diff_viewport_height(area, app.effective_list_pct()));
+                app.expand_fold(heights, ui::diff_viewport_height(area, app.list_pct));
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if app.resizing {
                 let body = ui::body_rect(area);
                 app.drag_divider(body.width, m.column.saturating_sub(body.x));
-            } else if let Some(i) = ui::hit_diff(
-                area,
-                app.effective_list_pct(),
-                m.column,
-                m.row,
-                heights,
-                app.diff_scroll,
-            ) {
+            } else if let Some(i) =
+                ui::hit_diff(area, app.list_pct, m.column, m.row, heights, app.diff_scroll)
+            {
                 app.drag_select_to(i);
             }
         }
@@ -757,14 +1111,10 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect, heights: &[usize]) -> 
         // The wheel scrolls the viewport of whichever pane it is over — never the cursor, so
         // a comment is never anchored to a wheeled-past line. Horizontal scroll is
         // keyboard-only (`←`/`→`), since multiplexers don't reliably deliver h-wheel events.
-        MouseEventKind::ScrollDown
-            if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
-        {
+        MouseEventKind::ScrollDown if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
             app.wheel_files(3);
         }
-        MouseEventKind::ScrollUp
-            if ui::in_files_pane(area, app.effective_list_pct(), m.column, m.row) =>
-        {
+        MouseEventKind::ScrollUp if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
             app.wheel_files(-3);
         }
         MouseEventKind::ScrollDown => app.wheel_diff(3),

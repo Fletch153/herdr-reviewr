@@ -22,9 +22,22 @@ use crate::forge;
 use crate::model::{Comment, Scope};
 use crate::theme::Palette;
 
+/// The embedded editor's per-frame paint input in nvim mode: the grid (behind its lock, taken
+/// only during the blit), a startup placeholder, or the dead-editor panel with a reason.
+#[derive(Debug)]
+pub enum NvimView<'a> {
+    Grid(&'a crate::nvim::Nvim),
+    Starting,
+    Dead(Option<String>),
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
+    render_with_nvim(frame, app, None);
+}
+
+pub fn render_with_nvim(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>>) {
     let area = frame.area();
-    let p = panes(area, app.effective_list_pct());
+    let p = panes(area, app.list_pct);
 
     if app.tab == Tab::Pr {
         render_pr_header(frame, app, p.tab);
@@ -32,18 +45,16 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_pr_nav(frame, app, p.files);
     } else {
         render_tab_bar(frame, app, p.tab);
-        // In companion-nvim editor mode the reviewer is list-only: the diff lives in the nvim
-        // pane, so `p.diff` is zero-width and only the full-width file list is painted.
+        // Embedded-nvim editor mode: the diff pane hosts the editor's cell grid; the file list
+        // stays exactly as in the default mode.
         if app.editor_nvim {
-            render_file_list(frame, app, p.files);
+            render_nvim_view(frame, app, nvim, p.diff);
+        } else if app.mode == Mode::Preview {
+            render_markdown_preview(frame, app, p.diff);
         } else {
-            if app.mode == Mode::Preview {
-                render_markdown_preview(frame, app, p.diff);
-            } else {
-                render_diff_view(frame, app, p.diff);
-            }
-            render_file_list(frame, app, p.files);
+            render_diff_view(frame, app, p.diff);
         }
+        render_file_list(frame, app, p.files);
     }
     // One footer band on every tab, drawn after the per-tab base so it sits on both layouts;
     // then the comments-list modal on top when it is open.
@@ -59,6 +70,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_help_panel(frame, app, area);
     } else if app.mode == Mode::ConfirmDelete {
         render_confirm_delete(frame, app, area);
+    } else if app.mode == Mode::ConfirmQuit {
+        render_confirm_quit(frame, app, area);
     }
 }
 
@@ -888,9 +901,192 @@ pub fn preview_metrics(app: &App, area: Rect, list_pct: u16) -> (usize, usize) {
     (lines, viewport)
 }
 
-fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
+/// The embedded editor's blit target: the diff pane's interior (1-cell border inset). One
+/// helper shared by sizing, painting and mouse hit-testing so they can never disagree.
+#[must_use]
+pub fn nvim_grid_rect(area: Rect, list_pct: u16) -> Rect {
+    inner_rect(panes(area, list_pct).diff)
+}
+
+/// Whether a point is inside the embedded editor's grid (nvim mode's diff-pane interior).
+#[must_use]
+pub fn in_nvim_grid(area: Rect, list_pct: u16, col: u16, row: u16) -> bool {
+    contains(nvim_grid_rect(area, list_pct), col, row)
+}
+
+/// The embedded-nvim pane: the shared bordered chrome, then the editor's own cells.
+fn render_nvim_view(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>>, area: Rect) {
     let p = app.palette();
-    let title = match (&app.diff_path, &app.diff.previous_path) {
+    let block = bordered(&diff_title(app), app.focus == Focus::Diff, p);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    match nvim {
+        Some(NvimView::Grid(engine)) => blit_nvim_grid(frame, app, engine, inner),
+        Some(NvimView::Starting) | None => {
+            let msg = Paragraph::new(Line::from(Span::styled(
+                "starting nvim…",
+                Style::default().fg(p.overlay1),
+            )));
+            frame.render_widget(msg, inner);
+        }
+        Some(NvimView::Dead(reason)) => {
+            let mut lines: Vec<Line> = Vec::new();
+            // Center the panel vertically, leaving room for its three content lines.
+            for _ in 0..(inner.height / 2).saturating_sub(2) {
+                lines.push(Line::default());
+            }
+            lines.push(
+                Line::from(Span::styled(
+                    "the editor (nvim) exited",
+                    Style::default().fg(p.red).add_modifier(Modifier::BOLD),
+                ))
+                .centered(),
+            );
+            if let Some(reason) = reason {
+                lines.push(
+                    Line::from(Span::styled(reason.clone(), Style::default().fg(p.subtext0)))
+                        .centered(),
+                );
+            }
+            lines.push(Line::default());
+            lines.push(
+                Line::from(vec![
+                    Span::styled("r", Style::default().fg(p.lavender)),
+                    Span::styled(" restart · ", Style::default().fg(p.subtext0)),
+                    Span::styled("tab", Style::default().fg(p.lavender)),
+                    Span::styled(" files · ", Style::default().fg(p.subtext0)),
+                    Span::styled("q", Style::default().fg(p.lavender)),
+                    Span::styled(" quit", Style::default().fg(p.subtext0)),
+                ])
+                .centered(),
+            );
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+    }
+}
+
+/// Copy the editor's cell grid into the frame buffer. The grid is the truth for widths: a
+/// [`CellText::WideTail`] means the glyph to its left spans two columns, so the tail cell is
+/// marked skip. nvim's own default colors fill the rect (no reviewer bg underneath — the
+/// border row is the themed seam), which also covers resize transients where grid and rect
+/// briefly disagree.
+fn blit_nvim_grid(frame: &mut Frame, app: &App, engine: &crate::nvim::Nvim, inner: Rect) {
+    use crate::nvim::CellText;
+    let grid = engine.grid();
+    let fg_def = rgb(grid.default_fg);
+    let bg_def = rgb(grid.default_bg);
+    let buf = frame.buffer_mut();
+    for y in inner.top()..inner.bottom() {
+        for x in inner.left()..inner.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.reset();
+                cell.set_style(Style::default().fg(fg_def).bg(bg_def));
+            }
+        }
+    }
+    let rows = grid.rows.min(inner.height);
+    for row in 0..rows {
+        let cols = grid.cols.min(inner.width);
+        let cells = grid.row(row);
+        for col in 0..cols {
+            let gc = &cells[col as usize];
+            let Some(cell) = buf.cell_mut((inner.x + col, inner.y + row)) else { continue };
+            let attr = grid.attr(gc.hl);
+            let mut style =
+                Style::default().fg(attr.fg.map_or(fg_def, rgb)).bg(attr.bg.map_or(bg_def, rgb));
+            if attr.bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if attr.italic {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if attr.underline {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            if attr.strikethrough {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            if attr.reverse {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            match &gc.text {
+                CellText::Char(c) => {
+                    cell.set_char(*c);
+                    cell.set_style(style);
+                }
+                CellText::Cluster(s) => {
+                    cell.set_symbol(s);
+                    cell.set_style(style);
+                }
+                CellText::WideTail => {
+                    cell.set_diff_option(ratatui::buffer::CellDiffOption::Skip);
+                    cell.set_style(style);
+                }
+            }
+        }
+    }
+    // nvim never paints its cursor into cells — draw it here, but only when the editor has
+    // focus and isn't busy. XOR of REVERSED keeps it visible on already-reversed cells
+    // (e.g. a visual selection).
+    let (cur_row, cur_col) = grid.cursor;
+    if app.focus == Focus::Diff
+        && grid.cursor_visible
+        && cur_row < rows
+        && cur_col < grid.cols.min(inner.width)
+        && let Some(cell) = buf.cell_mut((inner.x + cur_col, inner.y + cur_row))
+    {
+        let style = cell.style();
+        let toggled = if style.add_modifier.contains(Modifier::REVERSED) {
+            style.remove_modifier(Modifier::REVERSED)
+        } else {
+            style.add_modifier(Modifier::REVERSED)
+        };
+        cell.set_style(toggled);
+    }
+}
+
+/// nvim mode's quit guard: the editor holds unsaved buffers and `q` was pressed.
+fn render_confirm_quit(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let popup = centered(area, 60, 30);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.red))
+        .title("Quit");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let lines = vec![
+        Line::default(),
+        Line::from(Span::styled(
+            "Unsaved changes in the editor — quit anyway?",
+            Style::default().fg(p.text),
+        ))
+        .centered(),
+        Line::from(Span::styled(
+            "Unsaved edits in nvim buffers will be lost.",
+            Style::default().fg(p.subtext0),
+        ))
+        .centered(),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("y / enter", Style::default().fg(p.red).add_modifier(Modifier::BOLD)),
+            Span::styled(" quit   ", Style::default().fg(p.subtext0)),
+            Span::styled("n / esc", Style::default().fg(p.lavender)),
+            Span::styled(" cancel", Style::default().fg(p.subtext0)),
+        ])
+        .centered(),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The left pane's title: the open file (with its old name on a rename), else the tab's noun.
+/// Shared by the diff view and the embedded-nvim view.
+fn diff_title(app: &App) -> String {
+    match (&app.diff_path, &app.diff.previous_path) {
         (Some(new), Some(old)) => format!("{old} → {new}"),
         (Some(new), None) => new.clone(),
         (None, _) => match app.tab {
@@ -898,7 +1094,12 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
             _ => "Diff",
         }
         .to_string(),
-    };
+    }
+}
+
+fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let title = diff_title(app);
     // While searching, the title carries the query and the match position (or "no match").
     let title = if app.mode == Mode::Search {
         match app.search_status() {
@@ -1353,8 +1554,17 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::ExitPreview => ("p", "diff"),
         A::SendPath => ("+", "→ chat"),
         A::TogglePane => {
-            return ("⇥".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
+            let dest = if app.focus == Focus::Files {
+                if app.editor_nvim { "editor" } else { "diff" }
+            } else {
+                "files"
+            };
+            return ("⇥".into(), dest.into());
         }
+        A::NvimSend => ("s", "send"),
+        A::NvimHint => ("nvim", "keys go to the editor"),
+        A::RestartEditor => ("r", "restart editor"),
+        A::QuitAnyway => ("y/↵", "quit"),
         A::Scope => ("b/t/C", "scope"),
         A::Base => ("B", "base"),
         A::Filter => ("/", "filter"),
@@ -1579,7 +1789,79 @@ pub fn hit_comments_list(area: Rect, app: &App, col: u16, row: u16) -> Option<us
 
 /// The `?` help content as titled groups of `(keys, description)`. One source for both the
 /// rendered panel and its line count, hand-maintained from the key handler in `lib.rs`.
-fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    if nvim {
+        return vec![
+            (
+                "Navigate (files pane)",
+                vec![
+                    ("j / k  ↑ / ↓", "move the cursor"),
+                    ("PgUp/PgDn · Ctrl-u/d", "page / half-page"),
+                    ("Tab", "switch files ⇄ editor (editor: normal/visual mode only)"),
+                    ("← / → / Enter", "collapse / expand the folder tree"),
+                    ("x", "expand every folder with changes · again collapses back"),
+                    ("backspace", "delete the file / folder under the cursor (confirms first)"),
+                    ("[ / ]", "narrow / widen the file list"),
+                    ("/", "filter the file list"),
+                ],
+            ),
+            (
+                "Editor (nvim)",
+                vec![
+                    ("tab", "back to the files pane · every other key goes to nvim"),
+                    ("space rc", "comment on the line / visual selection"),
+                    ("space rx", "delete the comment under the cursor"),
+                    ("space rl / rs", "list comments (quickfix) · send to the agent"),
+                    ("space rd", "side-by-side diff vs the base"),
+                    (":ReviewrYank", "copy all pending comments to the clipboard"),
+                    (":ReviewrDoctor", "diagnose agent/send wiring"),
+                    ("note", "without the kitty keyboard protocol, ctrl+i is tab"),
+                ],
+            ),
+            (
+                "Review & send",
+                vec![
+                    ("Space", "file list: mark the whole file reviewed → next"),
+                    ("s", "send comments to the agent (via the editor)"),
+                    ("l", "open the comments quickfix in the editor"),
+                    ("+", "send the highlighted file's path to the agent"),
+                ],
+            ),
+            (
+                "Scope & base",
+                vec![
+                    ("1 / 2 / 3", "Changes / All files / PR tab"),
+                    ("b / t / C", "branch / last-turn / commit scope"),
+                    ("click base chip", "pick the base branch (Branch scope)"),
+                    ("click commit chip", "pick a commit to compare against (Commit scope)"),
+                ],
+            ),
+            (
+                "Global",
+                vec![
+                    ("esc", "close any overlay · else clear selection / filter"),
+                    ("r", "files pane: reload · crashed editor: restart it"),
+                    ("q", "files pane: quit (asks if the editor has unsaved changes)"),
+                    ("mouse", "click/drag/wheel work in both panes · drag the divider"),
+                ],
+            ),
+            (
+                "Status markers (git)",
+                vec![
+                    ("A M D R", "added · modified · deleted · renamed"),
+                    ("?", "new, untracked file"),
+                    (
+                        "colour",
+                        "in the change kind's colour = staged · grey = not staged · blank = unchanged vs HEAD",
+                    ),
+                    (
+                        "click marker",
+                        "stage a grey file (git add) or unstage a coloured one (git reset)",
+                    ),
+                ],
+            ),
+        ];
+    }
     vec![
         (
             "Navigate",
@@ -1671,14 +1953,18 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
 
 /// The total rendered height of the help content, matching `help_lines`' layout (a blank
 /// spacer before every group but the first, a header, then one row per binding).
-fn help_total_lines() -> usize {
-    help_groups().iter().enumerate().map(|(g, (_, rows))| usize::from(g > 0) + 1 + rows.len()).sum()
+fn help_total_lines(nvim: bool) -> usize {
+    help_groups(nvim)
+        .iter()
+        .enumerate()
+        .map(|(g, (_, rows))| usize::from(g > 0) + 1 + rows.len())
+        .sum()
 }
 
 /// The help content as styled lines: bold section headers and dim-key rows.
-fn help_lines(p: &Palette) -> Vec<Line<'static>> {
+fn help_lines(p: &Palette, nvim: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for (g, (title, rows)) in help_groups().into_iter().enumerate() {
+    for (g, (title, rows)) in help_groups(nvim).into_iter().enumerate() {
         if g > 0 {
             lines.push(Line::default());
         }
@@ -1698,9 +1984,9 @@ fn help_lines(p: &Palette) -> Vec<Line<'static>> {
 
 /// The help overlay's `(total lines, viewport height)`, for scroll clamping (`lib.rs`).
 #[must_use]
-pub fn help_metrics(area: Rect) -> (usize, usize) {
+pub fn help_metrics(area: Rect, nvim: bool) -> (usize, usize) {
     let inner = inner_rect(centered(area, 80, 70));
-    (help_total_lines(), inner.height as usize)
+    (help_total_lines(nvim), inner.height as usize)
 }
 
 fn render_help_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -1714,7 +2000,10 @@ fn render_help_panel(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let scroll = app.help_scroll.min(u16::MAX as usize) as u16;
-    frame.render_widget(Paragraph::new(Text::from(help_lines(p))).scroll((scroll, 0)), inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(help_lines(p, app.editor_nvim))).scroll((scroll, 0)),
+        inner,
+    );
 }
 
 fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {

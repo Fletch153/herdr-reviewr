@@ -228,23 +228,37 @@ the terminal's background. Available:
 
 Names match herdr's where both ship a palette. An unknown name falls back to `catppuccin`.
 
-### Editor (companion nvim)
+### Editor (embedded nvim)
 
-By default the right pane is a read-only diff view. Set `editor = "nvim"` to replace it with a
-real Neovim editor in its own herdr pane: reviewr becomes a pure file-list navigator, and
-selecting a file (click or `j`/`k`) opens it in nvim, prompting if the current buffer has unsaved
-changes. Comment and send from nvim with the bundled `reviewr.nvim` (`:ReviewrComment` /
-`<leader>rc` on a line or selection, then `:ReviewrSend`); red/green via your gitsigns or
-`:ReviewrDiff`.
+By default the left pane is a read-only diff view. Set `editor = "nvim"` to replace it with a
+**real Neovim editor embedded in the same pane**: reviewr spawns `nvim --embed` as a child
+process, hosts its UI in the diff pane's rectangle, and routes your keys and mouse to it. The
+file list stays exactly as it is; selecting a file (click or `j`/`k`) opens it in the editor.
+Your own nvim config loads — your colorscheme, keymaps and plugins all work.
 
 ```toml
 # $HERDR_PLUGIN_CONFIG_DIR/config.toml
 editor = "nvim"   # default: the built-in read-only diff view
 ```
 
-Requires `nvim` on `PATH` — without it reviewr logs a note and keeps the diff view. The **first**
-time you enable this, restart the herdr server once so it registers the `editor` pane entrypoint
-(herdr caches plugin manifests at startup); after that, toggling the sidebar is enough.
+How it behaves:
+
+- **Focus**: `Tab` switches between the file list and the editor. Inside the editor, Tab only
+  switches back in normal/visual mode — while inserting or on the cmdline it types, and every
+  other key goes to nvim (`<C-i>` jumplist etc. work under the kitty keyboard protocol).
+- **Review**: the bundled `reviewr.nvim` provides inline red/green vs the base (no gitsigns
+  needed), `<leader>rc` to comment on a line or visual selection, `<leader>rx` to delete one,
+  `<leader>rl` for the comments quickfix, `<leader>rs` to send to the agent (also the reviewer's
+  `s` key and header **Send** button), `:ReviewrYank` to copy, `:ReviewrDiff` for a split diff
+  and `:ReviewrDoctor` to debug agent wiring.
+- **Unsaved edits** follow vim semantics: switching files keeps modified buffers loaded in the
+  background (`hidden`), and quitting the reviewer asks before discarding them. Closing the
+  reviewer (or its herdr pane, however hard) always takes the embedded nvim with it — it is a
+  child process, so an orphaned editor is impossible.
+- Not in this mode (the editor owns the pane): the `p` markdown preview and per-file comment
+  badges in the tree.
+
+Requires `nvim` on `PATH` — without it reviewr logs a note and keeps the diff view.
 
 ### Sidebar placement
 
