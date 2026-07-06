@@ -159,6 +159,36 @@ function M.focus()
   vim.api.nvim_win_set_cursor(win, { first, 0 })
 end
 
+-- Show a file that exists only in the base (deleted in the worktree) as a read-only, all-red
+-- scratch view of the base content. Deliberately not a real `:edit` of the missing path: a
+-- phantom buffer with a filetype would attach the user's LSP ("file is not included anywhere
+-- in the module tree" noise); a nameless-scheme nofile buffer attaches nothing.
+function M.show_deleted(rel)
+  local name = "reviewr://deleted/" .. rel
+  local buf = vim.fn.bufnr("^" .. vim.fn.fnameescape(name) .. "$")
+  if buf == -1 then
+    buf = vim.api.nvim_create_buf(true, true) -- listed scratch
+    vim.api.nvim_buf_set_name(buf, name)
+  end
+  local lines = base_lines(rel) or {}
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].swapfile = false
+  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  for l = 0, #lines - 1 do
+    vim.api.nvim_buf_set_extmark(buf, ns, l, 0, {
+      sign_text = "_",
+      sign_hl_group = "DiffDelete",
+      line_hl_group = "DiffDelete",
+    })
+  end
+  M._hunks[buf] = {}
+  M.unfocus() -- a fully-deleted file has nothing to fold
+end
+
 -- The reviewer's scope/base changed while this file stays open: re-diff against the new base
 -- and, when our review folds are active, recompute them for the new hunks (`zx` re-evaluates
 -- expression folds); the cursor stays put.

@@ -134,6 +134,19 @@ fn rebase_command(base: &str) -> String {
     )
 }
 
+/// The worktree-missing-file payload: show the base's content as an all-red scratch view
+/// instead of `:edit`ing a phantom path (which would spawn an empty `[New File]` and set the
+/// user's LSP complaining). The repo-relative path travels through a vim variable so only
+/// vimscript quoting is in play.
+fn show_deleted_command(rel: &str, base: &str) -> String {
+    format!(
+        "let g:reviewr_base='{}' | let g:reviewr_deleted='{}' \
+         | lua require('reviewr.diff').show_deleted(vim.g.reviewr_deleted)",
+        sq(base),
+        sq(rel)
+    )
+}
+
 struct RpcResponse {
     msgid: u64,
     result: Result<Value, RpcFailure>,
@@ -316,6 +329,11 @@ impl Nvim {
     /// and re-diff in place.
     pub fn rebase(&self, base: &str) -> Result<(), RpcFailure> {
         self.command_fire(&rebase_command(base))
+    }
+
+    /// Show a file that no longer exists in the worktree as the base's all-red scratch view.
+    pub fn show_deleted(&self, rel: &str, base: &str) -> Result<(), RpcFailure> {
+        self.command_fire(&show_deleted_command(rel, base))
     }
 
     /// Whether the colorscheme leaves `Normal` without a background (a "transparent" theme,
@@ -547,6 +565,15 @@ mod tests {
             rebase_command("deadbeef"),
             "let g:reviewr_base='deadbeef' | silent! checktime \
              | lua require('reviewr.diff').rebase()"
+        );
+    }
+
+    #[test]
+    fn show_deleted_command_hands_the_path_over_via_a_variable() {
+        assert_eq!(
+            show_deleted_command("src/o'ld.rs", "abc123"),
+            "let g:reviewr_base='abc123' | let g:reviewr_deleted='src/o''ld.rs' \
+             | lua require('reviewr.diff').show_deleted(vim.g.reviewr_deleted)"
         );
     }
 }

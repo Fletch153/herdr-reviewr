@@ -49,7 +49,9 @@ git -C "$REPO" config commit.gpgsign false
   for i in $(seq 4 14); do printf 'alpha filler %d\n' "$i"; done
 } > "$REPO/src/hello.txt"
 printf 'bravo line one\nbravo line two\n' > "$REPO/src/other.txt"
+printf 'UGONE alpha\nUGONE beta\n' > "$REPO/src/uu_gone.txt"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm base
+rm "$REPO/src/uu_gone.txt" # deleted in the worktree: must render as the red base view
 sed -i '1i uncommitted change ZQX' "$REPO/src/hello.txt"
 sed -i '/alpha filler 9/d' "$REPO/src/hello.txt" # a deletion: renders as a red virtual line
 printf 'uncommitted change ZQY\n' >> "$REPO/src/other.txt"
@@ -97,14 +99,15 @@ wait_gone() {
   fail "waiting for disappearance of: $1"
 }
 
-# 1. The reviewer paints: tab bar + the fixture files on the right.
+# 1. The reviewer paints: tab bar + the fixture files on the right, and auto-opens the first
+#    file. Waiting for its content also settles the initial cursor, so every later key
+#    navigates from a known row (no stale-frame races).
 wait_for "1 Changes"
 wait_for "hello.txt"
 ok "reviewer paints with the file list"
 
-# 2. Selecting a file opens it in the embedded nvim's Changes view: the change and its context
+# 2. The auto-opened file shows the embedded nvim's Changes view: the change and its context
 #    are visible, the unchanged tail is folded away, and the cursor sits on the first change.
-keys j
 wait_for "alpha line one"
 wait_for "unchanged lines"
 # The deleted line no longer exists in the buffer — it must render as a virtual line.
@@ -140,13 +143,24 @@ keys k
 wait_for "XYZTEST"
 ok "unsaved edits survive the file switch"
 
-# 5b. An added (untracked) file is fully green: every line carries the "+" add sign.
-keys j
+# 5b. A worktree-deleted file shows the base content as a red scratch view — not a phantom
+#     "[New File]" buffer (which would provoke LSP complaints).
+keys j # other.txt
+wait_for "bravo line one"
+keys j # uu_gone.txt (deleted)
+wait_for "UGONE alpha"
+frame | grep -q "_ UGONE" || fail "deleted file lacks the _ deletion signs"
+frame | grep -q "New File" && fail "deleted file opened as a phantom [New File]"
+ok "deleted file renders as the red base view"
+
+# 5c. An added (untracked) file is fully green: every line carries the "+" add sign.
 keys j # zz_new.txt (sorts last)
 wait_for "NFXALPHA one"
 frame | grep -q "+ NFXALPHA" || fail "added file lacks the + add signs"
 ok "added file renders fully green"
-keys k # back to the second file for the comment flow
+keys k # back past the deleted file...
+wait_for "UGONE alpha"
+keys k # ...to the second file for the comment flow
 wait_for "bravo line one"
 
 # 6. Comment flow inside nvim: focus the editor, space rc, type the note, Enter; the extmark

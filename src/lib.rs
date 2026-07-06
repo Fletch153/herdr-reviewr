@@ -251,15 +251,20 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         session.auto_respawned = false;
     }
     if let Some(engine) = session.engine_alive() {
-        if !force && same_path {
+        if !force && same_path && app.repo.join(&rel).exists() {
             // Only the scope/base moved: re-diff the open buffer, no :edit (which would
             // prompt on a modified buffer for no reason).
             let _ = engine.rebase(&base);
-        } else {
+        } else if app.repo.join(&rel).exists() {
             // The Changes tab opens into the focused view (unchanged regions folded, cursor
             // on the first change — the diff-pane experience); All files opens plain.
             let _ =
                 engine.open_file(&app.repo.join(&rel), &base, app.tab == crate::app::Tab::Changes);
+            session.last_sent = Some(rel);
+        } else {
+            // Deleted in the worktree: an all-red scratch view of the base content, never a
+            // phantom :edit (an empty [New File] would set the user's LSP complaining).
+            let _ = engine.show_deleted(&rel, &base);
             session.last_sent = Some(rel);
         }
         session.last_base = Some(base);
