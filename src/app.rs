@@ -121,6 +121,8 @@ pub enum Mode {
     CommitPick,
     BranchPick,
     Filter,
+    /// Incremental text search within the open diff/file; the query lives in `search`.
+    Search,
     Preview,
     /// Browsing the `?` keybinding help overlay.
     Help,
@@ -166,6 +168,10 @@ pub enum FooterAction {
     Filter,
     ApplyFilter,
     ClearFilter,
+    /// `/` when the diff is focused: search the open file.
+    Search,
+    /// Enter in search mode: jump to the next match.
+    SearchNext,
     Preview,
     ExitPreview,
     SendPath,
@@ -219,6 +225,11 @@ pub struct App {
     /// `file_cursor` indexes this, not `entries`.
     pub file_rows: Vec<file_list::Row>,
     pub filter: String,
+    /// The in-diff search query (`Mode::Search`); empty when not searching.
+    pub search: String,
+    /// The diff cursor when the search opened — incremental matches anchor from here so refining
+    /// the query does not drift the origin.
+    search_origin: usize,
     pub preview_scroll: usize,
     /// Top visible line of the `?` help overlay; reset when it opens.
     pub help_scroll: usize,
@@ -343,6 +354,8 @@ impl App {
             entries: Vec::new(),
             file_rows: Vec::new(),
             filter: String::new(),
+            search: String::new(),
+            search_origin: 0,
             preview_scroll: 0,
             help_scroll: 0,
             file_cursor: 0,
@@ -505,6 +518,98 @@ impl App {
     pub fn confirm_filter(&mut self) {
         if self.mode == Mode::Filter {
             self.mode = Mode::Normal;
+        }
+    }
+
+    /// `/`: search the open file when the diff is focused, else filter the file list.
+    pub fn slash(&mut self) {
+        if self.focus == Focus::Diff && !self.visible.is_empty() {
+            self.start_search();
+        } else {
+            self.start_filter();
+        }
+    }
+
+    pub fn start_search(&mut self) {
+        self.focus = Focus::Diff;
+        self.mode = Mode::Search;
+        self.search.clear();
+        self.search_origin = self.diff_cursor;
+    }
+
+    pub fn search_push(&mut self, c: char) {
+        // A leading `/` (the key that opened search) is ignored, matching the filter box.
+        if c == '/' && self.search.is_empty() {
+            return;
+        }
+        self.search.push(c);
+        self.jump_to_match_from(self.search_origin);
+    }
+
+    pub fn search_backspace(&mut self) {
+        self.search.pop();
+        self.jump_to_match_from(self.search_origin);
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search.clear();
+        if self.mode == Mode::Search {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// The visible-row indices whose text contains the query (case-insensitive); empty query → none.
+    pub fn search_matches(&self) -> Vec<usize> {
+        if self.search.is_empty() {
+            return Vec::new();
+        }
+        let needle = self.search.to_lowercase();
+        self.visible
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.text().to_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The cursor's 1-based position among matches and the total, for the search title. `None` when
+    /// there are no matches; position 0 means the cursor is between matches.
+    pub fn search_status(&self) -> Option<(usize, usize)> {
+        let matches = self.search_matches();
+        if matches.is_empty() {
+            return None;
+        }
+        let pos = matches.iter().position(|&i| i == self.diff_cursor).map_or(0, |p| p + 1);
+        Some((pos, matches.len()))
+    }
+
+    fn jump_to_match_from(&mut self, from: usize) {
+        let matches = self.search_matches();
+        if let Some(&i) = matches.iter().find(|&&i| i >= from).or_else(|| matches.first()) {
+            self.diff_cursor = i;
+            self.reveal_diff = true;
+        }
+    }
+
+    /// Move the cursor to the next match below it, wrapping to the first.
+    pub fn search_next(&mut self) {
+        let matches = self.search_matches();
+        if let Some(&i) =
+            matches.iter().find(|&&i| i > self.diff_cursor).or_else(|| matches.first())
+        {
+            self.diff_cursor = i;
+            self.reveal_diff = true;
+        }
+    }
+
+    /// Move the cursor to the previous match above it, wrapping to the last.
+    pub fn search_prev(&mut self) {
+        let matches = self.search_matches();
+        if let Some(&i) =
+            matches.iter().rev().find(|&&i| i < self.diff_cursor).or_else(|| matches.last())
+        {
+            self.diff_cursor = i;
+            self.reveal_diff = true;
         }
     }
 
@@ -2052,6 +2157,7 @@ impl App {
             | Mode::CommitPick
             | Mode::BranchPick
             | Mode::Filter
+            | Mode::Search
             | Mode::Preview
             | Mode::Help
             | Mode::ConfirmDelete => None,
@@ -2484,6 +2590,9 @@ impl App {
             Mode::Filter => {
                 return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
             }
+            Mode::Search => {
+                return vec![(A::SearchNext, Primary), (A::Cancel, Normal)];
+            }
             Mode::Preview => {
                 return vec![
                     (A::ExitPreview, Primary),
@@ -2579,7 +2688,10 @@ impl App {
             out.push((A::Preview, Normal));
         }
 
-        if !self.file_rows.is_empty() || !self.filter.is_empty() {
+        // `/` searches the open file when the diff is focused, or filters the list otherwise.
+        if self.focus == Focus::Diff && !self.visible.is_empty() {
+            out.push((A::Search, Normal));
+        } else if !self.file_rows.is_empty() || !self.filter.is_empty() {
             out.push((A::Filter, Normal));
         }
 

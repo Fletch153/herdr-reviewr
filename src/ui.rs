@@ -893,6 +893,16 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
         }
         .to_string(),
     };
+    // While searching, the title carries the query and the match position (or "no match").
+    let title = if app.mode == Mode::Search {
+        match app.search_status() {
+            Some((pos, total)) => format!("{title}  /{}▏  {pos}/{total}", app.search),
+            None if app.search.is_empty() => format!("{title}  /▏"),
+            None => format!("{title}  /{}▏  no match", app.search),
+        }
+    } else {
+        title
+    };
     let block = bordered(&title, app.focus == Focus::Diff, p);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1342,6 +1352,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Scope => ("b/t/C", "scope"),
         A::Base => ("B", "base"),
         A::Filter => ("/", "filter"),
+        A::Search => ("/", "search"),
+        A::SearchNext => ("enter", "next match"),
         A::ApplyFilter => ("enter", "apply"),
         A::PickCommit | A::PickBranch => ("enter", "compare"),
         A::Send => return ("s".into(), format!("send {}", app.unsent_count())),
@@ -1613,7 +1625,7 @@ fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![
                 ("p", "markdown preview (markdown files)"),
                 ("?", "this help"),
-                ("/", "filter files"),
+                ("/", "search the diff (when focused) · else filter the file list"),
             ],
         ),
         (

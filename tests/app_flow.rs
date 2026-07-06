@@ -3044,3 +3044,43 @@ fn x_does_nothing_with_no_changes() {
     let after: Vec<String> = app.file_rows.iter().map(|r| r.name.clone()).collect();
     assert_eq!(before, after, "no changes -> x is inert");
 }
+
+// --- `/` context-sensitive search / filter ------------------------------------------
+
+#[test]
+fn slash_searches_the_diff_and_navigates_matches() {
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\ngamma\n");
+    r.commit_all("init");
+    r.write("a.rs", "alpha\nBETA needle\ngamma needle\ndelta\n");
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = 0;
+
+    app.slash();
+    assert_eq!(app.mode, Mode::Search, "/ on the diff opens search");
+    for c in "needle".chars() {
+        app.search_push(c);
+    }
+    let first = app.diff_cursor;
+    assert!(app.visible[first].text().to_lowercase().contains("needle"), "cursor sits on a match");
+    assert_eq!(app.search_status().map(|(_, n)| n), Some(2), "two lines contain the needle");
+
+    app.search_next();
+    let second = app.diff_cursor;
+    assert_ne!(second, first, "next jumps to the other match");
+    app.search_next();
+    assert_eq!(app.diff_cursor, first, "next wraps back to the first");
+
+    app.clear_search();
+    assert_eq!(app.mode, Mode::Normal, "esc closes search");
+}
+
+#[test]
+fn slash_filters_the_list_when_the_file_pane_is_focused() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Files;
+    app.slash();
+    assert_eq!(app.mode, Mode::Filter, "/ on the file list still filters");
+}

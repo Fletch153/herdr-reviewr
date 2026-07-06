@@ -416,6 +416,18 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         return Ok(());
     }
 
+    if app.mode == Mode::Search {
+        match key.code {
+            Esc => app.clear_search(),
+            Enter | Down => app.search_next(),
+            Up => app.search_prev(),
+            Backspace => app.search_backspace(),
+            Char(c) if !ctrl => app.search_push(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if app.mode == Mode::Preview {
         match (key.code, ctrl) {
             (Esc | Char('q' | 'p'), _) => app.close_preview(),
@@ -515,7 +527,7 @@ fn handle_key(app: &mut App, key: KeyEvent, area: Rect) -> Result<()> {
         (Char('x'), _) => app.expand_changes(),
         (Char('?'), _) => app.open_help(),
         (Backspace, _) => app.request_delete(),
-        (Char('/'), false) => app.start_filter(),
+        (Char('/'), false) => app.slash(),
         (Esc, _) => {
             if app.filter.is_empty() {
                 app.clear_selection();
