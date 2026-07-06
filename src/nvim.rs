@@ -136,6 +136,10 @@ impl EditorPane {
 
     /// Make the editor show the app's currently open file (`diff_path`). Called every frame in
     /// nvim mode: a no-op unless the selection changed, so it's cheap on idle frames.
+    ///
+    /// If the user quit nvim (`:q` → the pane's process exits and the socket dies), the first
+    /// send fails with E247; we then forget the dead pane and re-open once, so the same click
+    /// still lands in a fresh editor instead of the reviewer getting wedged on a corpse.
     pub fn sync(&mut self, app: &mut App) {
         if !app.editor_nvim {
             return;
@@ -144,24 +148,33 @@ impl EditorPane {
         if self.last.as_deref() == Some(rel.as_str()) {
             return;
         }
-        let sock = editor_socket();
-        if self.pane.is_none() {
-            match open_editor_pane(&app.repo) {
-                Ok(id) => {
-                    self.pane = Some(id);
-                    wait_for_socket(&sock, Duration::from_secs(3));
-                }
-                Err(e) => {
-                    app.status = format!("editor: {e}");
-                    return;
-                }
+        let abs = app.repo.join(&rel);
+        let mut result = self.drive(&app.repo, &abs);
+        if result.is_err() {
+            // Stale/closed editor: drop it and try a fresh one for this same selection.
+            self.pane = None;
+            result = self.drive(&app.repo, &abs);
+        }
+        match result {
+            Ok(()) => self.last = Some(rel),
+            Err(e) => {
+                self.pane = None; // reopen from scratch on the next selection
+                self.last = None;
+                app.status = format!("editor: {e}");
             }
         }
-        let abs = app.repo.join(&rel);
-        match remote_edit(&sock, &abs) {
-            Ok(()) => self.last = Some(rel),
-            Err(e) => app.status = format!("editor: {e}"),
+    }
+
+    /// Ensure the editor pane is open, then drive it to `abs`. Opening waits for nvim to start
+    /// listening; a subsequent call finds the pane already up and just remote-sends.
+    fn drive(&mut self, repo: &Path, abs: &Path) -> Result<()> {
+        let sock = editor_socket();
+        if self.pane.is_none() {
+            let id = open_editor_pane(repo)?;
+            self.pane = Some(id);
+            wait_for_socket(&sock, Duration::from_secs(3));
         }
+        remote_edit(&sock, abs)
     }
 
     /// Close the editor pane on shutdown (best-effort); a vanished pane is fine to "close" again.

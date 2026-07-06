@@ -25,7 +25,47 @@ end, { desc = "Reviewr: send comments to the agent" })
 
 cmd("ReviewrDiff", function()
   require("reviewr.init").diff()
-end, { desc = "Reviewr: diff this file vs the base" })
+end, { desc = "Reviewr: split-diff this file vs the base" })
+
+-- Diagnose why a send can't reach the agent: prints the herdr env this pane sees and the resolved
+-- agent pane (or the exact resolution error). Run `:ReviewrDoctor` when `:ReviewrSend` fails.
+cmd("ReviewrDoctor", function()
+  local lines = { "reviewr.nvim doctor:" }
+  local function add(k, v)
+    lines[#lines + 1] = ("  %-20s %s"):format(k, tostring(v))
+  end
+  add("HERDR_PANE_ID", vim.env.HERDR_PANE_ID or "(unset)")
+  add("HERDR_TAB_ID", vim.env.HERDR_TAB_ID or "(unset)")
+  add("HERDR_WORKSPACE_ID", vim.env.HERDR_WORKSPACE_ID or "(unset)")
+  add("HERDR_BIN_PATH", vim.env.HERDR_BIN_PATH or "(unset -> herdr)")
+  local ctx = vim.env.HERDR_PLUGIN_CONTEXT_JSON
+  local focus = "(no context)"
+  if ctx then
+    local ok, d = pcall(vim.json.decode, ctx)
+    focus = (ok and type(d) == "table" and d.focused_pane_id) or "(none)"
+  end
+  add("focused_pane_id", focus)
+  local pane, err = require("reviewr.agent").resolve_pane()
+  add("resolved agent pane", pane or ("ERROR: " .. tostring(err)))
+  vim.notify(table.concat(lines, "\n"), pane and vim.log.levels.INFO or vim.log.levels.WARN)
+end, { desc = "Reviewr: diagnose agent/send resolution" })
+
+-- Inline red/green diff vs the base, refreshed as you browse and edit (no gitsigns needed).
+require("reviewr.diff").enable()
+
+-- One-time discoverability hint, shown once nvim settles (review-mode nvim only).
+vim.schedule(function()
+  local lead = (vim.g.mapleader == " " and "<space>") or (vim.g.mapleader or [[\]])
+  vim.notify(
+    "reviewr.nvim ready — "
+      .. lead
+      .. "rc comment (visual or line) · "
+      .. lead
+      .. "rs send · "
+      .. lead
+      .. "rd diff · :ReviewrDoctor"
+  )
+end)
 
 local map = vim.keymap.set
 map("x", "<leader>rc", ":ReviewrComment<CR>", { silent = true, desc = "Reviewr: comment on selection" })
