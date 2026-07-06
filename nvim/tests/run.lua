@@ -41,6 +41,35 @@ check("record adds a pending comment", #comments.pending() == 1)
 comments.mark_sent()
 check("mark_sent clears pending", #comments.pending() == 0)
 
+-- delete_at removes exactly the comment covering the line, in the right buffer.
+local buf2 = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_name(buf2, "/tmp/y.rs")
+vim.api.nvim_buf_set_lines(buf2, 0, -1, false, { "l1", "l2", "l3", "l4" })
+comments.record(buf2, "/tmp/y.rs", 1, 2, "l1\nl2", "first")
+comments.record(buf2, "/tmp/y.rs", 4, 4, "l4", "second")
+check("delete_at misses an uncommented line", comments.delete_at(buf2, 3) == nil)
+local removed = comments.delete_at(buf2, 2)
+check("delete_at removes the covering comment", removed and removed.note == "first")
+local left = 0
+for _, c in ipairs(comments.items) do
+  if c.abs == "/tmp/y.rs" then
+    left = left + 1
+  end
+end
+check("the other comment survives the delete", left == 1)
+
+-- yank copies the pending payload into the registers and marks sent.
+local text_before = #comments.pending()
+check("a pending comment remains for yank", text_before >= 1)
+require("reviewr.init").yank()
+local reg = vim.fn.getreg('"')
+check("yank writes the tagged payload", reg:find("<review>", 1, true) ~= nil, reg)
+check("yank marks comments sent", #comments.pending() == 0)
+
+-- clear drops everything.
+comments.clear()
+check("clear empties the store", #comments.items == 0)
+
 -- agent.send resolves via the focused pane (the tab is otherwise ambiguous) and delivers the
 -- payload through the stub.
 local agent = require("reviewr.agent")

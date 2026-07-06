@@ -30,6 +30,21 @@ function M.send()
   end
 end
 
+-- Copy every un-sent comment to the clipboard (system `+` and unnamed registers) as the same
+-- tagged review payload, then mark them sent — the reviewer's `y` parity.
+function M.yank()
+  local pending = comments.pending()
+  if #pending == 0 then
+    vim.notify("reviewr: nothing new to copy", vim.log.levels.INFO)
+    return
+  end
+  local text = format.format_all(pending)
+  vim.fn.setreg("+", text)
+  vim.fn.setreg('"', text)
+  comments.mark_sent()
+  vim.notify(("reviewr: copied %d comment(s) to the clipboard"):format(#pending))
+end
+
 -- Open the current file's diff against the base in nvim's built-in diff mode (red/green), with the
 -- base on the left and the working file on the right.
 function M.diff()

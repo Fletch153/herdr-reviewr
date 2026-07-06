@@ -49,6 +49,44 @@ function M.record(bufnr, abs, lo, hi, code, note)
   return item
 end
 
+-- Rebuild a buffer's comment marks from the store — extmark ids aren't tracked per item, so a
+-- removal clears the buffer's namespace and re-marks the survivors.
+local function remark(bufnr, abs)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  for _, c in ipairs(M.items) do
+    if c.abs == abs then
+      mark(bufnr, c.lo, c.hi, c.note)
+    end
+  end
+end
+
+-- Delete the comment covering `line` in `bufnr` (mirrors the reviewer's `d`). Returns the
+-- removed item, or nil when no comment covers that line.
+function M.delete_at(bufnr, line)
+  local abs = vim.api.nvim_buf_get_name(bufnr)
+  for i, c in ipairs(M.items) do
+    if c.abs == abs and line >= c.lo and line <= c.hi then
+      table.remove(M.items, i)
+      remark(bufnr, abs)
+      return c
+    end
+  end
+  return nil
+end
+
+-- Drop every comment and its marks (all buffers).
+function M.clear()
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+    end
+  end
+  M.items = {}
+end
+
 -- Comment on lines [lo, hi] (a normal-mode command has no range, so default to the cursor line),
 -- prompting for the note.
 function M.add(lo, hi)

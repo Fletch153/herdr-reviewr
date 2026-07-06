@@ -27,6 +27,24 @@ cmd("ReviewrDiff", function()
   require("reviewr.init").diff()
 end, { desc = "Reviewr: split-diff this file vs the base" })
 
+cmd("ReviewrDelete", function()
+  local removed = require("reviewr.comments").delete_at(0, vim.fn.line("."))
+  if removed then
+    vim.notify(("reviewr: deleted comment — %s:%d"):format(removed.file, removed.lo))
+  else
+    vim.notify("reviewr: no comment under the cursor", vim.log.levels.WARN)
+  end
+end, { desc = "Reviewr: delete the comment under the cursor" })
+
+cmd("ReviewrClear", function()
+  require("reviewr.comments").clear()
+  vim.notify("reviewr: cleared all comments")
+end, { desc = "Reviewr: drop every comment" })
+
+cmd("ReviewrYank", function()
+  require("reviewr.init").yank()
+end, { desc = "Reviewr: copy pending comments to the clipboard" })
+
 -- Diagnose why a send can't reach the agent: prints the herdr env this pane sees and the resolved
 -- agent pane (or the exact resolution error). Run `:ReviewrDoctor` when `:ReviewrSend` fails.
 cmd("ReviewrDoctor", function()
@@ -53,23 +71,10 @@ end, { desc = "Reviewr: diagnose agent/send resolution" })
 -- Inline red/green diff vs the base, refreshed as you browse and edit (no gitsigns needed).
 require("reviewr.diff").enable()
 
--- One-time discoverability hint, shown once nvim settles (review-mode nvim only).
-vim.schedule(function()
-  local lead = (vim.g.mapleader == " " and "<space>") or (vim.g.mapleader or [[\]])
-  vim.notify(
-    "reviewr.nvim ready — "
-      .. lead
-      .. "rc comment (visual or line) · "
-      .. lead
-      .. "rs send · "
-      .. lead
-      .. "rd diff · :ReviewrDoctor"
-  )
-end)
-
 local map = vim.keymap.set
 map("x", "<leader>rc", ":ReviewrComment<CR>", { silent = true, desc = "Reviewr: comment on selection" })
 map("n", "<leader>rc", ":ReviewrComment<CR>", { silent = true, desc = "Reviewr: comment on line" })
 map("n", "<leader>rl", "<Cmd>ReviewrList<CR>", { silent = true, desc = "Reviewr: comments list" })
 map("n", "<leader>rs", "<Cmd>ReviewrSend<CR>", { silent = true, desc = "Reviewr: send to agent" })
 map("n", "<leader>rd", "<Cmd>ReviewrDiff<CR>", { silent = true, desc = "Reviewr: diff vs base" })
+map("n", "<leader>rx", "<Cmd>ReviewrDelete<CR>", { silent = true, desc = "Reviewr: delete comment" })
