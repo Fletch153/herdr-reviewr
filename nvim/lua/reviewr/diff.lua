@@ -139,6 +139,11 @@ function M.refresh(bufnr)
             sign_text = sign,
             sign_hl_group = "DiffAdd",
             line_hl_group = "DiffAdd",
+            -- The gutter statuscolumn paints fill and sign cells, but the number cell keeps
+            -- LineNr unless painted here (it covers wrapped rows too). Low priority so a
+            -- comment accent's number_hl stays on top.
+            number_hl_group = "ReviewrGutterAdd",
+            priority = 90,
           })
         end
       end
@@ -248,6 +253,49 @@ local function restore_breakindent(win)
   end
 end
 
+-- Gutter painting for highlighted lines. line_hl/sign_hl cover the text area and the sign
+-- cell of the FIRST screen row only: wrapped rows leave the sign column dark, and the number
+-- cell keeps LineNr everywhere — a distracting unpainted strip inside a green/red line. A
+-- 'statuscolumn' closes it, set ONCE globally by the host (embed-only): the function renders
+-- the stock layout wherever nothing is painted (plain views, foreign buffers — their _hunks
+-- are empty), so it needs no per-window lifecycle (window-local option copies reset on
+-- buffer switches, which made save/restore unsound). Hot first rows keep `%s` so third-party
+-- signs still render; hot wrapped rows paint edge to edge; the number cell itself is painted
+-- by `number_hl_group` on the line's extmark (it covers wrapped rows too).
+local function gutter_group(bufnr, lnum)
+  if vim.api.nvim_buf_get_name(bufnr):find("reviewr://deleted/", 1, true) then
+    return "ReviewrGutterDel"
+  end
+  for _, r in ipairs(M._hunks[bufnr] or {}) do
+    if r.lo <= lnum and lnum <= r.hi then
+      return "ReviewrGutterAdd"
+    end
+  end
+  return nil
+end
+M._gutter_group = gutter_group -- exposed for the headless checks
+
+function M.statuscolumn()
+  local ok, out = pcall(function()
+    local win = vim.g.statusline_winid
+    -- Mirror the stock gutter: a number segment only where the user shows numbers.
+    local num = (vim.wo[win].number or vim.wo[win].relativenumber) and "%=%l " or ""
+    local grp = gutter_group(vim.api.nvim_win_get_buf(win), vim.v.lnum)
+    if not grp then
+      return "%s" .. num
+    end
+    if vim.v.virtnum > 0 then
+      return "%#" .. grp .. "#"
+    end
+    return "%s%#" .. grp .. "#" .. num
+  end)
+  return ok and out or "%s%=%l "
+end
+
+function M.gutter_enable()
+  vim.o.statuscolumn = "%!v:lua.require'reviewr.diff'.statuscolumn()"
+end
+
 -- The focused (Changes) view is a review surface, not an authoring one: the buffer is locked
 -- ('nomodifiable') so stray keys, undo, and paste cannot mutate what the agent wrote; insert
 -- intent flips to All files instead. Locking keys on the VIEW, not on hunk count — a
@@ -343,6 +391,8 @@ function M.show_deleted(rel)
       sign_text = "_",
       sign_hl_group = "DiffDelete",
       line_hl_group = "DiffDelete",
+      number_hl_group = "ReviewrGutterDel",
+      priority = 90,
     })
   end
   M._hunks[buf] = {}

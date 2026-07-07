@@ -16,6 +16,9 @@ vim.api.nvim_set_hl(0, "ReviewrCardTitle", { link = "Title", default = true })
 vim.api.nvim_set_hl(0, "ReviewrCardBorder", { link = "NonText", default = true })
 vim.api.nvim_set_hl(0, "ReviewrCardBody", { link = "Normal", default = true })
 vim.api.nvim_set_hl(0, "ReviewrCommentLine", { link = "Title", default = true })
+-- The gutter of a highlighted diff line (statuscolumn + number cell) matches the line paint.
+vim.api.nvim_set_hl(0, "ReviewrGutterAdd", { link = "DiffAdd", default = true })
+vim.api.nvim_set_hl(0, "ReviewrGutterDel", { link = "DiffDelete", default = true })
 
 local cmd = vim.api.nvim_create_user_command
 

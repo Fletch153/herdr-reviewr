@@ -271,6 +271,26 @@ end)
 check("split teardown re-locks the working buffer", vim.bo[cbuf].modifiable == false)
 diff.unfocus()
 
+-- The gutter statuscolumn (global, set once by the host): hot rows (hunk lines, every
+-- deleted-view line) paint the full gutter group; everything else renders the stock layout.
+require("reviewr.diff").gutter_enable()
+check(
+  "gutter_enable installs the global statuscolumn",
+  vim.o.statuscolumn:find("reviewr", 1, true) ~= nil,
+  vim.o.statuscolumn
+)
+vim.api.nvim_set_current_buf(rbuf)
+diff.focus()
+local g1 = diff._hunks[rbuf][1]
+check("a changed line paints the gutter", diff._gutter_group(rbuf, g1.lo) == "ReviewrGutterAdd")
+check("a line outside every hunk keeps the stock gutter", diff._gutter_group(rbuf, 999) == nil)
+diff.set_view(false)
+check("the plain view clears its hunks (stock gutter everywhere)", diff._gutter_group(rbuf, g1.lo) == nil)
+diff.show_deleted("old.txt")
+local gbuf = vim.api.nvim_get_current_buf()
+check("the deleted view paints its gutter red", diff._gutter_group(gbuf, 1) == "ReviewrGutterDel")
+diff.unfocus()
+
 -- Live sync (reviewr.live): the host sweeps `checktime` on its poll; the FileChangedShell
 -- policy must reload clean buffers silently, keep in-flight user edits (mtime updated so the
 -- next save wins without the blocking W12 prompt), and keep the buffer on deletion.

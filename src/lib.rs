@@ -345,7 +345,10 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
     if let Some(e) = session.engine_alive() {
         let _ = e.command_fire(&cmds.join(" | "));
         // Separate notification: `:lua` would swallow the rest of a `|`-joined line.
-        let _ = e.exec_lua_fire("require('reviewr.live').enable()", vec![]);
+        let _ = e.exec_lua_fire(
+            "require('reviewr.live').enable(); require('reviewr.diff').gutter_enable()",
+            vec![],
+        );
     }
 }
 
