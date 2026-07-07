@@ -490,6 +490,88 @@ check("a foreign scratch never reports nav", #navs == 3, vim.inspect(navs))
 comments.notify = keep_nav_notify
 vim.cmd("silent! bwipeout! " .. wbuf)
 
+-- revert_hunk (<leader>rh): restore the hunk under the cursor to the base text — buffer AND
+-- disk — through the lock; reverting a file's LAST hunk hands the walk to the next file.
+local rroot = root .. "/revrepo"
+vim.fn.mkdir(rroot, "p")
+local function rgit(args)
+  vim.fn.system(vim.list_extend({ "git", "-C", rroot }, args))
+end
+rgit({ "init", "-qb", "main" })
+rgit({ "config", "user.email", "t@t" })
+rgit({ "config", "user.name", "t" })
+rgit({ "config", "commit.gpgsign", "false" })
+local rbase = { "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10" }
+vim.fn.writefile(rbase, rroot .. "/r.txt")
+vim.fn.writefile({ "t1", "t2", "t3" }, rroot .. "/t.txt")
+vim.fn.writefile({ "e1", "e2", "e3" }, rroot .. "/e.txt")
+vim.fn.writefile({ "m1", "m2" }, rroot .. "/m.txt")
+rgit({ "add", "-A" })
+rgit({ "commit", "-qm", "R" })
+-- r.txt: a replace (r2->XREPL), a mid-file pure deletion (r5), a pure insertion (XINS).
+vim.fn.writefile({ "r1", "XREPL", "r3", "r4", "r6", "r7", "XINS", "r8", "r9", "r10" }, rroot .. "/r.txt")
+vim.fn.writefile({ "t2", "t3" }, rroot .. "/t.txt") -- top-of-file deletion
+vim.fn.writefile({ "e1", "e2" }, rroot .. "/e.txt") -- EOF deletion
+vim.fn.writefile({}, rroot .. "/m.txt") -- emptied (0 bytes)
+vim.fn.writefile({ "brand new" }, rroot .. "/a.txt") -- added: no base, revert must refuse
+vim.cmd("cd " .. vim.fn.fnameescape(rroot))
+
+local rnavs = {}
+local keep_rev_notify = comments.notify
+comments.notify = function(action, payload)
+  rnavs[#rnavs + 1] = { action = action, payload = payload }
+  return true
+end
+
+vim.cmd("edit r.txt")
+local revbuf = vim.api.nvim_get_current_buf()
+diff.focus()
+local rh = diff._hunks[revbuf]
+check(
+  "revert data rides every hunk",
+  rh and #rh == 3 and rh[1].base_text[1] == "r2" and rh[2].del and rh[2].base_text[1] == "r5" and #rh[3].base_text == 0,
+  vim.inspect(rh)
+)
+vim.api.nvim_win_set_cursor(0, { 7, 0 }) -- XINS: a pure insertion reverts to nothing
+check("insertion hunk reverts", diff.revert_hunk() == true and vim.fn.getline(7) == "r8")
+check("...still locked and repainted", vim.bo[revbuf].modifiable == false and #diff._hunks[revbuf] == 2)
+vim.api.nvim_win_set_cursor(0, { 4, 0 }) -- the r5 deletion boundary
+check("mid-file deletion reverts", diff.revert_hunk() == true and vim.fn.getline(5) == "r5")
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+check("replace hunk reverts", diff.revert_hunk() == true and vim.fn.getline(2) == "r2")
+check("the full revert is byte-exact on disk", vim.deep_equal(vim.fn.readfile(rroot .. "/r.txt"), rbase))
+check(
+  "the last hunk's revert hands the walk onward",
+  #rnavs == 1 and rnavs[1].action == "nav" and rnavs[1].payload.dir == "next",
+  vim.inspect(rnavs)
+)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+check("no hunk under the cursor refuses", diff.revert_hunk() == false)
+
+vim.cmd("edit t.txt")
+diff.focus()
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+check("top-of-file deletion reverts", diff.revert_hunk() == true and vim.fn.getline(1) == "t1")
+check("...on disk too", vim.deep_equal(vim.fn.readfile(rroot .. "/t.txt"), { "t1", "t2", "t3" }))
+
+vim.cmd("edit e.txt")
+diff.focus()
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+check("EOF deletion reverts", diff.revert_hunk() == true and vim.fn.getline(3) == "e3")
+
+vim.cmd("edit m.txt")
+diff.focus()
+check("an emptied file reverts whole", diff.revert_hunk() == true and vim.fn.getline(1) == "m1" and vim.api.nvim_buf_line_count(0) == 2)
+check("...without a phantom trailing line on disk", vim.deep_equal(vim.fn.readfile(rroot .. "/m.txt"), { "m1", "m2" }))
+
+vim.cmd("edit a.txt")
+diff.focus()
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+check("an added file refuses to revert", diff.revert_hunk() == false and vim.fn.getline(1) == "brand new")
+
+comments.notify = keep_rev_notify
+vim.cmd("silent! bwipeout!")
+
 vim.cmd("cd " .. vim.fn.fnameescape(root))
 
 -- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):

@@ -122,6 +122,21 @@ function M.refresh(bufnr)
   for _, h in ipairs(hunks) do
     -- {start_a, count_a, start_b, count_b}: *_a is the base, *_b the buffer (1-based, 0 = at boundary).
     local start_a, count_a, start_b, count_b = h[1], h[2], h[3], h[4]
+    -- What revert_hunk needs, carried per hunk: the raw indices (lo below CLAMPS start_b for
+    -- pure deletions and would destroy the revert arithmetic) and the base text itself, so a
+    -- revert never re-reads git (no TOCTOU against a moving base). no_base marks an added
+    -- file — deleting everything is not "back to base", so revert refuses there.
+    local revert = {
+      start_a = start_a,
+      count_a = count_a,
+      start_b = start_b,
+      count_b = count_b,
+      base_text = {},
+      no_base = #base == 0,
+    }
+    for i = start_a, math.min(start_a + count_a - 1, #base) do
+      revert.base_text[#revert.base_text + 1] = base[i]
+    end
     -- The old side: removed/replaced base lines render back as red virtual lines — above the
     -- new text of a modification, at the boundary of a pure deletion (git-diff semantics).
     if count_a > 0 then
@@ -145,13 +160,15 @@ function M.refresh(bufnr)
       local l = math.min(math.max(start_b, 1), last)
       -- del: the boundary line itself is context (red sign only, no line paint) — folds and
       -- stepping treat it as a hunk, the gutter must not paint it green.
-      ranges[#ranges + 1] = { lo = l, hi = l, del = true }
+      revert.lo, revert.hi, revert.del = l, l, true
+      ranges[#ranges + 1] = revert
       vim.api.nvim_buf_set_extmark(bufnr, ns, l - 1, 0, {
         sign_text = "_",
         sign_hl_group = "DiffDelete",
       })
     else
-      ranges[#ranges + 1] = { lo = start_b, hi = start_b + count_b - 1 }
+      revert.lo, revert.hi = start_b, start_b + count_b - 1
+      ranges[#ranges + 1] = revert
       -- The new side is green whether added or replacing (old text shows red above); the sign
       -- still distinguishes a pure add from a modification.
       local sign = count_a == 0 and "+" or "~"
@@ -179,7 +196,8 @@ function M.refresh(bufnr)
   if #base > 0 and last > 0 and vim.bo[bufnr].endofline ~= base_eol then
     local note = base_eol and "\\ no newline at end of file (base has one)"
       or "\\ newline at end of file (base has none)"
-    ranges[#ranges + 1] = { lo = last, hi = last, del = true }
+    -- eol: revert flips 'endofline' back to the base's instead of touching lines.
+    ranges[#ranges + 1] = { lo = last, hi = last, del = true, eol = true, base_eol = base_eol }
     pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, last - 1, 0, {
       virt_lines = { { { note, "DiffChange" } } },
       sign_text = "~",
@@ -257,6 +275,60 @@ function M.last_change()
   local last = ranges[#ranges]
   vim.api.nvim_win_set_cursor(0, { math.min(last.lo, vim.api.nvim_buf_line_count(0)), 0 })
   vim.cmd("silent! normal! zvzz")
+  return true
+end
+
+-- Revert the hunk under the cursor to the base text (<leader>rh): one set_lines (a single
+-- undo block), an immediate forced write (the BufWritePost refresh repaints), and the lock
+-- restored. Reverting the file's last hunk reports "nav next" — the reviewer moves on and
+-- the now-unchanged file drops from Changes on the host's next poll.
+function M.revert_hunk()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if vim.bo[bufnr].buftype ~= "" or vim.api.nvim_buf_get_name(bufnr) == "" then
+    vim.notify("nothing to revert here", vim.log.levels.INFO)
+    return false
+  end
+  local ranges = M._hunks[bufnr]
+  local cur = vim.fn.line(".")
+  local hunk
+  for _, r in ipairs(ranges or {}) do
+    if r.lo <= cur and cur <= r.hi then
+      hunk = r
+      break
+    end
+  end
+  if not hunk then
+    vim.notify("no hunk under the cursor", vim.log.levels.INFO)
+    return false
+  end
+  if hunk.no_base then
+    vim.notify("no base to revert to (added file)", vim.log.levels.INFO)
+    return false
+  end
+  local was_locked = not vim.bo[bufnr].modifiable
+  vim.bo[bufnr].modifiable = true
+  if hunk.eol then
+    vim.bo[bufnr].endofline = hunk.base_eol
+  elseif hunk.count_b > 0 then
+    vim.api.nvim_buf_set_lines(bufnr, hunk.start_b - 1, hunk.start_b - 1 + hunk.count_b, false, hunk.base_text)
+  elseif hunk.start_b == 0 and vim.api.nvim_buf_line_count(bufnr) == 1 and vim.fn.getline(1) == "" then
+    -- An emptied-but-existing file is one phantom empty line, not "content at line 0":
+    -- replace the whole buffer or the phantom line would survive as a trailing blank.
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, hunk.base_text)
+  else
+    -- A pure deletion: re-insert after start_b (0 = at the top, line_count = at EOF).
+    vim.api.nvim_buf_set_lines(bufnr, hunk.start_b, hunk.start_b, false, hunk.base_text)
+  end
+  vim.cmd("silent! update!") -- the write's refresh autocmd repaints marks and folds
+  if was_locked then
+    vim.bo[bufnr].modifiable = false
+  end
+  if #(M._hunks[bufnr] or {}) == 0 then
+    -- That was the file's last hunk: hand the walk to the next changed file.
+    require("reviewr.comments").notify("nav", { dir = "next" })
+  else
+    vim.notify("hunk reverted — undo in All files", vim.log.levels.INFO)
+  end
   return true
 end
 

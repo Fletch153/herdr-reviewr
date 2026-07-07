@@ -94,6 +94,7 @@ map("n", "<leader>rl", "<Cmd>ReviewrList<CR>", { silent = true, desc = "Reviewr:
 map("n", "<leader>rs", "<Cmd>ReviewrSend<CR>", { silent = true, desc = "Reviewr: send to agent" })
 map("n", "<leader>ry", "<Cmd>ReviewrYank<CR>", { silent = true, desc = "Reviewr: copy comments" })
 map("n", "<leader>rd", "<Cmd>ReviewrDiff<CR>", { silent = true, desc = "Reviewr: diff vs base" })
+map("n", "<leader>rh", "<Cmd>lua require('reviewr.diff').revert_hunk()<CR>", { silent = true, desc = "Reviewr: revert the hunk under the cursor" })
 
 -- Hunk hops in the focused (Changes) view; quiet no-ops when there is nothing further. In a
 -- real diff-mode window (:ReviewrDiff's split) the native ]c/[c behavior is kept.

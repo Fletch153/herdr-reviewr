@@ -1881,6 +1881,7 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                         "Changes is read-only — these flip to All files at the same spot",
                     ),
                     ("space rd", "side-by-side diff vs the base (dp/do editable)"),
+                    ("space rh", "revert the hunk under the cursor (last hunk → next file)"),
                 ],
             ),
             (
