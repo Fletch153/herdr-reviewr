@@ -324,8 +324,10 @@ function M.revert_hunk()
     vim.bo[bufnr].modifiable = false
   end
   if #(M._hunks[bufnr] or {}) == 0 then
-    -- That was the file's last hunk: hand the walk to the next changed file.
-    require("reviewr.comments").notify("nav", { dir = "next" })
+    -- That was the file's last hunk: hand the walk to the next changed file. The file
+    -- rides along so the host can drop the verdict if its view already moved past it.
+    local rel = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
+    require("reviewr.comments").notify("nav", { dir = "next", file = rel })
   else
     vim.notify("hunk reverted — undo in All files", vim.log.levels.INFO)
   end

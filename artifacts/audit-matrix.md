@@ -22,8 +22,8 @@ empty, huge, vanishing).
 | 2 | Diff paint (signs, line paint, virt_lines, statuscolumn, breakindent) | covered: tui-test | n/a | covered: tui-wrap (wrap gap), tui-test (folds+signs) | open (paint after rapid file switches) | covered: tui-unicode, tui-eol; open (huge diff, very long lines) |
 | 3 | Context folds (foldexpr/foldtext, zx on scope change) | covered: tui-test | n/a | covered: tui-test | covered: tui-scope (re-diff recompute) | open (folds on huge diff) |
 | 4 | View model (plain stamping, BufEnter re-derive, deleted scratch, rename map) | covered: tui-rename | covered: tui-test | covered: tui-test (deleted scratch) | open (unusual entry paths: jumplist/Ctrl-o, `:e other`, tags) | covered: tui-rename; open (rename onto deleted, case-only rename) |
-| 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | open (flip racing sync/poll; double-fire; paste mid-restart) | open (flip on deleted/renamed file) |
-| 6 | Review walk + reviewed ticks (Enter/BS, files-pane Enter, wrap, persistence) | covered: tui-nav (All-files walk, cross-tab ticks) | covered: tui-nav (files-pane Enter) | covered: tui-nav | open (walk during poll entries-rebuild; walk+revert interleave; Enter storm) | covered: tui-persist (content change clears tick); open (tick on renamed file) |
+| 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | probed: c1.p1 (double-tap flip — guard added, gate tui-storm step 4); open (paste mid-restart; pending input surviving restart) | open (flip on deleted/renamed file) |
+| 6 | Review walk + reviewed ticks (Enter/BS, files-pane Enter, wrap, persistence) | covered: tui-nav (All-files walk, cross-tab ticks) | covered: tui-nav (files-pane Enter) | covered: tui-nav | probed: c1.p1 (BUG found+fixed — stale nav; gate tui-storm covers Enter/BS storms, walk+revert interleave, walk across rebuild) | covered: tui-persist (content change clears tick); open (tick on renamed file) |
 | 7 | Hunk revert (`space rh`, shapes, EOL flip, last-hunk advance) | covered: tui-revert (last-hunk advance) | n/a | covered: tui-revert (through lock) | open (revert racing agent write / poll refresh) | covered: run.lua (all shapes, added-file refusal), tui-eol; open (revert on rename) |
 | 8 | Comments (rc/re/rx/rr/rl/rs/ry, cards, composer, jump) | covered: tui-scope (pin to scope+base) | covered: tui-mouse (card click) | covered: tui-edit (compose/edit/sent guard) | open (comment→flip→revert sequences; anchors surviving revert/edit) | covered: tui-unicode (composer) |
 | 9 | Live sync (autosave, checktime, FileChangedShell policy, conflict) | covered: tui-live | n/a | covered: tui-live | covered: run.lua (conflict, user wins); open (same-second agent write → poll — known nvim quirk; quit during pending writes) | open (agent deletes open file mid-edit) |
@@ -45,8 +45,8 @@ State-carrying features × timing rank highest (that's where every past live bug
 lived). The scenario-matrix lens works top-down, 3–5 cells per pass, preferring
 clusters that share a fixture.
 
-1. **6×timing** — walk during poll entries-rebuild; walk+revert interleave; Enter storm at a file boundary.
-2. **5×timing** — insert/paste flip racing sync/poll; pending input surviving restart; double-fire.
+1. ~~**6×timing**~~ — DONE c1.p1 (gate tui-storm): Enter/BS storms at boundaries, walk+revert interleave, walk across poll entries-rebuild.
+2. **5×timing** — pending input surviving restart; paste mid-restart. (double-fire + flip-vs-sync DONE c1.p1, gate tui-storm step 4.)
 3. **9×timing** — same-second agent write missed by checktime (known nvim quirk — confirm product exposure); quit during pending writes.
 4. **13×timing** — per-tab stash swap mid-action (compose, filter, md_view); tab switch mid-anything.
 5. **10×timing** — quit racing the rev-guarded persist write; two panes on one repo.
@@ -64,3 +64,14 @@ clusters that share a fixture.
 ## Log
 
 - 2026-07-07 build: matrix seeded; 20 gates + run.lua mapped; 24 open cells across 15 ranked entries.
+- 2026-07-07 c1.p1 (scenario-matrix): probed 6×timing + 5×timing storms. BUG (reproduced
+  deterministically, fixed): the walk's `nav` boundary intent carried no file, so an Enter
+  storm at a file boundary marked the ENTIRE changeset reviewed ("all files reviewed" after
+  3 fast Enters) — every stale boundary verdict advanced the host again. Fix: nav payload
+  now carries the buffer's file (plugin/reviewr.lua, diff.lua revert path); the host drops
+  Changes-tab navs whose file ≠ diff_path (src/lib.rs) — All-files navs stay
+  host-authoritative. Also hardened: a repeat insert tap after the flip published can no
+  longer double-fire a literal key into the unlocked buffer (lib.rs insert arm). New
+  permanent gate scripts/tui-storm-test.sh (5 steps) wired into tui-all.sh; run.lua nav
+  checks now assert the file field. cargo test 360 green, lua suite green, storm/nav/lock/
+  revert gates green individually.

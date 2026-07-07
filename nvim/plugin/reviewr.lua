@@ -165,7 +165,11 @@ local function review_walk(dir)
     stepped = diff.prev_change()
   end
   if not stepped then
-    require("reviewr.comments").notify("nav", { dir = dir > 0 and "next" or "prev" })
+    -- The boundary verdict is about THIS buffer: send its file so the host can drop a
+    -- verdict that raced past the open it just published (an Enter storm at a file
+    -- boundary must advance once, not mark every file it never showed).
+    local rel = name:match("^reviewr://deleted/(.+)$") or vim.fn.fnamemodify(name, ":.")
+    require("reviewr.comments").notify("nav", { dir = dir > 0 and "next" or "prev", file = rel })
   end
 end
 map("n", "<CR>", function()

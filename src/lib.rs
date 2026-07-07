@@ -291,16 +291,38 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
                 let key = map_str(payload, "key").unwrap_or_default();
                 // Allowlist before the key is ever interpolated into a vim command.
                 if matches!(key, "i" | "I" | "a" | "A" | "o" | "O" | "gi") && app.edit_here(&file) {
-                    session.pending_input = Some(PendingInput::Key(key.to_string()));
+                    // A repeat tap against the still-locked buffer after the flip has already
+                    // published (and its key fired) is the same "get me editing" intent, not
+                    // new input: one flip fires one key, whether the taps land in one drain
+                    // batch (the overwrite below) or across two — never a literal 'i' typed
+                    // into the freshly unlocked buffer.
+                    let already_fired = session.pending_input.is_none()
+                        && session.last_focus == Some(false)
+                        && session.last_sent.as_deref() == Some(file.as_str());
+                    if !already_fired {
+                        session.pending_input = Some(PendingInput::Key(key.to_string()));
+                    }
                 }
             }
             // The review walk hit a file boundary (Enter past the last hunk / Backspace before
-            // the first): advance or retreat the open file host-side.
-            "nav" => match map_str(payload, "dir").unwrap_or_default() {
-                "next" => app.nav_advance(),
-                "prev" => app.nav_retreat(),
-                _ => {}
-            },
+            // the first): advance or retreat the open file host-side. The verdict was computed
+            // against the buffer the editor showed; on Changes that file is load-bearing (the
+            // advance marks it reviewed), so a verdict from a file the host already moved past
+            // is stale and dropped — an Enter storm at a boundary advances once instead of
+            // marking files the reviewer never saw. All-files navs stay host-authoritative
+            // (each press means one file, whatever the lagging buffer showed).
+            "nav" => {
+                let stale = app.tab == crate::app::Tab::Changes
+                    && !file.is_empty()
+                    && app.diff_path.as_deref() != Some(file.as_str());
+                if !stale {
+                    match map_str(payload, "dir").unwrap_or_default() {
+                        "next" => app.nav_advance(),
+                        "prev" => app.nav_retreat(),
+                        _ => {}
+                    }
+                }
+            }
             "send" => app.export(&Agent),
             "yank" => app.export(&Clipboard),
             // A `"+`/`"*` yank in the embed: the editor has no terminal of its own, so the
