@@ -66,8 +66,16 @@ function M.refresh(bufnr)
   if not base then
     return
   end
+  -- Join with a trailing newline on each non-empty side: a plain concat makes the last base
+  -- line look modified whenever lines are appended at EOF, painting an unchanged line green
+  -- (and mis-anchoring the first-change jump). An empty side stays "" so an added file still
+  -- diffs as pure insertion.
+  local old = #base > 0 and (table.concat(base, "\n") .. "\n") or ""
   local cur = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
-  local ok, hunks = pcall(vim.diff, table.concat(base, "\n"), cur, { result_type = "indices" })
+  if cur ~= "" then
+    cur = cur .. "\n"
+  end
+  local ok, hunks = pcall(vim.diff, old, cur, { result_type = "indices" })
   if not ok or type(hunks) ~= "table" then
     return
   end
@@ -139,6 +147,44 @@ end
 
 function M.foldtext()
   return ("╶─ %d unchanged lines ─╴"):format(vim.v.foldend - vim.v.foldstart + 1)
+end
+
+-- Step the cursor to the next / previous change hunk in this buffer — the reviewer's Space
+-- walk and the ]c/[c maps. Returns false when no further hunk lies in that direction (the
+-- reviewer then advances to the next file) or the buffer has no hunk data at all.
+function M.next_change()
+  local ranges = M._hunks[vim.api.nvim_get_current_buf()]
+  if not ranges or #ranges == 0 then
+    return false
+  end
+  local cur = vim.fn.line(".")
+  for _, r in ipairs(ranges) do
+    if r.lo > cur then
+      vim.api.nvim_win_set_cursor(0, { math.min(r.lo, vim.api.nvim_buf_line_count(0)), 0 })
+      vim.cmd("silent! normal! zvzz")
+      return true
+    end
+  end
+  return false
+end
+
+function M.prev_change()
+  local ranges = M._hunks[vim.api.nvim_get_current_buf()]
+  if not ranges or #ranges == 0 then
+    return false
+  end
+  local cur = vim.fn.line(".")
+  for i = #ranges, 1, -1 do
+    if ranges[i].hi < cur then
+      vim.api.nvim_win_set_cursor(
+        0,
+        { math.min(ranges[i].lo, vim.api.nvim_buf_line_count(0)), 0 }
+      )
+      vim.cmd("silent! normal! zvzz")
+      return true
+    end
+  end
+  return false
 end
 
 -- The Changes-tab view: fold unchanged regions away (the reviewer's hunk view, vim-native —
