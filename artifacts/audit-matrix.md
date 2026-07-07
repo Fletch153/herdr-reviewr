@@ -18,7 +18,7 @@ empty, huge, vanishing).
 
 | # | Feature | tab | focus | view-state | timing | file-state |
 |---|---------|-----|-------|------------|--------|------------|
-| 1 | Embed lifecycle (spawn, dead panel, respawn, `:q`, quit confirm, theme) | open (death on non-Changes tab) | covered: tui-death | covered: tui-death (theme, decorations) | probed: c1.p2 (BUG found+fixed — respawn consumed pending work against stale view memory; gate tui-death step 4); open (restart racing first open) | n/a |
+| 1 | Embed lifecycle (spawn, dead panel, respawn, `:q`, quit confirm, theme) | open (death on non-Changes tab) | covered: tui-death | covered: tui-death (theme, decorations) | probed: c1.p2 (BUG found+fixed — respawn consumed pending work against stale view memory; gate tui-death step 4); probed: c1.p4 (orphaned embeds — see Log; harness fixed, tui_cleanup reaps loudly; residual: host death by signal can strand a wedged nvim, in-process fix out of scope); open (restart racing first open) | n/a |
 | 2 | Diff paint (signs, line paint, virt_lines, statuscolumn, breakindent) | covered: tui-test | n/a | covered: tui-wrap (wrap gap), tui-test (folds+signs) | open (paint after rapid file switches) | covered: tui-unicode, tui-eol; open (huge diff, very long lines) |
 | 3 | Context folds (foldexpr/foldtext, zx on scope change) | covered: tui-test | n/a | covered: tui-test | covered: tui-scope (re-diff recompute) | open (folds on huge diff) |
 | 4 | View model (plain stamping, BufEnter re-derive, deleted scratch, rename map) | covered: tui-rename | covered: tui-test | covered: tui-test (deleted scratch) | open (unusual entry paths: jumplist/Ctrl-o, `:e other`, tags) | covered: tui-rename; open (rename onto deleted, case-only rename) |
@@ -58,11 +58,31 @@ clusters that share a fixture.
 11. **file-state batch A** — rename onto deleted, case-only rename, tick/revert/flip on renamed files (4, 6, 7 × file-state).
 12. **file-state batch B** — huge diff (5k lines), very long lines, huge md (2, 3, 11 × file-state).
 13. **file-state batch C** — empty repo / zero commits / detached HEAD; agent deletes open file; CRLF (9, 15 × file-state).
-14. **16×timing** — drag during repaint; narrow terminal (120×30) sweep.
+14. **16×timing** — drag during repaint; narrow terminal (120×30) sweep (c1.p4 ran the full
+    tui-test flow at 120×30: all 19 assertions pass, no layout bug — drag-during-repaint and
+    the other gates at narrow size still open).
 15. **12×timing** — OSC52 interleaving; yank storm.
 
 ## Log
 
+- 2026-07-07 c1.p4 (flake-hunt): 2 full tui-all sweeps + 2 lua sweeps — result lines byte-identical,
+  all green. But the suite was silently leaking WEDGED `nvim --embed` orphans (~1 per few sweeps;
+  three found alive, one 6h old — parked in ep_poll, RPC-dead, stdio re-pointed to /dev/null,
+  immune to HUP/TERM). Root cause chain: three gates' final quits were FAKE — persist and eol
+  Tab'd INTO the editor before q (q = macro record), scope pressed q with the editor focused
+  after the list jump — so the reviewer never quit, the EXIT trap's `tmux kill-server` SIGHUP'd
+  the live host (reap never ran; host has no signal handler by design — unsafe_code=forbid, no
+  libc), and nvim occasionally deadlocks inside its own HUP teardown (nvim-internal; bare
+  EOF/HUP exits fine 15/15, only state-laden teardowns wedge). Fixes (harness at root): the 3
+  fake quits now real (focus-correct q); tui-rename gained its missing quit; tui-persist's
+  restart sleeps → wait_session_end (a lingering session also makes -t0 ambiguous); tui-lib's
+  trap → tui_cleanup (waits for an in-flight quit so the host's reap SIGKILLs nvim, then
+  kill-server, then loudly reaps any embed still cwd'd in the gate fixture). Verified: persist
+  6× green no-leak (was 1-in-6), two post-fix full sweeps green with embeds=0 after every gate.
+  PRODUCT residual (documented, out of scope here): host death by signal skips reap entirely —
+  a real pane close can strand a wedged nvim; a proper fix needs a SIGHUP/SIGTERM handler or
+  PDEATHSIG at spawn, both blocked by unsafe_code=forbid + no-new-crates. Maintainer call.
+  Also: tui-test at 120×30 — 19/19 pass, no geometry assumptions in the representative gate.
 - 2026-07-07 build: matrix seeded; 20 gates + run.lua mapped; 24 open cells across 15 ranked entries.
 - 2026-07-07 c1.p3 (scenario-matrix d2): probed ranked 2 remainder + ranked 3 (ranked 4 untouched —
   budget went to two product bugs). (a) 9×timing: pinned-mtime probes proved nvim's checktime

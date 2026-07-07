@@ -54,6 +54,8 @@ keys 1; sleep 1.5
 frame | grep -qE "two\.txt" && fail "the fully undone file is still listed as changed"
 echo "ok 2 - the embed preserves a missing final newline (undone file drops off)"
 
-keys Tab; sleep 0.3
+# Focus is already on the files pane (the Tab before `keys 1`) — another Tab would move INTO
+# the editor and this q would start a macro recording instead of quitting.
 keys q; sleep 0.3; keys y 2>/dev/null || true
+wait_session_end
 echo "# all EOL assertions passed"

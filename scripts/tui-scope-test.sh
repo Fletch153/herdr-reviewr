@@ -50,5 +50,9 @@ wait_for "╭─ comment"
 frame | grep -q "\[commit\]" || fail "scope chip did not restore to commit"
 echo "ok 4 - list jump restores scope and card"
 
-keys q; sleep 0.3; keys y
+# The list jump landed focus in the editor — Tab back to the files pane so q quits instead
+# of starting a macro recording inside nvim.
+keys Tab; sleep 0.3
+keys q; sleep 0.3; keys y 2>/dev/null || true
+wait_session_end
 echo "# all scope-pinning assertions passed"
