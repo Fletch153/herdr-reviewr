@@ -2697,6 +2697,33 @@ impl App {
         self.close_list();
     }
 
+    /// nvim mode: authoring intent from the locked Changes view (an insert key or a paste) —
+    /// flip to All files on the same file with the editor focused, so the pending input lands
+    /// in the plain, unlocked buffer. Mirrors `open_comment`: `set_tab` swaps the per-tab
+    /// stash (selection, cursor, entries), so the file is re-opened and focus forced after
+    /// the swap. Returns false for a stale intent (the view already moved elsewhere) so the
+    /// caller swallows the input instead of misfiring it into an unrelated buffer.
+    pub fn edit_here(&mut self, file: &str) -> bool {
+        if self.diff_path.as_deref() != Some(file) {
+            return false;
+        }
+        if self.tab != Tab::AllFiles {
+            let _ = self.set_tab(Tab::AllFiles);
+        }
+        let previous = self
+            .entries
+            .iter()
+            .find(|e| e.path == file)
+            .and_then(|e| e.previous_path.clone());
+        self.open_path_in_tab(file.to_string(), previous);
+        if let Some(fi) = self.file_row_of_path(file) {
+            self.file_cursor = fi;
+        }
+        self.focus = Focus::Diff;
+        self.reveal_diff = true;
+        self.diff_path.as_deref() == Some(file)
+    }
+
     pub fn open_list(&mut self) {
         if !self.store.is_empty() {
             self.list_cursor = 0;

@@ -300,6 +300,40 @@ check(
 )
 diff.unfocus()
 
+-- Insert intent: in the locked view the insert-entry maps report authoring intent to the
+-- host; in the plain view the same maps pass the key through (never removed — presentation
+-- truth is the buffer flag). Scratches never get the maps.
+vim.api.nvim_set_current_buf(rbuf)
+diff.focus()
+check("the locked buffer has the insert-intent maps", vim.fn.maparg("i", "n", false, true).buffer == 1)
+local isent = {}
+local keep_notify = comments.notify
+comments.notify = function(action, payload)
+  isent[#isent + 1] = { action = action, payload = payload }
+  return true
+end
+comments.edit_intent("i")
+comments.notify = keep_notify
+check(
+  "edit_intent reports the file and key",
+  #isent == 1 and isent[1].action == "insert" and isent[1].payload.key == "i" and isent[1].payload.file == "new.txt",
+  vim.inspect(isent)
+)
+diff.set_view(false)
+comments.edit_intent("i") -- plain view: transparent passthrough into insert mode
+-- (the "x" flush leaves insert mode by design, so assert by effect: typed text landed)
+vim.api.nvim_feedkeys("PTX" .. vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+vim.api.nvim_feedkeys("", "x", false)
+check(
+  "plain-view edit_intent passes the key through",
+  vim.fn.getline("."):find("PTX", 1, true) ~= nil,
+  vim.fn.getline(".")
+)
+vim.cmd("silent! undo")
+vim.api.nvim_set_current_buf(ubuf)
+local umap = vim.fn.maparg("i", "n", false, true)
+check("a scratch has no insert-intent maps", umap.buffer ~= 1, vim.inspect(umap))
+
 -- Gutter template branches: virt_lines rows (cards, red removed lines) keep the stock
 -- unpainted gutter; deletion-boundary lines are context, not green; wrapped hot rows paint
 -- edge to edge. Re-focus first: the plain flip above cleared rbuf's hunks.

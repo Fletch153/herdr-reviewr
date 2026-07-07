@@ -1849,10 +1849,12 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 "Editor (nvim)",
                 vec![
                     ("tab", "back to the files pane · every other key goes to nvim"),
+                    ("Changes", "read-only review surface — other edits answer E21"),
+                    ("i a o … / paste", "flips to All files at the same spot to edit"),
                     ("space rc", "comment on the line / visual selection"),
                     ("space re / rx / rr", "edit / delete / resolve the comment under the cursor"),
                     ("space rl / rs / ry", "comments list · send to the agent · copy all"),
-                    ("space rd", "side-by-side diff vs the base"),
+                    ("space rd", "side-by-side diff vs the base (dp/do editable)"),
                     ("]c / [c", "next / previous change in the file"),
                     (":ReviewrDoctor", "diagnose agent/send wiring"),
                     ("note", "without the kitty keyboard protocol, ctrl+i is tab"),

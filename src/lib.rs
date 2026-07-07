@@ -100,6 +100,16 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// Input captured in the locked Changes view, delivered after the flip to All files publishes
+/// its plain (unlocked) sync — notifications are processed in order, so the editor sees the
+/// unlock first.
+enum PendingInput {
+    /// An insert-entry key (allowlisted at dispatch), replayed via `feedkeys(key, 'n')`.
+    Key(String),
+    /// A terminal paste, delivered via `nvim_paste`.
+    Paste(String),
+}
+
 /// The embedded editor's lifecycle state, owned by the event loop so [`App`] stays engine-free
 /// and unit-testable. Handlers talk to it through [`NvimBridge`], letting routing tests use a
 /// recorder instead of a live nvim.
@@ -122,6 +132,8 @@ struct NvimSession {
     auto_respawned: bool,
     /// A left-button press landed in the grid, so drags/release route to nvim.
     mouse_down: bool,
+    /// Authoring input from the locked view, waiting for the flip's plain sync to publish.
+    pending_input: Option<PendingInput>,
     /// The colorscheme leaves `Normal` without a background: the blit paints the terminal
     /// default instead of nvim's reported black, so transparent themes (e.g. catppuccin's
     /// `transparent_background`) look exactly as they do in a plain terminal nvim. Sampled
@@ -284,6 +296,14 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
                     app.open_list();
                 }
             }
+            "insert" => {
+                let key = map_str(payload, "key").unwrap_or_default();
+                // Allowlist before the key is ever interpolated into a vim command.
+                if matches!(key, "i" | "I" | "a" | "A" | "o" | "O" | "gi") && app.edit_here(&file)
+                {
+                    session.pending_input = Some(PendingInput::Key(key.to_string()));
+                }
+            }
             "send" => app.export(&Agent),
             "yank" => app.export(&Clipboard),
             _ => {}
@@ -375,6 +395,26 @@ fn review_advance_nvim(app: &mut App, session: &mut NvimSession) {
 /// respawn a dead editor once per death. `:confirm edit`'s unsaved prompt renders inside the
 /// grid; `last_sent` is set optimistically so the watcher never re-sends against a showing
 /// prompt — a cancel is the user's call, and re-clicking the file retries via `nvim_reopen`.
+/// Deliver input captured by the flip once the plain sync for `focus == false` has been
+/// published this frame — as ordered notifications, it lands after the editor unlocks. A
+/// pending input on a still-focused view is stale (the tab moved again): dropped, never
+/// misfired into a locked or unrelated buffer.
+fn fire_pending_input(session: &mut NvimSession, focus: bool) {
+    let Some(pending) = session.pending_input.take() else { return };
+    if focus {
+        return;
+    }
+    let Some(engine) = session.engine_alive() else { return };
+    match pending {
+        PendingInput::Key(key) => {
+            let _ = engine.command_fire(&format!("call feedkeys('{key}', 'n')"));
+        }
+        PendingInput::Paste(text) => {
+            let _ = engine.paste(&text);
+        }
+    }
+}
+
 fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     if !app.editor_nvim || !app.tab.is_file_tab() {
         return;
@@ -394,6 +434,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             session.last_base = Some(base);
             session.last_focus = Some(false);
         }
+        fire_pending_input(session, false);
         return;
     };
     let base = app.nvim_base_ref();
@@ -408,7 +449,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     // cheap change detector); a pending cursor jump also counts as work.
     let cards_key = (app.store.rev(), rel.clone(), base.clone(), focus);
     let same_cards = session.last_cards.as_ref() == Some(&cards_key);
-    if same_view && same_cards && app.nvim_goto.is_none() {
+    if same_view && same_cards && app.nvim_goto.is_none() && session.pending_input.is_none() {
         return;
     }
     if session.engine_alive().is_none() {
@@ -489,6 +530,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             let _ = engine.command_fire(&format!("call cursor({line}, 1) | silent! normal! zvzz"));
         }
     }
+    fire_pending_input(session, focus);
 }
 
 fn enter_tui() -> (DefaultTerminal, bool) {
@@ -721,6 +763,8 @@ fn event_loop(
                 }
                 // Bracketed paste: into the editor when it has focus (nvim_paste inserts
                 // literally, mode-appropriately, in one undo step); else the composer caret.
+                // A paste into the locked Changes view is authoring intent like an insert
+                // key: flip to All files and deliver it after the plain sync unlocks.
                 Event::Paste(text) => {
                     if app.editor_nvim
                         && app.tab.is_file_tab()
@@ -728,7 +772,14 @@ fn event_loop(
                         && app.mode == Mode::Normal
                         && session.alive()
                     {
-                        session.feed_paste(&text);
+                        if app.tab == crate::app::Tab::Changes
+                            && let Some(rel) = app.diff_path.clone()
+                            && app.edit_here(&rel)
+                        {
+                            session.pending_input = Some(PendingInput::Paste(text.clone()));
+                        } else {
+                            session.feed_paste(&text);
+                        }
                     } else {
                         app.input_paste(&text);
                     }

@@ -40,6 +40,23 @@ end
 -- other buffer anchors new-side at its own line numbers. Snippets mirror the built-in pane:
 -- marker-prefixed on the Changes view (`+` inside a change hunk, space context, `-` on the
 -- deleted scratch), plain code in the All-files view (`b:reviewr_plain`).
+-- i/I/a/A/o/O/gi in the locked (Changes) view are authoring intent: ask the host to flip to
+-- All files on this file — it feeds the key back once the plain, unlocked view is live, so
+-- the user lands in insert at the same spot. In the plain view the same maps are transparent
+-- passthroughs (they are never removed; presentation truth is the buffer flag, read per
+-- keypress — a lifecycle-free design, see diff.lock()).
+function M.edit_intent(key)
+  if vim.b.reviewr_plain ~= false then
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "n", false)
+    return
+  end
+  local abs = vim.api.nvim_buf_get_name(0)
+  if abs == "" then
+    return
+  end
+  M.notify("insert", { file = vim.fn.fnamemodify(abs, ":."), key = key })
+end
+
 function M.anchor(lo, hi)
   local bufnr = vim.api.nvim_get_current_buf()
   local name = vim.api.nvim_buf_get_name(bufnr)

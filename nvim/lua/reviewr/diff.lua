@@ -320,6 +320,24 @@ local function lockable(bufnr)
   return vim.bo[bufnr].buftype == "" and vim.api.nvim_buf_get_name(bufnr) ~= ""
 end
 
+-- Insert-entry keys that carry authoring intent out of the locked view (comments.edit_intent
+-- flips to All files). Buffer-local, installed once with the first lock, never removed: in
+-- the plain view they pass the key through untouched, so there is no add/remove lifecycle to
+-- leak. Everything else mutating (dd, x, p, u, ...) answers E21 honestly.
+local INSERT_KEYS = { "i", "I", "a", "A", "o", "O", "gi" }
+
+local function install_edit_maps(bufnr)
+  if vim.b[bufnr].reviewr_edit_maps then
+    return
+  end
+  vim.b[bufnr].reviewr_edit_maps = true
+  for _, k in ipairs(INSERT_KEYS) do
+    vim.keymap.set("n", k, function()
+      require("reviewr.comments").edit_intent(k)
+    end, { buffer = bufnr, nowait = true })
+  end
+end
+
 function M.lock(bufnr)
   if not lockable(bufnr) or vim.b[bufnr].reviewr_split_active then
     return -- the rd split is an editing surface: re-syncs while it is open must not re-lock
@@ -328,6 +346,7 @@ function M.lock(bufnr)
     vim.b[bufnr].reviewr_saved_ma = vim.bo[bufnr].modifiable
   end
   vim.bo[bufnr].modifiable = false
+  install_edit_maps(bufnr)
 end
 
 function M.unlock(bufnr)
