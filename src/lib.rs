@@ -944,6 +944,9 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
                         if session.restart(&app.repo, grid.width.max(12), grid.height.max(3)) {
                             app.status = "editor restarted".to_string();
                             app.nvim_reopen = true; // re-open the shown file next frame
+                            // A fresh nvim lost the palette-matched card colors: re-push,
+                            // exactly like the other two (re)start paths.
+                            push_editor_theme(app, session);
                         } else {
                             app.status = "editor restart failed".to_string();
                         }
