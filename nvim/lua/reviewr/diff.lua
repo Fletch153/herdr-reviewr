@@ -246,6 +246,20 @@ function M.prev_change()
   return false
 end
 
+-- Land on the buffer's last hunk — the backward walk's entry point into a file (`focus()`
+-- already lands forward entries on the first hunk). Fired by the host after the sync that
+-- opened the file publishes, so it wins over focus()'s first-hunk placement.
+function M.last_change()
+  local ranges = M._hunks[vim.api.nvim_get_current_buf()]
+  if not ranges or #ranges == 0 then
+    return false
+  end
+  local last = ranges[#ranges]
+  vim.api.nvim_win_set_cursor(0, { math.min(last.lo, vim.api.nvim_buf_line_count(0)), 0 })
+  vim.cmd("silent! normal! zvzz")
+  return true
+end
+
 -- The Changes-tab view: fold unchanged regions away (the reviewer's hunk view, vim-native —
 -- `zR`/`zo` reveal the rest) and land the cursor on the first change. A no-op for a file with
 -- no changes vs the base.

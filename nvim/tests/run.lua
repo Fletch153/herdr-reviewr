@@ -397,15 +397,23 @@ vim.cmd("silent! checktime")
 check("a clean buffer reloads on checktime", vim.fn.getline(3) == "EXTERNAL")
 vim.api.nvim_buf_set_lines(lbuf, 0, 1, false, { "USERLINE" })
 vim.fn.writefile({ "clobbered" }, lpath)
+-- Future-dated mtime: nvim's change detection persistently misses an external write landing
+-- in the same wall-clock second as the state it stored at the last reload (reproduced ~50%
+-- on 0.12.3 — whether this script crosses a second boundary between the two writes). The
+-- subject here is the FileChangedShell policy, not that detection heuristic, so make the
+-- timestamp unambiguous. Real agent writes land seconds apart and later writes self-heal.
+local bump = os.time() + 5
+vim.uv.fs_utime(lpath, bump, bump)
 vim.cmd("silent! checktime")
 check(
   "an in-flight user edit survives an external write",
   vim.fn.getline(1) == "USERLINE" and vim.bo[lbuf].modified,
   vim.fn.getline(1)
 )
-vim.wait(2000, function() -- the policy's scheduled forced write resolves the conflict
+vim.wait(2000, function()
+  vim.cmd("silent! checktime") -- the host re-fires checktime on every 500ms poll tick
   return (vim.fn.readfile(lpath)[1] or "") == "USERLINE"
-end)
+end, 200)
 check(
   "the conflict resolves to the user's version on disk",
   vim.fn.readfile(lpath)[1] == "USERLINE",
@@ -415,6 +423,72 @@ vim.fn.delete(lpath)
 vim.cmd("silent! checktime")
 check("deletion underneath keeps the buffer content", vim.fn.getline(1) == "USERLINE")
 vim.cmd("silent! bwipeout!")
+
+vim.cmd("cd " .. vim.fn.fnameescape(root))
+
+-- The Enter/Backspace review walk: hunk to hunk inside the focused view, a "nav" intent to
+-- the host at the file boundary (and immediately in the plain view, which has no hunks).
+-- Foreign buffers (quickfix, help, scratches) keep the keys' native meaning.
+local wroot = root .. "/walkrepo"
+vim.fn.mkdir(wroot, "p")
+local function wgit(args)
+  vim.fn.system(vim.list_extend({ "git", "-C", wroot }, args))
+end
+wgit({ "init", "-qb", "main" })
+wgit({ "config", "user.email", "t@t" })
+wgit({ "config", "user.name", "t" })
+wgit({ "config", "commit.gpgsign", "false" })
+vim.fn.writefile({ "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9" }, wroot .. "/w.txt")
+wgit({ "add", "-A" })
+wgit({ "commit", "-qm", "W" })
+vim.fn.writefile({ "a1", "EDIT2", "a3", "a4", "a5", "a6", "EDIT7", "a8", "a9" }, wroot .. "/w.txt")
+vim.cmd("cd " .. vim.fn.fnameescape(wroot))
+vim.cmd("edit w.txt")
+local wbuf = vim.api.nvim_get_current_buf()
+diff.focus()
+local wh = diff._hunks[wbuf]
+check("the walk fixture has two hunks", wh and #wh == 2 and wh[1].lo == 2 and wh[2].lo == 7, vim.inspect(wh))
+check("focus lands on the first hunk", vim.fn.line(".") == 2)
+local cr_map = vim.fn.maparg("<CR>", "n", false, true)
+local bs_map = vim.fn.maparg("<BS>", "n", false, true)
+check("the walk maps are installed", cr_map.callback ~= nil and bs_map.callback ~= nil)
+local navs = {}
+local keep_nav_notify = comments.notify
+comments.notify = function(action, payload)
+  navs[#navs + 1] = { action = action, payload = payload }
+  return true
+end
+cr_map.callback()
+check("Enter steps to the next hunk", vim.fn.line(".") == 7 and #navs == 0, vim.fn.line("."))
+cr_map.callback()
+check(
+  "Enter past the last hunk reports nav next",
+  #navs == 1 and navs[1].action == "nav" and navs[1].payload.dir == "next",
+  vim.inspect(navs)
+)
+bs_map.callback()
+check("Backspace steps to the previous hunk", vim.fn.line(".") == 2 and #navs == 1, vim.fn.line("."))
+bs_map.callback()
+check(
+  "Backspace before the first hunk reports nav prev",
+  #navs == 2 and navs[2].payload.dir == "prev",
+  vim.inspect(navs)
+)
+check("last_change lands on the final hunk", diff.last_change() == true and vim.fn.line(".") == 7)
+diff.set_view(false) -- plain view: no hunks, the walk is file-to-file
+cr_map.callback()
+check(
+  "the plain view walks straight to the next file",
+  #navs == 3 and navs[3].payload.dir == "next",
+  vim.inspect(navs)
+)
+local foreign = vim.api.nvim_create_buf(false, true) -- scratch: not ours, keys stay native
+vim.api.nvim_set_current_buf(foreign)
+cr_map.callback()
+vim.api.nvim_feedkeys("", "x", false) -- flush the passthrough
+check("a foreign scratch never reports nav", #navs == 3, vim.inspect(navs))
+comments.notify = keep_nav_notify
+vim.cmd("silent! bwipeout! " .. wbuf)
 
 vim.cmd("cd " .. vim.fn.fnameescape(root))
 

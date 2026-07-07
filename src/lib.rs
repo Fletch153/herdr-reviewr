@@ -303,6 +303,13 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
                     session.pending_input = Some(PendingInput::Key(key.to_string()));
                 }
             }
+            // The review walk hit a file boundary (Enter past the last hunk / Backspace before
+            // the first): advance or retreat the open file host-side.
+            "nav" => match map_str(payload, "dir").unwrap_or_default() {
+                "next" => app.nav_advance(),
+                "prev" => app.nav_retreat(),
+                _ => {}
+            },
             "send" => app.export(&Agent),
             "yank" => app.export(&Clipboard),
             _ => {}
@@ -451,7 +458,12 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     // cheap change detector); a pending cursor jump also counts as work.
     let cards_key = (app.store.rev(), rel.clone(), base.clone(), focus);
     let same_cards = session.last_cards.as_ref() == Some(&cards_key);
-    if same_view && same_cards && app.nvim_goto.is_none() && session.pending_input.is_none() {
+    if same_view
+        && same_cards
+        && app.nvim_goto.is_none()
+        && !app.nvim_place_last
+        && session.pending_input.is_none()
+    {
         return;
     }
     if session.engine_alive().is_none() {
@@ -530,6 +542,14 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         // A comment jump: land the editor's cursor (opening any folds) after the open above.
         if let Some(engine) = session.engine_alive() {
             let _ = engine.command_fire(&format!("call cursor({line}, 1) | silent! normal! zvzz"));
+        }
+    }
+    if app.nvim_place_last {
+        // The backward walk entered this file: override focus()'s first-hunk landing with the
+        // last hunk — notifications run in order, so this lands after the open + sync above.
+        app.nvim_place_last = false;
+        if let Some(engine) = session.engine_alive() {
+            let _ = engine.exec_lua_fire("require('reviewr.diff').last_change()", vec![]);
         }
     }
     fire_pending_input(session, focus);
@@ -1042,6 +1062,8 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
                 if key.code == Tab && key.modifiers.is_empty() && normal_ish {
                     app.toggle_focus();
                 } else if let Some(notation) = nvim_keys::key_notation(&key) {
+                    // Space is deliberately NOT intercepted here: it is the leader for every
+                    // reviewr map (space rc/rd/…) — the editor walk lives on Enter/Backspace.
                     session.feed_keys(&notation);
                 }
             } else {

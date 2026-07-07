@@ -111,3 +111,41 @@ map("n", "[c", function()
     require("reviewr.diff").prev_change()
   end
 end, { silent = true, desc = "Reviewr: previous change" })
+
+-- Enter / Backspace: the review walk. Forward steps to the next hunk; past the last hunk it
+-- asks the host to advance to the next changed file. Backspace mirrors it (previous hunk,
+-- then the previous file, landing on that file's last hunk). In the plain (All files) view
+-- there are no hunks, so the walk moves file to file through the changeset. Space is NOT
+-- mapped here — it is the user's leader; the host translates it to this walk only inside the
+-- read-only Changes pane.
+local function review_walk(dir)
+  if vim.wo.diff then
+    vim.cmd("normal! " .. (dir > 0 and "]c" or "[c"))
+    return
+  end
+  local name = vim.api.nvim_buf_get_name(0)
+  local ours = (vim.bo.buftype == "" and name ~= "")
+    or name:find("reviewr://deleted/", 1, true)
+  if not ours then
+    -- quickfix, help, telescope, cmdwin…: keep the key's native meaning there.
+    local key = dir > 0 and "\r" or vim.keycode("<BS>")
+    vim.api.nvim_feedkeys(key, "n", false)
+    return
+  end
+  local diff = require("reviewr.diff")
+  local stepped -- no and/or chain: a false step must not fall through to the other direction
+  if dir > 0 then
+    stepped = diff.next_change()
+  else
+    stepped = diff.prev_change()
+  end
+  if not stepped then
+    require("reviewr.comments").notify("nav", { dir = dir > 0 and "next" or "prev" })
+  end
+end
+map("n", "<CR>", function()
+  review_walk(1)
+end, { silent = true, desc = "Reviewr: walk forward (hunk, then next file)" })
+map("n", "<BS>", function()
+  review_walk(-1)
+end, { silent = true, desc = "Reviewr: walk back (hunk, then previous file)" })

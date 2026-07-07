@@ -324,6 +324,10 @@ pub struct App {
     /// nvim mode: a 1-based buffer line the editor's cursor should land on — set by comment
     /// jumps (the list's Enter/click, an edit open) and consumed by the per-frame editor sync.
     pub nvim_goto: Option<u32>,
+    /// nvim mode: land the editor's cursor on the opened file's LAST hunk once the sync
+    /// publishes — the backward review walk's file entry (forward entries land on the first
+    /// hunk via `focus()` itself). Consumed by the per-frame editor sync like `nvim_goto`.
+    pub nvim_place_last: bool,
     /// Whether a mouse drag is currently moving the pane divider.
     pub resizing: bool,
     pub select_anchor: Option<usize>,
@@ -421,6 +425,7 @@ impl App {
             nvim_dead: false,
             nvim_anchor: None,
             nvim_goto: None,
+            nvim_place_last: false,
             resizing: false,
             select_anchor: None,
             store: CommentStore::new(),
@@ -2652,13 +2657,23 @@ impl App {
             self.toggle_reviewed();
             return;
         }
-        if let Some(&t) = self.change_block_starts().iter().find(|&&i| i > self.diff_cursor) {
+        // nvim mode: the editor already stepped its own hunks before this call (its cursor is
+        // the review position, not `diff_cursor`) — go straight to the file advance.
+        if !self.editor_nvim
+            && let Some(&t) = self.change_block_starts().iter().find(|&&i| i > self.diff_cursor)
+        {
             self.select_anchor = None;
             self.diff_cursor = t;
             self.reveal_diff = true;
             return;
         }
-        // Past the last block: mark the open file reviewed, then walk to the next unreviewed one.
+        self.advance_reviewed_file();
+    }
+
+    /// Past the open file's last change: mark it reviewed, then walk to the next unreviewed
+    /// file and open it on its first change. The forward review walk's file boundary — shared
+    /// by the native diff and the editor (where `focus()` lands the cursor on the first hunk).
+    pub fn advance_reviewed_file(&mut self) {
         let Some(path) = self.diff_path.clone() else {
             self.toggle_reviewed();
             return;
@@ -2680,6 +2695,62 @@ impl App {
             self.status = format!("file reviewed · {reviewed} of {total}");
         } else {
             self.status = "all files reviewed".to_string();
+        }
+    }
+
+    /// Step the open file to its neighbor in the changeset (wrapping at the ends) — the review
+    /// walk's file granularity where hunk stepping doesn't apply: backward on Changes, and both
+    /// directions on All files (its plain buffers carry no hunks). Pure navigation: unlike
+    /// `advance_reviewed_file` it never touches the reviewed set. Returns whether a file opened.
+    pub fn walk_changeset(&mut self, dir: i32) -> bool {
+        if self.entries.is_empty() {
+            self.status = "no changed files".to_string();
+            return false;
+        }
+        let cur =
+            self.diff_path.as_deref().and_then(|p| self.entries.iter().position(|e| e.path == p));
+        let n = self.entries.len();
+        let idx = match (cur, dir > 0) {
+            (Some(i), true) => (i + 1) % n,
+            (Some(i), false) => (i + n - 1) % n,
+            // The open file isn't a changed file (or nothing is open): enter the set at the end
+            // the walk is heading toward.
+            (None, true) => 0,
+            (None, false) => n - 1,
+        };
+        let e = self.entries[idx].clone();
+        self.reset_diff_view();
+        self.open_path_in_tab(e.path.clone(), e.previous_path);
+        self.reveal_path(&e.path);
+        self.focus = Focus::Diff;
+        self.diff_path.as_deref() == Some(e.path.as_str())
+    }
+
+    /// The editor reported "no further hunk forward" (Enter / Space past the last change).
+    pub fn nav_advance(&mut self) {
+        match self.tab {
+            Tab::Changes => self.advance_reviewed_file(),
+            Tab::AllFiles => {
+                self.walk_changeset(1);
+            }
+            Tab::Pr => {}
+        }
+    }
+
+    /// The editor reported "no further hunk backward" (Backspace before the first change):
+    /// open the previous changed file — on Changes landing on its LAST hunk (the mirror of the
+    /// forward walk's first-hunk entry).
+    pub fn nav_retreat(&mut self) {
+        match self.tab {
+            Tab::Changes => {
+                if self.walk_changeset(-1) {
+                    self.nvim_place_last = true;
+                }
+            }
+            Tab::AllFiles => {
+                self.walk_changeset(-1);
+            }
+            Tab::Pr => {}
         }
     }
 
