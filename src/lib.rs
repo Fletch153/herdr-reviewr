@@ -1132,13 +1132,22 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
                 // Plain Tab returns to the file list only in nvim's normal-ish modes; while
                 // inserting or on the cmdline it must type (indent, completion). <C-i> stays
                 // distinct under the kitty protocol, so the jumplist survives.
-                let normal_ish = {
-                    let mode = session.mode();
-                    mode.starts_with("normal")
-                        || mode.starts_with("visual")
-                        || mode.starts_with("operator")
-                };
+                let mode = session.mode();
+                let normal_ish = mode.starts_with("normal")
+                    || mode.starts_with("visual")
+                    || mode.starts_with("operator");
+                // A visual selection or a half-typed operator lives only while the editor is the
+                // input target. Both keys below hand that target away — Tab to the files pane,
+                // <C-i> to the Changes review — so the editor must drop back to normal first.
+                // Left in visual mode it silently persists behind the host's back: a returning
+                // Tab (or a tab switch that republishes the same file in place via sync_view,
+                // which never leaves visual) lands right back in the selection, and the next
+                // j/k extends it instead of navigating. <C-\><C-N> is the from-anywhere reset.
+                let leaving_transient = mode.starts_with("visual") || mode.starts_with("operator");
                 if key.code == Tab && key.modifiers.is_empty() && normal_ish {
+                    if leaving_transient {
+                        session.feed_keys("<C-\\><C-N>");
+                    }
                     app.toggle_focus();
                 } else if key.code == Char('i')
                     && key.modifiers == KeyModifiers::CONTROL
@@ -1149,6 +1158,9 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
                     // Changes review of the same file, the fresh edit already in the diff.
                     // (Distinct from Tab only under the kitty protocol; elsewhere it arrives
                     // as Tab and toggles focus above. In Changes, <C-i> stays the jumplist.)
+                    if leaving_transient {
+                        session.feed_keys("<C-\\><C-N>");
+                    }
                     app.set_tab(crate::app::Tab::Changes)?;
                 } else if let Some(notation) = nvim_keys::key_notation(&key) {
                     // Space is deliberately NOT intercepted here: it is the leader for every

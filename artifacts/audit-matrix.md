@@ -30,7 +30,7 @@ empty, huge, vanishing).
 | 10 | Comment persistence (comments ref, seed, empty delete, rev-guarded) | covered: tui-persist | n/a | n/a | open (quit racing pending write; two panes one repo) | n/a |
 | 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | probed: c2.p6 (sticky-preference contract holds: non-md file in All files shows no chip, returning to the md file re-renders; no bug; gate tui-stash step b) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
 | 12 | Clipboard (provider→OSC52, cache pastes, host export fallback) | n/a | n/a | n/a | open (OSC52 mid-frame interleave; rapid yank storm) | covered: tui-clip; run.lua (linewise trailing \n) |
-| 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | probed: c2.p6 (BUG found+fixed — the `/` filter query was app-global while every other left-pane field was stashed, so a Changes filter silently filtered All files' list (and vice versa); filter now lives in TabStash + set_tab confirms an in-flight filter box before the swap. Also probed clean: ctrl+i mid-filter ignored, `2` mid-compose lands in the draft with no switch. Gate tui-stash. Still open: tab switch mid-highlight) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
+| 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | probed: c2.p6 (BUG found+fixed — the `/` filter query was app-global while every other left-pane field was stashed, so a Changes filter silently filtered All files' list (and vice versa); filter now lives in TabStash + set_tab confirms an in-flight filter box before the swap. Also probed clean: ctrl+i mid-filter ignored, `2` mid-compose lands in the draft with no switch. Gate tui-stash. Tab switch mid-highlight probed r2.p1 (BUG found+fixed — a visual selection survived Tab-out to the files pane: the editor stayed in visual mode behind the host's back, so a same-file tab switch (in-place sync_view never leaves visual) and the Tab back landed in a stale selection where j/k extended instead of navigating; focus handoff now feeds `<C-\><C-N>` to drop transient modes, gate tui-vishl)) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
 | 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename; probed: c1.p5 (zero-commit repo: untracked file diffs against the empty tree, both tabs render; detached HEAD: clean tree shows the empty state, live edit re-lists — both pass, no bug) |
 | 15 | EOL (nofixendofline, note+sign, eol revert, byte-exact base) | covered: tui-eol | n/a | covered: tui-eol | n/a | covered: tui-eol, run.lua; open (CRLF content) |
 | 16 | Host UI interop (mouse routing, divider, resize, filter, help, chips) | covered: tui-mouse, tui-md (chip) | covered: tui-mouse | covered: tui-split (divider), tui-picker (filter/resize) | open (drag during repaint; click storm; narrow terminal) | covered: tui-trio (backspace delete) |
@@ -48,7 +48,7 @@ clusters that share a fixture.
 1. ~~**6×timing**~~ — DONE c1.p1 (gate tui-storm): Enter/BS storms at boundaries, walk+revert interleave, walk across poll entries-rebuild.
 2. ~~**5×timing**~~ — DONE c1.p3 (gate tui-death step 3c): dead-editor paste now honestly dropped with a status; pending-input-across-restart proven frame-local by code walk (no live window survives c1.p2's dedup reset — only a failed respawn strands it, and it then fires into the manually-restarted plain view, judged acceptable).
 3. ~~**9×timing**~~ — DONE c1.p3 (gates tui-live 4a/4b/5): natural same-second writes are safe (nvim compares mtime nsec); the REAL shadow was mtime-exact writes — nvim never compares size, fixed with live.poll's size check. Residual (documented, unfixed): mtime-exact + byte-identical-length content swap stays invisible (needs per-tick hashing, not warranted). Quit mid-insert flushes via the forced wall!.
-4. ~~**13×timing**~~ — DONE c2.p6 (gate tui-stash): filter-leak bug fixed; compose/md_view/ctrl+i honest. Residual: tab switch mid-highlight unprobed (select_anchor is stashed).
+4. ~~**13×timing**~~ — DONE c2.p6 (gate tui-stash) + r2.p1 (gate tui-vishl): filter-leak bug fixed; compose/md_view/ctrl+i honest; tab switch mid-highlight fixed (visual mode survived Tab-out → focus handoff now normalizes the editor).
 5. **10×timing** — quit racing the rev-guarded persist write; two panes on one repo.
 6. **8×timing** — comment → flip → revert sequences; anchors surviving revert and agent edits.
 7. **11×timing** — md_view during restart, death (11×tab DONE c2.p6, gate tui-stash step b).
@@ -64,6 +64,22 @@ clusters that share a fixture.
 15. **12×timing** — OSC52 interleaving; yank storm.
 
 ## Log
+
+- 2026-07-07 r2.p1 (scenario-matrix, ranked 4 residual — tab switch mid-highlight): BUG found+fixed.
+  A nvim visual selection is host-invisible state that only makes sense while the editor is the
+  input target, but nothing dropped it when the target changed. Repro (gate tui-vishl, live): V-select
+  in the Changes editor, Tab to the files pane — the host flips Focus::Files but never tells nvim, so
+  it sits in `-- VISUAL LINE --` behind the host's back. Then a same-file Changes↔All files switch
+  republishes in place via sync_view (no `:edit`, no mode reset — open_file's `stopinsert` only covers
+  insert), and the returning Tab both leave the editor in that stale selection: the next j/k EXTENDS it
+  instead of navigating. Root cause is the focus handoff, not the publish — confirmed by the pure
+  Tab-out→Tab-back case (no tab switch) leaking identically. Fix (src/lib.rs, both editor-focus exits —
+  the plain-Tab toggle and the <C-i> All-files return): when the current mode is visual/operator, feed
+  `<C-\><C-N>` to force normal before handing focus/view away; a no-op in plain normal, ordered before
+  any subsequent republish. Gate scripts/tui-vishl-test.sh (4 contracts: Tab-out normalizes, Tab round
+  trip stays normal, tab switch out/back leaks no highlight + restores the file, j/k navigate after)
+  wired into tui-all.sh; teeth verified by reverse-applying the fix (fails `stuck: VISUAL LINE`).
+  49 cargo + lua suites green; fmt/clippy clean; gate green twice, focus-correct quit, zero embed leaks.
 
 - 2026-07-07 c2.p7 (race-audit d2, rotation subsystem 2 — poll tick vs user input): BUG found+fixed.
   Windows audited host-side across the poll's reload(): (a) selection/cursor identity across the
