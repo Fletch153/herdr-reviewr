@@ -114,6 +114,7 @@ enum PendingInput {
 /// and unit-testable. Handlers talk to it through [`NvimBridge`], letting routing tests use a
 /// recorder instead of a live nvim.
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)] // independent session facts, same shape as App
 struct NvimSession {
     engine: Option<nvim::Nvim>,
     /// Last (cols, rows) sent, so a divider drag doesn't spam resizes.
@@ -134,6 +135,9 @@ struct NvimSession {
     mouse_down: bool,
     /// Authoring input from the locked view, waiting for the flip's plain sync to publish.
     pending_input: Option<PendingInput>,
+    /// The editor is parked on the empty-state scratch (a Changes tab with no selection);
+    /// guards the park against being re-sent every sync tick.
+    parked_empty: bool,
     /// The colorscheme leaves `Normal` without a background: the blit paints the terminal
     /// default instead of nvim's reported black, so transparent themes (e.g. catppuccin's
     /// `transparent_background`) look exactly as they do in a plain terminal nvim. Sampled
@@ -150,6 +154,7 @@ impl NvimSession {
         self.last_size = Some((cols, rows));
         self.last_sent = None;
         self.last_cards = None;
+        self.parked_empty = false;
         Ok(())
     }
 
@@ -449,10 +454,30 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         return;
     }
     let Some(rel) = app.diff_path.clone() else {
-        // A file tab with nothing selected (e.g. the first visit to All files swaps in an
-        // empty stash): the editor keeps its buffer — it is an editor — but the view switch
-        // must still autosave and drop into the plain presentation like any other. Without
-        // this, flipping 1<->2 without touching the tree neither saved nor re-presented.
+        if app.tab == crate::app::Tab::Changes {
+            // Changes with nothing to show — an empty changeset, or the last change reverted
+            // away mid-session. The Changes pane presents the changeset, so it must park on
+            // the empty-state scratch rather than keep another tab's buffer up (which read as
+            // "there are changes"). Saving happens inside the park; the published-view memory
+            // resets so the next real open republishes everything into the parked editor.
+            if !session.parked_empty
+                && let Some(engine) = session.engine_alive()
+            {
+                logln!("nvim_sync: empty changeset on Changes - park empty state");
+                let _ = engine.show_empty();
+                session.parked_empty = true;
+                session.last_sent = None;
+                session.last_base = None;
+                session.last_focus = None;
+                session.last_cards = None;
+            }
+            fire_pending_input(session, false);
+            return;
+        }
+        // All files with nothing selected (e.g. the first visit swaps in an empty stash): the
+        // editor keeps its buffer — it is an editor — but the view switch must still autosave
+        // and drop into the plain presentation like any other. Without this, flipping 1<->2
+        // without touching the tree neither saved nor re-presented.
         if session.last_focus != Some(false)
             && session.last_sent.is_some()
             && let Some(engine) = session.engine_alive()
@@ -466,6 +491,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         fire_pending_input(session, false);
         return;
     };
+    session.parked_empty = false;
     let base = app.nvim_base_ref();
     let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);

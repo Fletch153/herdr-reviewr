@@ -30,8 +30,8 @@ empty, huge, vanishing).
 | 10 | Comment persistence (comments ref, seed, empty delete, rev-guarded) | covered: tui-persist | n/a | n/a | open (quit racing pending write; two panes one repo) | n/a |
 | 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | open (md_view held across tab switches) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
 | 12 | Clipboard (provider→OSC52, cache pastes, host export fallback) | n/a | n/a | n/a | open (OSC52 mid-frame interleave; rapid yank storm) | covered: tui-clip; run.lua (linewise trailing \n) |
-| 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | open (stash swap mid-action; tab switch mid-highlight/mid-compose) | n/a |
-| 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename |
+| 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | open (stash swap mid-action; tab switch mid-highlight/mid-compose) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
+| 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename; probed: c1.p5 (zero-commit repo: untracked file diffs against the empty tree, both tabs render; detached HEAD: clean tree shows the empty state, live edit re-lists — both pass, no bug) |
 | 15 | EOL (nofixendofline, note+sign, eol revert, byte-exact base) | covered: tui-eol | n/a | covered: tui-eol | n/a | covered: tui-eol, run.lua; open (CRLF content) |
 | 16 | Host UI interop (mouse routing, divider, resize, filter, help, chips) | covered: tui-mouse, tui-md (chip) | covered: tui-mouse | covered: tui-split (divider), tui-picker (filter/resize) | open (drag during repaint; click storm; narrow terminal) | covered: tui-trio (backspace delete) |
 
@@ -57,7 +57,7 @@ clusters that share a fixture.
 10. **7×timing** — revert racing agent write / poll refresh.
 11. **file-state batch A** — rename onto deleted, case-only rename, tick/revert/flip on renamed files (4, 6, 7 × file-state).
 12. **file-state batch B** — huge diff (5k lines), very long lines, huge md (2, 3, 11 × file-state).
-13. **file-state batch C** — empty repo / zero commits / detached HEAD; agent deletes open file; CRLF (9, 15 × file-state).
+13. **file-state batch C** — ~~empty repo / zero commits / detached HEAD~~ DONE c1.p5 (both pass live, no bug; the adjacent USER-REPORT empty-changeset bug fixed + gate tui-empty); still open: agent deletes open file; CRLF (9, 15 × file-state).
 14. **16×timing** — drag during repaint; narrow terminal (120×30) sweep (c1.p4 ran the full
     tui-test flow at 120×30: all 19 assertions pass, no layout bug — drag-during-repaint and
     the other gates at narrow size still open).
@@ -65,6 +65,25 @@ clusters that share a fixture.
 
 ## Log
 
+- 2026-07-07 c1.p5 (edge-hardening, class 1 + USER REPORT): the live user report (empty
+  changeset: Changes → All files opens a file → back to Changes keeps that file up) reproduced
+  live on first try. Root cause: nvim_sync's no-selection branch only did a plain re-present
+  (and only when last_focus wasn't already plain) — returning from All files, last_focus was
+  Some(false), so nothing was sent at all and the previous buffer stayed. By design the Changes
+  pane presents the changeset, so an empty changeset must not show a file: added a reusable
+  reviewr://empty scratch (diff.lua show_empty, same nameless-nofile shape as the deleted
+  scratch, unlisted, says "no changes in scope") and a show_empty engine command that autosaves
+  the leaving buffer first; the host parks on it whenever Changes has no selection — first
+  entry, tab return, or the last change reverting away mid-session — guarded by a new
+  NvimSession.parked_empty flag, and clears the published-view memory so the next real open
+  republishes fully (src/lib.rs, src/nvim/mod.rs). Permanent gate scripts/tui-empty-test.sh
+  (first-entry greeter, round-trip re-assert, content-marker absence, second round trip proving
+  the dedup reset) wired into tui-all.sh, green twice with clean quits. Class-1 extras probed
+  live (throwaway script, deleted): zero-commit repo with one untracked file — both tabs
+  render, the file diffs against the empty tree, no crash; detached HEAD — clean tree shows
+  the empty state, All files opens worktree content, a live edit re-lists in Changes. Both
+  pass, no product bug. cargo tests + lua suite green; fmt/clippy clean
+  (struct_excessive_bools on NvimSession allowed, same as App).
 - 2026-07-07 c1.p4 (flake-hunt): 2 full tui-all sweeps + 2 lua sweeps — result lines byte-identical,
   all green. But the suite was silently leaking WEDGED `nvim --embed` orphans (~1 per few sweeps;
   three found alive, one 6h old — parked in ep_poll, RPC-dead, stdio re-pointed to /dev/null,
