@@ -41,6 +41,32 @@ function M.diff()
   vim.api.nvim_buf_set_name(scratch, ("%s [%s]"):format(rel, base))
   vim.cmd("diffthis")
   vim.cmd("wincmd p")
+  -- Closing EITHER side dissolves the whole split: :q on the working file must not strand
+  -- the user on the read-only base copy, and diff mode (scrollbind, fold-everything) must
+  -- never linger on the surviving window.
+  local grp = vim.api.nvim_create_augroup("ReviewrDiffSplit" .. scratch, {})
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = grp,
+    pattern = tostring(vim.api.nvim_get_current_win()),
+    once = true,
+    callback = function()
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(scratch) then
+          pcall(vim.api.nvim_buf_delete, scratch, { force = true })
+        end
+      end)
+    end,
+  })
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = grp,
+    buffer = scratch,
+    once = true,
+    callback = function()
+      vim.schedule(function()
+        vim.cmd("silent! diffoff!")
+      end)
+    end,
+  })
 end
 
 return M
