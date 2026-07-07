@@ -1129,6 +1129,9 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
                     app.open_list();
                 }
             }
+            // The markdown viewer paints over the editor grid; p/esc (or the [raw] chip)
+            // returns to the editor.
+            (Char('p'), false) => app.open_preview(),
             (Backspace, _) => app.request_delete(),
             (Char('/'), false) => app.slash(),
             (Char('?'), _) => app.open_help(),
@@ -1294,6 +1297,12 @@ fn handle_mouse(
         match m.kind {
             MouseEventKind::ScrollDown => app.preview_scroll_by(3),
             MouseEventKind::ScrollUp => app.preview_scroll_by(-3),
+            // The header chip reads [raw] while previewing: clicking it toggles back.
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(ui::HeaderHit::MdView) = ui::hit_header(area, app, m.column, m.row) {
+                    app.close_preview();
+                }
+            }
             _ => {}
         }
         return Ok(());
@@ -1347,6 +1356,7 @@ fn handle_mouse(
                         ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
                         ui::HeaderHit::Base => app.open_branch_picker(),
                         ui::HeaderHit::Commit => app.open_commit_picker(),
+                        ui::HeaderHit::MdView => app.open_preview(),
                         // One send path, one store: the host's, same as the built-in pane.
                         ui::HeaderHit::Send => app.export(&Agent),
                     }
@@ -1428,6 +1438,7 @@ fn handle_mouse(
                     ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
                     ui::HeaderHit::Base => app.open_branch_picker(),
                     ui::HeaderHit::Commit => app.open_commit_picker(),
+                    ui::HeaderHit::MdView => app.open_preview(),
                     ui::HeaderHit::Send => app.export(&Agent),
                 }
             } else if let Some(i) = ui::hit_file(

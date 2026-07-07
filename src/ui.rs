@@ -51,11 +51,12 @@ pub fn render_with_nvim(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>
     } else {
         render_tab_bar(frame, app, p.tab);
         // Embedded-nvim editor mode: the diff pane hosts the editor's cell grid; the file list
-        // stays exactly as in the default mode.
-        if app.editor_nvim {
-            render_nvim_view(frame, app, nvim, p.diff);
-        } else if app.mode == Mode::Preview {
+        // stays exactly as in the default mode. The markdown preview wins over both bases —
+        // in nvim mode it must paint OVER the editor grid or the toggle would be invisible.
+        if app.mode == Mode::Preview {
             render_markdown_preview(frame, app, p.diff);
+        } else if app.editor_nvim {
+            render_nvim_view(frame, app, nvim, p.diff);
         } else {
             render_diff_view(frame, app, p.diff);
         }
@@ -408,6 +409,7 @@ pub enum HeaderHit {
     Scope,
     Base,
     Commit,
+    MdView,
     Send,
 }
 
@@ -426,6 +428,7 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
     let scope_end = scope_start + scope_chip(app).len() as u16;
     let base_end = scope_end + base_chip(app).len() as u16;
     let commit_end = base_end + commit_chip(app).len() as u16;
+    let md_end = commit_end + md_chip(app).len() as u16;
     let button_start = send_button_col(app, area.width as usize) as u16;
     if (scope_start..scope_end).contains(&col) {
         Some(HeaderHit::Scope)
@@ -433,6 +436,8 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
         Some(HeaderHit::Base)
     } else if (base_end..commit_end).contains(&col) {
         Some(HeaderHit::Commit)
+    } else if (commit_end..md_end).contains(&col) {
+        Some(HeaderHit::MdView)
     } else if col >= button_start && col < area.width {
         Some(HeaderHit::Send)
     } else {
@@ -505,6 +510,15 @@ fn commit_chip(app: &App) -> String {
     }
 }
 
+/// The markdown view toggle, shown only when the file under the cursor is markdown. Clicking
+/// it renders the file with the built-in markdown viewer; clicking again returns to raw.
+fn md_chip(app: &App) -> String {
+    if !app.cursor_is_markdown() {
+        return String::new();
+    }
+    if app.mode == Mode::Preview { " [raw]".to_string() } else { " [md view]".to_string() }
+}
+
 fn send_button(app: &App) -> String {
     format!("[ Send ({}) ]", app.unsent_count())
 }
@@ -529,6 +543,7 @@ fn send_button_col(app: &App, width: usize) -> usize {
         + scope_chip(app).len()
         + base_chip(app).len()
         + commit_chip(app).len()
+        + md_chip(app).len()
         + header_suffix(app).len();
     before + width.saturating_sub(before + send_button(app).len())
 }
@@ -559,10 +574,16 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let chip = scope_chip(app);
     let base = base_chip(app);
     let commit = commit_chip(app);
+    let md = md_chip(app);
     let suffix = header_suffix(app);
     let button = send_button(app);
-    let used =
-        header_prefix_len() + chip.len() + base.len() + commit.len() + suffix.len() + button.len();
+    let used = header_prefix_len()
+        + chip.len()
+        + base.len()
+        + commit.len()
+        + md.len()
+        + suffix.len()
+        + button.len();
     let pad = (area.width as usize).saturating_sub(used);
 
     // A quiet surface bar: the active tab in bright lavender, the inactive one dimmed, the
@@ -572,6 +593,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(base, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(commit, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(md, bar.fg(p.blue).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(suffix, bar.fg(p.overlay0)));
 
     let send_fg = if app.store.is_empty() { p.overlay0 } else { p.green };
@@ -1844,6 +1866,7 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("[ / ]", "narrow / widen the file list"),
                     ("/", "filter the file list"),
                     ("space", "step the open file's hunks, then mark reviewed → next file"),
+                    ("p / [md view] chip", "render a markdown file · p, esc or [raw] back"),
                 ],
             ),
             (
