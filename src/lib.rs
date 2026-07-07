@@ -339,6 +339,28 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
                     }
                 }
             }
+            // The editor changed its own current buffer without the host asking — a native jump
+            // (`Ctrl+]`, the jumplist, `:e`). The host keys comment-card rendering on the file it
+            // believes is open, so left unupdated it paints the previously opened file's card set
+            // on the new buffer: a comment made or deleted on the jumped-to file is stored
+            // correctly (its intent carries the real buffer) but never repainted. Adopt the
+            // editor's real buffer as the card file. A jumped-to changeset file also becomes the
+            // list selection; the editor is already showing it, so record it as the published
+            // view (no redundant `:edit` fighting the jump) and let the card key drive the
+            // repaint. A file outside the changeset moves only the card file — `diff_path` and
+            // the published view stay put, so the sync neither re-opens nor fights the walk/lock.
+            "buf" => {
+                if !file.is_empty() && app.nvim_buf.as_deref() != Some(file.as_str()) {
+                    app.nvim_buf = Some(file.clone());
+                    let in_changeset = app.entries.iter().any(|e| e.path == file);
+                    if in_changeset {
+                        app.adopt_editor_file(&file);
+                        session.last_sent = Some(file.clone());
+                        session.last_base = Some(app.nvim_base_ref());
+                        session.last_focus = Some(app.tab == crate::app::Tab::Changes);
+                    }
+                }
+            }
             "send" => app.export(&Agent),
             "yank" => app.export(&Clipboard),
             // A `"+`/`"*` yank in the embed: the editor has no terminal of its own, so the
@@ -500,9 +522,19 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         && same_path
         && session.last_base.as_deref() == Some(base.as_str())
         && session.last_focus == Some(focus);
-    // Comment cards re-push when the store or the shown diff moved (the store revision is the
-    // cheap change detector); a pending cursor jump also counts as work.
-    let cards_key = (app.store.rev(), rel.clone(), base.clone(), focus);
+    // This frame opens `rel` when the view moved, so the editor's buffer becomes `rel`: adopt it
+    // now (ahead of the editor's own `buf` report) so the cards computed below target the buffer
+    // the open produces, not one a native jump left the editor on last frame.
+    if !same_view {
+        app.nvim_buf = Some(rel.clone());
+    }
+    // Comment cards re-push when the store or the file the editor shows moved (the store
+    // revision is the cheap change detector); a pending cursor jump also counts as work. Keyed
+    // on the editor's real buffer (`nvim_card_file`), not the changeset selection, so a card
+    // made or dropped after a native jump repaints even while `diff_path` stays on the
+    // selection (or the buffer is outside the changeset entirely).
+    let card_file = app.nvim_card_file().unwrap_or(rel.as_str()).to_string();
+    let cards_key = (app.store.rev(), card_file, base.clone(), focus);
     let mut same_cards = session.last_cards.as_ref() == Some(&cards_key);
     if same_view
         && same_cards
@@ -530,6 +562,9 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
                 same_path = false;
                 same_view = false;
                 same_cards = false;
+                // The fresh editor opens `rel` below, so its cards target `rel` — not a buffer a
+                // native jump had left the dead editor on (which `nvim_buf` still holds).
+                app.nvim_buf = Some(rel.clone());
             }
             Err(e) => {
                 app.status = format!("editor restart failed: {e}");

@@ -623,8 +623,21 @@ function M.enable()
   vim.api.nvim_create_autocmd("BufEnter", {
     group = grp,
     callback = function(a)
+      if vim.bo[a.buf].buftype ~= "" or vim.api.nvim_buf_get_name(a.buf) == "" then
+        return
+      end
+      -- Tell the host which file the editor now shows. A native jump (tag / Ctrl-], the
+      -- jumplist, :e) changes the current buffer without the host asking; the host keys
+      -- comment-card rendering on the file it believes is open, so without this a comment on
+      -- the jumped-to buffer is stored but never painted. Repo-relative like the comment
+      -- anchors (cwd = repo root). Idempotent: a host-driven open re-enters the same buffer,
+      -- which the host is already tracking.
+      require("reviewr.comments").notify(
+        "buf",
+        { file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(a.buf), ":.") }
+      )
       local view = M._view
-      if not view or vim.bo[a.buf].buftype ~= "" or vim.api.nvim_buf_get_name(a.buf) == "" then
+      if not view then
         return
       end
       local want_plain = view == "plain"

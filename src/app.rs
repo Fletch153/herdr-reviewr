@@ -315,6 +315,13 @@ pub struct App {
     /// nvim mode: a file-row click requests an editor open even when `diff_path` is unchanged
     /// (retry after a cancelled `:confirm edit`). Taken by the per-frame editor sync.
     pub nvim_reopen: bool,
+    /// nvim mode: the repo-relative file the embedded editor actually shows. Normally this is
+    /// the changeset selection (`diff_path`), but a native jump — `Ctrl+]`, the jumplist, `:e`
+    /// — moves the editor's buffer without the host asking, and can land on a file outside the
+    /// changeset (which has no `diff_path` row at all). Comment cards paint on the editor's
+    /// current buffer, so they are computed for THIS file, not the selection. Set by the
+    /// editor's `buf` report and, without a round-trip's lag, whenever the host opens a file.
+    pub nvim_buf: Option<String>,
     /// nvim mode: whether the embedded editor is dead (synced each frame pre-draw), so the
     /// footer can offer restart without `App` holding the engine.
     pub nvim_dead: bool,
@@ -447,6 +454,7 @@ impl App {
             list_pct: DEFAULT_LIST_PCT,
             editor_nvim: false,
             nvim_reopen: false,
+            nvim_buf: None,
             nvim_dead: false,
             nvim_anchor: None,
             nvim_goto: None,
@@ -2446,11 +2454,38 @@ impl App {
         cards
     }
 
-    /// nvim mode: the view-matching comments for the open file, in store order — what the
-    /// editor paints as inline cards.
+    /// nvim mode: the file whose comment cards the editor paints — its own current buffer
+    /// (`nvim_buf`), which a native jump can move off the changeset selection, falling back to
+    /// the selection before the editor has reported a buffer.
+    pub fn nvim_card_file(&self) -> Option<&str> {
+        self.nvim_buf.as_deref().or(self.diff_path.as_deref())
+    }
+
+    /// nvim mode: the view-matching comments for the file the editor is showing, in store order
+    /// — what the editor paints as inline cards.
     pub fn nvim_comment_cards(&self) -> Vec<&Comment> {
-        let Some(file) = self.diff_path.as_deref() else { return Vec::new() };
+        let Some(file) = self.nvim_card_file() else { return Vec::new() };
         self.store.iter().filter(|c| c.file == file && self.comment_matches_current(c)).collect()
+    }
+
+    /// nvim mode: the embedded editor navigated to `file` on its own (a native jump). When the
+    /// file is part of the changeset, adopt it as the open selection — the tree highlight and
+    /// the host diff model follow the editor — without re-opening it (it is already there; the
+    /// caller marks it as the published view so the per-frame sync issues no redundant `:edit`).
+    /// A no-op when it is already the selection or is outside the changeset.
+    pub fn adopt_editor_file(&mut self, file: &str) {
+        if self.diff_path.as_deref() == Some(file) {
+            return;
+        }
+        let Some(entry) = self.entries.iter().find(|e| e.path == file).cloned() else {
+            return;
+        };
+        self.reset_diff_view();
+        self.open_path_in_tab(entry.path, entry.previous_path);
+        if let Some(fi) = self.file_row_of_path(file) {
+            self.file_cursor = fi;
+            self.reveal_files = true;
+        }
     }
 
     /// The store index to act on: the comment under the diff cursor, or — in the list overlay —

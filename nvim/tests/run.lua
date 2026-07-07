@@ -558,6 +558,10 @@ check(
   rh and #rh == 3 and rh[1].base_text[1] == "r2" and rh[2].del and rh[2].base_text[1] == "r5" and #rh[3].base_text == 0,
   vim.inspect(rh)
 )
+-- Scope the notify capture to the revert sequence: opening the file above emits a legitimate
+-- `buf` report (the editor tells the host which file it now shows), which is not what this
+-- check is about. What remains asserts the reverts themselves emit exactly the walk handoff.
+rnavs = {}
 vim.api.nvim_win_set_cursor(0, { 7, 0 }) -- XINS: a pure insertion reverts to nothing
 check("insertion hunk reverts", diff.revert_hunk() == true and vim.fn.getline(7) == "r8")
 check("...still locked and repainted", vim.bo[revbuf].modifiable == false and #diff._hunks[revbuf] == 2)
