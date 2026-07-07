@@ -165,11 +165,14 @@ local function review_walk(dir)
     stepped = diff.prev_change()
   end
   if not stepped then
-    -- The boundary verdict is about THIS buffer: send its file so the host can drop a
-    -- verdict that raced past the open it just published (an Enter storm at a file
-    -- boundary must advance once, not mark every file it never showed).
+    -- The boundary verdict is about THIS buffer: send its file and its presentation so the
+    -- host can drop a verdict that raced past a change it just published — an Enter storm
+    -- at a file boundary must advance once, not mark every file it never showed, and a
+    -- locked-view verdict must not fire after an insert/paste flip already moved the tab
+    -- (the Enter behind an `i` was meant as typed text, never a walk).
     local rel = name:match("^reviewr://deleted/(.+)$") or vim.fn.fnamemodify(name, ":.")
-    require("reviewr.comments").notify("nav", { dir = dir > 0 and "next" or "prev", file = rel })
+    local view = vim.b.reviewr_plain and "plain" or "focused"
+    require("reviewr.comments").notify("nav", { dir = dir > 0 and "next" or "prev", file = rel, view = view })
   end
 end
 map("n", "<CR>", function()

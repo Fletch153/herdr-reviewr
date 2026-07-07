@@ -312,10 +312,21 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
             // marking files the reviewer never saw. All-files navs stay host-authoritative
             // (each press means one file, whatever the lagging buffer showed).
             "nav" => {
-                let stale = app.tab == crate::app::Tab::Changes
+                // A verdict from a presentation the host has moved past is stale in BOTH
+                // directions: a locked-view (focused) verdict arriving after an insert/paste
+                // flip put the tab on All files was meant as typed text behind the flip, and
+                // a plain-view verdict arriving after a switch back to Changes predates the
+                // re-present — acting on either walks (and on Changes marks reviewed) a file
+                // the reviewer never confirmed.
+                let want_view = match app.tab {
+                    crate::app::Tab::Changes => "focused",
+                    _ => "plain",
+                };
+                let stale_view = map_str(payload, "view").is_some_and(|view| view != want_view);
+                let stale_file = app.tab == crate::app::Tab::Changes
                     && !file.is_empty()
                     && app.diff_path.as_deref() != Some(file.as_str());
-                if !stale {
+                if !stale_view && !stale_file {
                     match map_str(payload, "dir").unwrap_or_default() {
                         "next" => app.nav_advance(),
                         "prev" => app.nav_retreat(),
@@ -458,15 +469,15 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     let base = app.nvim_base_ref();
     let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);
-    let same_path = session.last_sent.as_deref() == Some(rel.as_str());
-    let same_view = !force
+    let mut same_path = session.last_sent.as_deref() == Some(rel.as_str());
+    let mut same_view = !force
         && same_path
         && session.last_base.as_deref() == Some(base.as_str())
         && session.last_focus == Some(focus);
     // Comment cards re-push when the store or the shown diff moved (the store revision is the
     // cheap change detector); a pending cursor jump also counts as work.
     let cards_key = (app.store.rev(), rel.clone(), base.clone(), focus);
-    let same_cards = session.last_cards.as_ref() == Some(&cards_key);
+    let mut same_cards = session.last_cards.as_ref() == Some(&cards_key);
     if same_view
         && same_cards
         && app.nvim_goto.is_none()
@@ -485,6 +496,14 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             Ok(()) => {
                 app.status = "editor restarted".to_string();
                 push_editor_theme(app, session);
+                // The same_* dedup was computed against the DEAD session's memory; the fresh
+                // editor has none (start() cleared last_sent/last_cards), so everything must
+                // re-publish — otherwise the goto/place-last/pending-input work item that
+                // triggered this respawn fires into the new editor's empty [No Name] buffer
+                // and is consumed, and the file only opens a frame later without it.
+                same_path = false;
+                same_view = false;
+                same_cards = false;
             }
             Err(e) => {
                 app.status = format!("editor restart failed: {e}");
@@ -532,7 +551,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
                 let _ = engine.show_deleted(&rel, &base);
             }
         }
-        session.last_sent = Some(rel);
+        session.last_sent = Some(rel.clone());
         session.last_base = Some(base);
         session.last_focus = Some(focus);
     }
@@ -547,9 +566,14 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         }
         session.last_cards = Some(cards_key);
     }
-    if let Some(line) = app.nvim_goto.take() {
-        // A comment jump: land the editor's cursor (opening any folds) after the open above.
-        if let Some(engine) = session.engine_alive() {
+    if let Some((goto_file, line)) = app.nvim_goto.take() {
+        // A comment jump: land the editor's cursor (opening any folds) after the open above —
+        // but only if the file just published is still the jump's file; a diff that moved in
+        // between (an in-flight nav intent) drops the jump rather than landing its line
+        // number in an unrelated buffer.
+        if goto_file == rel
+            && let Some(engine) = session.engine_alive()
+        {
             let _ = engine.command_fire(&format!("call cursor({line}, 1) | silent! normal! zvzz"));
         }
     }

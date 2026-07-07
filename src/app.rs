@@ -321,9 +321,11 @@ pub struct App {
     /// visual selection (the editor is the review surface, so the anchor comes from it, not
     /// from the built-in diff cursor). Set when the compose opens; cleared when it closes.
     pub nvim_anchor: Option<NvimAnchor>,
-    /// nvim mode: a 1-based buffer line the editor's cursor should land on — set by comment
-    /// jumps (the list's Enter/click, an edit open) and consumed by the per-frame editor sync.
-    pub nvim_goto: Option<u32>,
+    /// nvim mode: the file and 1-based buffer line the editor's cursor should land on — set by
+    /// comment jumps (the list's Enter/click, an edit open) and consumed by the per-frame
+    /// editor sync. Carries its file so a jump is dropped, not misdelivered, when the shown
+    /// diff moves between the click and the sync (e.g. an in-flight nav intent lands first).
+    pub nvim_goto: Option<(String, u32)>,
     /// nvim mode: land the editor's cursor on the opened file's LAST hunk once the sync
     /// publishes — the backward review walk's file entry (forward entries land on the first
     /// hunk via `focus()` itself). Consumed by the per-frame editor sync like `nvim_goto`.
@@ -2081,7 +2083,7 @@ impl App {
         self.reveal_diff = true; // scroll the edited line into view before the box opens
         // nvim mode: also land the editor's cursor on the comment (same stale-comment guard).
         if self.editor_nvim && self.diff_path.as_deref() == Some(file.as_str()) {
-            self.nvim_goto = Some(start);
+            self.nvim_goto = Some((file.clone(), start));
         }
         self.caret = text.chars().count(); // edit opens with the caret at the end
         self.input = text;
@@ -2848,7 +2850,7 @@ impl App {
         // nvim mode: the jump lands in the editor too (same stale-comment guard — never move
         // the cursor onto a same-numbered line of a different file).
         if self.editor_nvim && self.diff_path.as_deref() == Some(file.as_str()) {
-            self.nvim_goto = Some(start);
+            self.nvim_goto = Some((file.clone(), start));
         }
         self.focus = Focus::Diff;
         self.reveal_diff = true;

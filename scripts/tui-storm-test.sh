@@ -84,6 +84,22 @@ frame | grep -qF "MARKC1" || fail "the walk never reached fc after the rebuild"
 frame | grep -qF "MARKC2" || fail "fc opened without the freshly-written hunk"
 echo "ok 5 - the walk advances correctly across a poll entries-rebuild"
 
+# 6. Insert + Enter in one burst at the last hunk: the editor (still locked) emits the insert
+#    intent AND a boundary nav before the flip publishes. EXPECTED: the flip wins — the nav is
+#    a locked-view verdict arriving after the tab moved (dropped by its view tag), the walk
+#    does NOT advance, and the typed payload lands in fc, never in the file the stale nav
+#    would have wrapped to.
+keys Enter; sleep 0.8               # in-file step from MARKC1 to MARKC2 (fc's last hunk)
+keys i Enter                        # one burst: authoring intent + a stale boundary verdict
+sleep 2
+frame | grep -qF "MARKB1" && fail "the stale nav behind the insert flip advanced the walk"
+keys -l "FLIPRACE"
+esc
+for _ in $(seq 20); do grep -q "FLIPRACE" "$REPO/src/fc.txt" 2>/dev/null && break; sleep 0.25; done
+grep -q "FLIPRACE" "$REPO/src/fc.txt" || fail "the flipped insert did not land in fc"
+grep -q "FLIPRACE" "$REPO/src/fb.txt" && fail "the insert landed in fb (the stale nav's file)"
+echo "ok 6 - an insert+Enter burst flips without advancing the walk"
+
 keys Tab; sleep 0.3
 keys q; sleep 0.3; keys y 2>/dev/null || true
 echo "# all storm assertions passed"

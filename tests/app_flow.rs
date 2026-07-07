@@ -3208,6 +3208,10 @@ fn nvim_jump_from_the_list_sets_the_editor_goto() {
     app.nvim_goto = None;
     app.open_list();
     app.open_comment(0);
-    assert_eq!(app.nvim_goto, Some(2), "the editor cursor is asked to land on the comment");
+    assert_eq!(
+        app.nvim_goto,
+        Some(("a.rs".to_string(), 2)),
+        "the editor cursor is asked to land on the comment, in its file"
+    );
     assert_eq!(app.mode, Mode::Normal, "the list closed on jump");
 }
