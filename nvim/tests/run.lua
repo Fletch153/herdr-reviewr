@@ -271,6 +271,34 @@ end)
 check("split teardown re-locks the working buffer", vim.bo[cbuf].modifiable == false)
 diff.unfocus()
 
+-- Live sync (reviewr.live): the host sweeps `checktime` on its poll; the FileChangedShell
+-- policy must reload clean buffers silently, keep in-flight user edits (mtime updated so the
+-- next save wins without the blocking W12 prompt), and keep the buffer on deletion.
+require("reviewr.live").enable()
+local lpath = gitroot .. "/live.txt"
+vim.fn.writefile({ "l1", "l2" }, lpath)
+vim.cmd("edit live.txt")
+local lbuf = vim.api.nvim_get_current_buf()
+vim.fn.writefile({ "l1", "l2", "EXTERNAL" }, lpath)
+vim.cmd("silent! checktime")
+check("a clean buffer reloads on checktime", vim.fn.getline(3) == "EXTERNAL")
+vim.api.nvim_buf_set_lines(lbuf, 0, 1, false, { "USERLINE" })
+vim.fn.writefile({ "clobbered" }, lpath)
+vim.cmd("silent! checktime")
+check(
+  "an in-flight user edit survives an external write",
+  vim.fn.getline(1) == "USERLINE" and vim.bo[lbuf].modified,
+  vim.fn.getline(1)
+)
+vim.wait(500, function() -- the policy's scheduled forced write resolves the conflict
+  return (vim.fn.readfile(lpath)[1] or "") == "USERLINE"
+end)
+check("the conflict resolves to the user's version on disk", vim.fn.readfile(lpath)[1] == "USERLINE")
+vim.fn.delete(lpath)
+vim.cmd("silent! checktime")
+check("deletion underneath keeps the buffer", vim.api.nvim_buf_line_count(lbuf) >= 1)
+vim.cmd("silent! bwipeout!")
+
 vim.cmd("cd " .. vim.fn.fnameescape(root))
 
 -- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):

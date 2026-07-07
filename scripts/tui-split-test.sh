@@ -7,7 +7,10 @@ source "$(dirname "$0")/tui-lib.sh"
 
 { for i in $(seq 1 10); do printf 'row %02d ORIGINAL\n' "$i"; done; } > "$REPO/src/f.txt"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm A
-sed -i 's/row 05 ORIGINAL/row 05 REWRITTEN/' "$REPO/src/f.txt"
+# Two changed lines: 2c reverts row 05 via `do`, and the file must STILL be a changed file
+# afterwards (otherwise the host correctly flips it to the plain view and 2d's lock assertion
+# would be testing the wrong thing).
+sed -i -e 's/row 05 ORIGINAL/row 05 REWRITTEN/' -e 's/row 08 ORIGINAL/row 08 ALSO/' "$REPO/src/f.txt"
 
 tui_start
 wait_for "f.txt"

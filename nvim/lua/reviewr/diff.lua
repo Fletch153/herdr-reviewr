@@ -370,12 +370,17 @@ end
 -- module is only on the runtimepath there (editor.sh); safe to call once at plugin load.
 function M.enable()
   local grp = vim.api.nvim_create_augroup("ReviewrDiff", { clear = true })
-  vim.api.nvim_create_autocmd({ "BufReadPost", "BufWritePost", "InsertLeave", "TextChanged" }, {
-    group = grp,
-    callback = function(a)
-      M.refresh(a.buf)
-    end,
-  })
+  -- FileChangedShellPost: a checktime reload (the live-sync path for agent writes) fires
+  -- neither BufReadPost nor TextChanged, but the marks must repaint against the new content.
+  vim.api.nvim_create_autocmd(
+    { "BufReadPost", "BufWritePost", "InsertLeave", "TextChanged", "FileChangedShellPost" },
+    {
+      group = grp,
+      callback = function(a)
+        M.refresh(a.buf)
+      end,
+    }
+  )
 end
 
 return M

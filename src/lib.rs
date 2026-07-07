@@ -342,10 +342,10 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
     if let Some(x) = hex(p.text) {
         cmds.push(format!("hi ReviewrCardBody guifg={x}"));
     }
-    if !cmds.is_empty()
-        && let Some(e) = session.engine_alive()
-    {
+    if let Some(e) = session.engine_alive() {
         let _ = e.command_fire(&cmds.join(" | "));
+        // Separate notification: `:lua` would swallow the rest of a `|`-joined line.
+        let _ = e.exec_lua_fire("require('reviewr.live').enable()", vec![]);
     }
 }
 
@@ -741,6 +741,12 @@ fn event_loop(
             // A failed refresh must never crash the UI or drop a comment.
             if let Err(e) = app.reload() {
                 app.status = format!("refresh failed: {e}");
+            }
+            // Live view: agent writes to open files must appear without any interaction, so
+            // the poll also sweeps buffer timestamps (reviewr.live's FileChangedShell policy
+            // reloads clean buffers silently and never prompts).
+            if let Some(e) = session.engine_alive() {
+                let _ = e.command_fire("silent! checktime");
             }
             logln!(
                 "poll files={} composing={} diff_cursor={} scroll={}",
