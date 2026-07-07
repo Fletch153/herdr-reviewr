@@ -187,8 +187,10 @@ wait_for "bravo line one"
 keys Tab
 sleep 0.3
 keys Space r c
-wait_for "Leave a comment"
-frame | grep -q "comment · src/other.txt:3" || fail "composer not anchored to the editor cursor"
+# Type at human speed WITHOUT waiting for the composer to paint: the compose intent races the
+# next keystrokes (rc round-trips through nvim), and every character must land in the host's
+# composer — leaked keys would execute as normal-mode vim commands instead.
+sleep 0.25
 keys -l "needs a guard"
 keys Enter
 wait_for "╭─ comment · src/other.txt:3"

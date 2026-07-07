@@ -129,6 +129,7 @@ check("no hunks, no folds", diff.foldexpr(3) == 0)
 
 -- next_change/prev_change walk the hunks and report exhaustion (the reviewer's Space walk).
 local sbuf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_name(sbuf, root .. "/steps.txt")
 local lines = {}
 for i = 1, 20 do
   lines[i] = "line " .. i
@@ -146,6 +147,32 @@ check("prev_change hops again", diff.prev_change() == true and vim.fn.line(".") 
 check("prev_change reports exhaustion", diff.prev_change() == false)
 diff._hunks[sbuf] = nil
 check("no hunk data: next_change is a quiet no-op", diff.next_change() == false)
+
+-- comment_visual reads the LIVE selection marks (bound via <Cmd>, so visual mode is still
+-- active when it runs) and reports the normalized range.
+vim.api.nvim_set_current_buf(sbuf)
+local sent = {}
+local real_notify = comments.notify
+comments.notify = function(action, payload)
+  sent[#sent + 1] = { action = action, payload = payload }
+  return true
+end
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.api.nvim_feedkeys("Vj", "x", false) -- visual-line 2..3, still active (no <Esc> yet)
+comments.comment_visual()
+comments.notify = real_notify
+vim.api.nvim_feedkeys("", "x", false) -- flush the queued <Esc> (the real event loop does this)
+check("comment_visual reports the visual range", #sent == 1 and sent[1].payload.start == 2 and sent[1].payload["end"] == 3, vim.inspect(sent))
+check("comment_visual leaves visual mode", not vim.fn.mode():find("[vV]"), vim.fn.mode())
+
+-- The rc maps must stay <Cmd>-bound: a `:`-style map replays through the cmdline and widens
+-- the race in which keys typed right after rc execute as normal-mode commands instead of
+-- landing in the host's composer.
+vim.cmd("runtime! plugin/reviewr.lua")
+local rc_n = vim.fn.maparg("<leader>rc", "n")
+check("normal rc maps through <Cmd>", rc_n:find("<Cmd>", 1, true) ~= nil, rc_n)
+local rc_x = vim.fn.maparg("<leader>rc", "x")
+check("visual rc maps through <Cmd>", rc_x:find("<Cmd>", 1, true) ~= nil, rc_x)
 
 -- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):
 -- the focused pane wins over an otherwise-ambiguous tab.

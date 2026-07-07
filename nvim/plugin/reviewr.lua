@@ -79,9 +79,11 @@ end, { desc = "Reviewr: diagnose agent/send resolution" })
 -- Inline red/green diff vs the base, refreshed as you browse and edit (no gitsigns needed).
 require("reviewr.diff").enable()
 
+-- Both rc maps go through <Cmd> (never `:` replay): the compose intent must reach the host on
+-- the keypress itself, so the keys typed right after land in the host's composer, not here.
 local map = vim.keymap.set
-map("x", "<leader>rc", ":ReviewrComment<CR>", { silent = true, desc = "Reviewr: comment on selection" })
-map("n", "<leader>rc", ":ReviewrComment<CR>", { silent = true, desc = "Reviewr: comment on line" })
+map("x", "<leader>rc", "<Cmd>lua require('reviewr.comments').comment_visual()<CR>", { silent = true, desc = "Reviewr: comment on selection" })
+map("n", "<leader>rc", "<Cmd>ReviewrComment<CR>", { silent = true, desc = "Reviewr: comment on line" })
 map("n", "<leader>re", "<Cmd>ReviewrEdit<CR>", { silent = true, desc = "Reviewr: edit comment" })
 map("n", "<leader>rx", "<Cmd>ReviewrDelete<CR>", { silent = true, desc = "Reviewr: delete comment" })
 map("n", "<leader>rr", "<Cmd>ReviewrResolve<CR>", { silent = true, desc = "Reviewr: resolve comment" })

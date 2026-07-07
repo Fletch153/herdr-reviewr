@@ -26,20 +26,11 @@ function M.notify(action, payload)
   return true
 end
 
-local function git_root()
-  local out = vim.fn.systemlist({ "git", "rev-parse", "--show-toplevel" })
-  if vim.v.shell_error ~= 0 then
-    return nil
-  end
-  return out[1]
-end
-
--- Path relative to the git root (the reviewer's comment paths), else relative to cwd.
+-- Path relative to the cwd — the reviewer spawns this nvim with cwd = the repo root, so this
+-- IS the repo-relative path (the same assumption diff.lua's refresh makes). Deliberately no
+-- `git rev-parse` fallback: the anchor runs on the keypress-to-composer critical path, and a
+-- subprocess there widens the window in which typed keys still route to normal mode.
 local function relpath(abs)
-  local root = git_root()
-  if root and abs:sub(1, #root + 1) == root .. "/" then
-    return abs:sub(#root + 2)
-  end
   return vim.fn.fnamemodify(abs, ":.")
 end
 
@@ -103,6 +94,15 @@ function M.comment(lo, hi)
   if not M.notify("comment", a) then
     vim.notify("reviewr: no reviewer attached", vim.log.levels.WARN)
   end
+end
+
+-- The visual-mode rc: read the selection from the live marks and leave visual mode. Bound via
+-- `<Cmd>` so it runs atomically on the keypress — a `:`-style map replays through the cmdline,
+-- widening the window in which further typed keys still execute as normal-mode commands.
+function M.comment_visual()
+  local lo, hi = vim.fn.line("v"), vim.fn.line(".")
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+  M.comment(math.min(lo, hi), math.max(lo, hi))
 end
 
 -- <leader>re / rx / rr: edit / delete / resolve the host's comment covering the cursor line.

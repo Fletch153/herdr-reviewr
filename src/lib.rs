@@ -596,6 +596,13 @@ fn event_loop(
             timeout = timeout.min(nvim::FRAME_POLL);
         }
         if event::poll(timeout)? {
+            // Drain the editor's pending intents BEFORE routing this event: `space rc` opens
+            // the host composer via an rpcnotify that races the very next keystrokes — if the
+            // notification is already queued, the keys must land in the composer, not be
+            // forwarded to nvim as normal-mode commands.
+            if app.editor_nvim {
+                handle_nvim_notifications(app, session);
+            }
             match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {
                     if let Err(e) = handle_key(app, session, k, area) {
