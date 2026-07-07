@@ -43,7 +43,9 @@ const EXIT_POLL_STEP: Duration = Duration::from_millis(10);
 /// The nvim binary the editor mode runs. `Command::new("nvim")` took the first PATH hit —
 /// which, under a service manager's PATH, can be an ancient distro nvim (0.9) while the
 /// user's shell resolves a current one: their config then explodes mid-load (`invalid event
-/// 'PackChanged'`) and the editor opens undecorated. Every `nvim` on PATH is version-probed
+/// 'PackChanged'`) and the editor opens undecorated. Worse, a service PATH often lacks the
+/// user's install location entirely (linuxbrew, ~/.local/bin live in shell rc files), so the
+/// probe covers well-known install homes as well as PATH. Every candidate is version-probed
 /// once and the NEWEST wins; `$REVIEWR_NVIM` overrides outright.
 fn resolve_nvim() -> Option<PathBuf> {
     use std::sync::OnceLock;
@@ -54,8 +56,28 @@ fn resolve_nvim() -> Option<PathBuf> {
                 let p = PathBuf::from(over);
                 return nvim_version(&p).map(|_| p);
             }
+            let mut dirs: Vec<PathBuf> =
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+            if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                dirs.push(home.join(".local/bin"));
+                dirs.push(home.join(".linuxbrew/bin"));
+                dirs.push(home.join(".nix-profile/bin"));
+            }
+            dirs.extend(
+                [
+                    "/home/linuxbrew/.linuxbrew/bin",
+                    "/opt/homebrew/bin",
+                    "/usr/local/bin",
+                    "/opt/nvim/bin",
+                    "/opt/nvim-linux64/bin",
+                    "/snap/bin",
+                ]
+                .into_iter()
+                .map(PathBuf::from),
+            );
+            dirs.dedup();
             let mut best: Option<(PathBuf, (u64, u64, u64))> = None;
-            for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+            for dir in dirs {
                 let cand = dir.join("nvim");
                 if !cand.is_file() {
                     continue;
