@@ -245,7 +245,11 @@ fn apply_line(grid: &mut Grid, args: &[Value]) {
         {
             carry = u32::try_from(id).unwrap_or(0);
         }
-        let repeat = entry.get(2).and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+        // An absent repeat means one cell; an EXPLICIT `repeat: 0` is legal and means zero —
+        // nvim emits e.g. `[" ", 0, 0]` purely to reset the carried hl id without writing.
+        // Clamping it up to 1 stamps a spurious cell over real content (seen live: the first
+        // text column vanished whenever a number_hl_group extmark redrew the row).
+        let repeat = entry.get(2).and_then(Value::as_u64).unwrap_or(1) as usize;
         let cell_text = |t: &str| -> CellText {
             let mut chars = t.chars();
             match (chars.next(), chars.next()) {
@@ -437,6 +441,41 @@ mod tests {
         }
         assert_eq!(row[0], Cell::default()); // untouched before col_start
         assert_eq!(row[7], Cell::default()); // untouched after the run
+    }
+
+    #[test]
+    fn grid_line_zero_repeat_writes_nothing() {
+        // nvim emits `[" ", 0, 0]` (explicit repeat 0) purely to reset the carried hl id —
+        // seen live after a number_hl_group extmark redraw: `[[" ",43,2],["3"],[" "],[" ",0,0]]`
+        // at col_start 2. Clamping 0 up to 1 stamped a blank over the first text cell.
+        let mut g = Grid::new(20, 1);
+        apply(
+            &mut g,
+            &[ev(
+                "grid_line",
+                vec![
+                    Value::from(1),
+                    Value::from(0),
+                    Value::from(0),
+                    line_cells(vec![cell("f", &[7]), cell("n", &[])]),
+                ],
+            )],
+        );
+        apply(
+            &mut g,
+            &[ev(
+                "grid_line",
+                vec![
+                    Value::from(1),
+                    Value::from(0),
+                    Value::from(0),
+                    line_cells(vec![cell(" ", &[43, 0]), cell(" ", &[0, 0])]),
+                ],
+            )],
+        );
+        // Both zero-repeat entries wrote nothing; the original text is intact.
+        assert_eq!(g.row(0)[0], Cell { text: CellText::Char('f'), hl: 7 });
+        assert_eq!(g.row(0)[1], Cell { text: CellText::Char('n'), hl: 7 });
     }
 
     #[test]
