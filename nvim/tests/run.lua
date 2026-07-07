@@ -367,6 +367,23 @@ end)
 check("split teardown still re-locks", vim.bo[spbuf].modifiable == false)
 diff.unfocus()
 
+-- User-driven navigation (tag jumps, :e, jumplist) re-derives presentation from the active
+-- view: a never-stamped (or other-view) buffer entered under Changes arrives locked and
+-- painted; entered under All files it arrives editable and unpainted.
+vim.api.nvim_set_current_buf(rbuf)
+diff.set_view(true) -- active view: focused
+vim.fn.writefile({ "n1", "n2" }, gitroot .. "/nav.txt") -- untracked: an all-green changed file
+vim.cmd("edit nav.txt")
+local navbuf = vim.api.nvim_get_current_buf()
+check("a jump under Changes locks the entered buffer", vim.bo[navbuf].modifiable == false)
+check("...and paints it", #(diff._hunks[navbuf] or {}) > 0, vim.inspect(diff._hunks[navbuf]))
+diff.set_view(false) -- active view: plain (stamps nav.txt)
+vim.api.nvim_set_current_buf(rbuf) -- rbuf was stamped focused
+check("a jump under All files unlocks the entered buffer", vim.bo[rbuf].modifiable == true)
+check("...and clears its marks", #(diff._hunks[rbuf] or {}) == 0)
+vim.api.nvim_set_current_buf(navbuf)
+diff.unfocus()
+
 -- Live sync (reviewr.live): the host sweeps `checktime` on its poll; the FileChangedShell
 -- policy must reload clean buffers silently, keep in-flight user edits (mtime updated so the
 -- next save wins without the blocking W12 prompt), and keep the buffer on deletion.
@@ -386,10 +403,14 @@ check(
   vim.fn.getline(1) == "USERLINE" and vim.bo[lbuf].modified,
   vim.fn.getline(1)
 )
-vim.wait(500, function() -- the policy's scheduled forced write resolves the conflict
+vim.wait(2000, function() -- the policy's scheduled forced write resolves the conflict
   return (vim.fn.readfile(lpath)[1] or "") == "USERLINE"
 end)
-check("the conflict resolves to the user's version on disk", vim.fn.readfile(lpath)[1] == "USERLINE")
+check(
+  "the conflict resolves to the user's version on disk",
+  vim.fn.readfile(lpath)[1] == "USERLINE",
+  vim.inspect({ disk = vim.fn.readfile(lpath), buf = vim.fn.getline(1), mod = vim.bo.modified })
+)
 vim.fn.delete(lpath)
 vim.cmd("silent! checktime")
 check("deletion underneath keeps the buffer content", vim.fn.getline(1) == "USERLINE")

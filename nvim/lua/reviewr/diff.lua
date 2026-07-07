@@ -71,6 +71,12 @@ end
 -- `refresh` for the fold expression and the first-change jump.
 M._hunks = {}
 
+-- The view the host last established ("focused" | "plain" | nil before any). Presentation is
+-- stamped per buffer at open time, but the user navigates freely inside nvim (tag jumps,
+-- jumplist, :e) onto buffers stamped under the other view or never stamped — BufEnter (see
+-- enable()) re-derives their presentation from this, so one session can't mix views.
+M._view = nil
+
 -- Unchanged lines further than this from a change fold away in the focused (Changes) view —
 -- the same context the reviewer's own diff pane shows.
 local CONTEXT = 3
@@ -389,6 +395,7 @@ end
 function M.focus()
   local bufnr = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
+  M._view = "focused"
   vim.b[bufnr].reviewr_plain = false
   M.lock(bufnr) -- before the early return: hunk-less files are read-only too
   M.refresh(bufnr)
@@ -409,6 +416,7 @@ end
 function M.set_view(focused)
   local bufnr = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
+  M._view = focused and "focused" or "plain"
   vim.b[bufnr].reviewr_plain = not focused
   if focused then -- keyed on the view, never on the hunks branch below
     M.lock(bufnr)
@@ -461,6 +469,7 @@ function M.show_deleted(rel)
   end
   M._hunks[buf] = {}
   M.unfocus() -- a fully-deleted file has nothing to fold
+  M._view = "focused" -- the deleted view belongs to the Changes tab
   drop_breakindent(vim.api.nvim_get_current_win()) -- every line here is painted red
 end
 
@@ -472,6 +481,7 @@ end
 -- and drop our folds (and only ours — a user-configured foldmethod is left alone).
 function M.unfocus()
   local bufnr = vim.api.nvim_get_current_buf()
+  M._view = "plain"
   vim.b[bufnr].reviewr_plain = true
   M.unlock(bufnr) -- nil-guarded: show_deleted's own nomodifiable scratch is left alone
   M.refresh(bufnr) -- plain flag set: clears the buffer's marks
@@ -495,6 +505,31 @@ function M.enable()
       end,
     }
   )
+  -- User-driven navigation (tag jump, C-o/C-i, :e) lands on buffers whose stamped
+  -- presentation may belong to the other view — or to none. Re-derive it from the active
+  -- view so a jump in All files never shows a locked, painted buffer and a jump in Changes
+  -- never shows an editable one. Named file buffers only; the rd split keeps its lift.
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = grp,
+    callback = function(a)
+      local view = M._view
+      if not view or vim.bo[a.buf].buftype ~= "" or vim.api.nvim_buf_get_name(a.buf) == "" then
+        return
+      end
+      local want_plain = view == "plain"
+      local locked = vim.bo[a.buf].modifiable == false or vim.b[a.buf].reviewr_split_active
+      if vim.b[a.buf].reviewr_plain == want_plain and want_plain ~= locked then
+        return -- already presented under this view
+      end
+      vim.b[a.buf].reviewr_plain = want_plain
+      if want_plain then
+        M.unlock(a.buf)
+      else
+        M.lock(a.buf)
+      end
+      M.refresh(a.buf)
+    end,
+  })
 end
 
 return M

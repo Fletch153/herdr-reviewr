@@ -11,7 +11,9 @@ printf 'line a\nline b\nline c\nline d\nline e\nline f\nline g\nline h\nline i\n
 # A top-level file that sorts first: in the collapsed All-files tree the cursor must NOT be
 # left on it after a flip (the poll opens whatever file row the cursor rests on).
 printf 'decoy content\n' > "$REPO/AAA-decoy.txt"
+printf 'two base\n' > "$REPO/src/two.txt"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm A
+printf 'CHANGE TWO\n' >> "$REPO/src/two.txt"
 printf 'TAIL CHANGE\n' >> "$REPO/src/one.txt"
 
 tui_start
@@ -68,6 +70,24 @@ wait_for "PASTED-BLOCK"
 for _ in $(seq 20); do grep -q "PASTED-BLOCK" "$REPO/src/one.txt" 2>/dev/null && break; sleep 0.25; done
 grep -q "PASTED-BLOCK" "$REPO/src/one.txt" || fail "the flipped paste did not autosave"
 echo "ok 4 - a paste flips and lands"
+
+# 5. User-driven jumps inherit the active view: :e another changed file in Changes arrives
+#    locked and painted; the same jump in All files arrives editable.
+keys Tab; sleep 0.3
+keys 1; sleep 0.8
+keys Tab; sleep 0.3
+keys -l ":e src/two.txt"; keys Enter; sleep 0.8
+frame | grep -qE '\+ *[0-9]+ CHANGE TWO' || fail "a jump inside Changes did not paint the entered buffer"
+keys x; sleep 0.5
+frame | grep -q "E21" || fail "a jump inside Changes left the entered buffer editable"
+echo "ok 5 - a jump inside Changes arrives locked and painted"
+keys Tab; sleep 0.3
+keys 2; sleep 0.8
+keys Tab; sleep 0.3
+keys -l ":e src/one.txt"; keys Enter; sleep 0.8
+keys x; sleep 0.5
+frame | grep -q "E21" && fail "a jump inside All files arrived locked"
+echo "ok 6 - a jump inside All files arrives editable"
 
 keys Tab; sleep 0.3
 keys q; sleep 0.3; keys y 2>/dev/null || true
