@@ -88,7 +88,6 @@ struct TabStash {
     file_scroll: usize,
     toggled_dirs: HashSet<String>,
     expand_snapshot: Option<HashSet<String>>,
-    reviewed: HashMap<String, u64>,
     diff: FileDiff,
     visible: Vec<Row>,
     expanded_folds: HashSet<u32>,
@@ -336,6 +335,9 @@ pub struct App {
     /// The store revision last persisted to the repo's comments ref — the event loop calls
     /// `persist_comments` every tick and this guard makes it a no-op between mutations.
     comments_saved_rev: u64,
+    /// Same per-tick persistence guard for the reviewed map (`refs/reviewr/reviewed/<key>`).
+    reviewed_rev: u64,
+    reviewed_saved_rev: u64,
     pub list_cursor: usize,
     /// Store indices checked in the comments list for a batch resolve; cleared on any change.
     pub list_selected: HashSet<usize>,
@@ -390,6 +392,11 @@ impl App {
             store.seed(comments);
         }
         let comments_saved_rev = store.rev();
+        // Reviewed ticks persist too; `prune_reviewed` on the first reload drops any mark
+        // whose file changed while the pane was closed.
+        let reviewed = git::read_reviewed_blob(&repo, &turn_key)
+            .map(|json| parse_reviewed(&json))
+            .unwrap_or_default();
         let theme = theme::resolve(None);
         // Commit scope defaults to the tip (HEAD) — the uncommitted view — so building straight
         // into it shows a diff without a later `set_scope` call.
@@ -419,7 +426,9 @@ impl App {
             resume_list: false,
             toggled_dirs: HashSet::new(),
             expand_snapshot: None,
-            reviewed: HashMap::new(),
+            reviewed,
+            reviewed_rev: 0,
+            reviewed_saved_rev: 0,
             stash: TabStash::default(),
             changed: HashMap::new(),
             file_status: HashMap::new(),
@@ -1609,7 +1618,8 @@ impl App {
         std::mem::swap(&mut self.file_scroll, &mut self.stash.file_scroll);
         std::mem::swap(&mut self.toggled_dirs, &mut self.stash.toggled_dirs);
         std::mem::swap(&mut self.expand_snapshot, &mut self.stash.expand_snapshot);
-        std::mem::swap(&mut self.reviewed, &mut self.stash.reviewed);
+        // `reviewed` is deliberately NOT stashed: a viewed file carries its tick in every
+        // tab and scope — the mark is a property of the file's content, not of a view.
         std::mem::swap(&mut self.diff, &mut self.stash.diff);
         std::mem::swap(&mut self.visible, &mut self.stash.visible);
         std::mem::swap(&mut self.expanded_folds, &mut self.stash.expanded_folds);
@@ -2722,7 +2732,7 @@ impl App {
             self.toggle_reviewed();
             return;
         };
-        self.reviewed.insert(path.clone(), content_hash(&self.repo, &path));
+        self.mark_reviewed(path.clone());
         if let Some(fi) = self.file_row_of_path(&path) {
             self.file_cursor = fi;
         }
@@ -2775,6 +2785,16 @@ impl App {
         match self.tab {
             Tab::Changes => self.advance_reviewed_file(),
             Tab::AllFiles => {
+                // The forward walk marks what it leaves behind here too — a viewed file
+                // carries its tick in every view.
+                if let Some(path) = self.diff_path.clone() {
+                    self.mark_reviewed(path);
+                    self.status = format!(
+                        "file reviewed · {} of {}",
+                        self.reviewed_count(),
+                        self.changed_count()
+                    );
+                }
                 self.walk_changeset(1);
             }
             Tab::Pr => {}
@@ -3163,8 +3183,11 @@ impl App {
         self.reviewed.contains_key(path)
     }
 
+    /// Reviewed files within the CURRENT changeset — the header's "M reviewed". The map
+    /// itself is global (ticks persist across scopes and restarts), so its raw length can
+    /// exceed the changeset; only the intersection is meaningful next to "N changed".
     pub fn reviewed_count(&self) -> usize {
-        self.reviewed.len()
+        self.entries.iter().filter(|e| self.reviewed.contains_key(&e.path)).count()
     }
 
     /// Toggle the reviewed mark on the cursor's file. When marking (not un-marking), advance to
@@ -3175,9 +3198,10 @@ impl App {
             return;
         };
         if self.reviewed.remove(&path).is_some() {
+            self.reviewed_rev += 1;
             return;
         }
-        self.reviewed.insert(path.clone(), content_hash(&self.repo, &path));
+        self.mark_reviewed(path);
         if let Some(row) = self.next_unreviewed_row() {
             self.file_cursor = row;
             self.open_cursor_file();
@@ -3202,9 +3226,39 @@ impl App {
     /// agent edit to a reviewed file re-surfaces it. Keyed on the file's own content, not the
     /// changeset, so a mark on an unchanged file (the `All files` tab) survives a poll.
     fn prune_reviewed(&mut self) {
+        let before = self.reviewed.len();
         let repo = &self.repo;
         self.reviewed
             .retain(|path, hash| repo.join(path).exists() && content_hash(repo, path) == *hash);
+        if self.reviewed.len() != before {
+            self.reviewed_rev += 1;
+        }
+    }
+
+    /// Tick the file as reviewed, keyed to its current content — the mark survives every
+    /// tab, scope and restart, and `prune_reviewed` drops it the moment the content moves.
+    fn mark_reviewed(&mut self, path: String) {
+        let hash = content_hash(&self.repo, &path);
+        self.reviewed.insert(path, hash);
+        self.reviewed_rev += 1;
+    }
+
+    /// Write the reviewed map to its private ref when it changed — the comments' twin,
+    /// called once per event-loop tick.
+    pub fn persist_reviewed(&mut self) {
+        if self.reviewed_rev == self.reviewed_saved_rev {
+            return;
+        }
+        self.reviewed_saved_rev = self.reviewed_rev;
+        if self.reviewed.is_empty() {
+            git::delete_reviewed_blob(&self.repo, &self.turn_key);
+        } else if let Err(e) = git::write_reviewed_blob(
+            &self.repo,
+            &self.turn_key,
+            &serialize_reviewed(&self.reviewed),
+        ) {
+            logln!("persist_reviewed: {e}");
+        }
     }
 
     fn clamp_list_cursor(&mut self) {
@@ -3312,6 +3366,29 @@ fn content_hash(repo: &std::path::Path, path: &str) -> u64 {
     h.finish()
 }
 
+/// The reviewed map's on-disk form. The hashes come from `content_hash` (`DefaultHasher` —
+/// deterministic per std version, not across toolchains), so the worst staleness case is
+/// every tick pruning once after a toolchain bump: marks drop, never false-positive.
+fn serialize_reviewed(map: &HashMap<String, u64>) -> String {
+    let entries: serde_json::Map<String, serde_json::Value> =
+        map.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(*v))).collect();
+    serde_json::json!({ "version": 1, "reviewed": entries }).to_string()
+}
+
+/// Parse `serialize_reviewed`'s output; empty on anything malformed or unknown-version.
+fn parse_reviewed(s: &str) -> HashMap<String, u64> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+        return HashMap::new();
+    };
+    if v.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return HashMap::new();
+    }
+    v.get("reviewed")
+        .and_then(|r| r.as_object())
+        .map(|o| o.iter().filter_map(|(k, v)| v.as_u64().map(|h| (k.clone(), h))).collect())
+        .unwrap_or_default()
+}
+
 fn is_markdown_path(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
@@ -3346,4 +3423,20 @@ fn anchor_range(selected: &[&Row]) -> Option<(Side, u32, u32)> {
     let min = *old_nos.iter().min()?;
     let max = *old_nos.iter().max()?;
     Some((Side::Old, min, max))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_reviewed, serialize_reviewed};
+    use std::collections::HashMap;
+
+    #[test]
+    fn reviewed_map_round_trips() {
+        let mut m = HashMap::new();
+        m.insert("src/α β.rs".to_string(), u64::MAX);
+        m.insert("plain.txt".to_string(), 0u64);
+        assert_eq!(parse_reviewed(&serialize_reviewed(&m)), m);
+        assert!(parse_reviewed("junk").is_empty());
+        assert!(parse_reviewed("{\"version\":9,\"reviewed\":{}}").is_empty());
+    }
 }

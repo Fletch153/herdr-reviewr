@@ -153,15 +153,6 @@ impl NvimSession {
         Ok(())
     }
 
-    /// nvim mode: hop the editor's cursor to the next change hunk in the open buffer.
-    /// `Some(true)` = moved; `Some(false)` = no further hunk (the caller advances the file);
-    /// `None` = editor busy or gone (do nothing rather than mis-advance the review).
-    fn next_change(&mut self) -> Option<bool> {
-        let e = self.engine.as_mut().filter(|e| e.is_running())?;
-        let v = e.eval("luaeval(\"require'reviewr.diff'.next_change()\")").ok()?;
-        Some(v.as_bool().unwrap_or_else(|| v.as_i64().unwrap_or(0) != 0))
-    }
-
     fn shutdown(&mut self) {
         if let Some(mut engine) = self.engine.take() {
             let _ = engine.shutdown(true);
@@ -393,20 +384,6 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
             vec![],
         );
     }
-}
-
-/// Space in nvim mode: step through the open file's change hunks in the editor; once past the
-/// last, fall back to the coarse advance — mark the file reviewed and move to the next
-/// unreviewed one, which then opens focused on its first change.
-fn review_advance_nvim(app: &mut App, session: &mut NvimSession) {
-    if app.tab == crate::app::Tab::Changes && app.diff_path.is_some() && session.alive() {
-        // Some(true): hopped to the next hunk. None: the editor is busy or gone — do nothing
-        // rather than mis-advance the review. Only a definite "no further hunk" falls through.
-        if session.next_change() != Some(false) {
-            return;
-        }
-    }
-    app.review_advance();
 }
 
 /// Make the editor follow the reviewer's selection and scope: open `diff_path` in nvim when it
@@ -850,10 +827,12 @@ fn event_loop(
         // Durable comments: any store mutation this tick lands on disk before the next input
         // can close the pane (rev-guarded no-op otherwise).
         app.persist_comments();
+        app.persist_reviewed();
     }
     // The quit-triggering tick breaks the loop before the in-loop call runs again: persist a
     // final-frame mutation (e.g. a delete immediately followed by q).
     app.persist_comments();
+    app.persist_reviewed();
     Ok(())
 }
 
@@ -1135,6 +1114,9 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
             (PageDown, _) => app.move_cursor(PAGE)?,
             (PageUp, _) => app.move_cursor(-PAGE)?,
             (Enter, _) if app.on_folder() => app.toggle_dir_children(),
+            // Enter on a file row: mark it reviewed and move to the next unreviewed file —
+            // the same signal as walking past its last hunk in the editor.
+            (Enter, _) => app.toggle_reviewed(),
             (Right, _) if app.on_folder() => app.expand_dir(),
             (Left, _) if app.on_folder() => app.collapse_dir(),
             (Char('x'), _) => app.expand_changes(),
@@ -1143,8 +1125,6 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
             (Char('b'), false) => app.set_scope(Scope::Branch)?,
             (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
             (Char('C'), false) => app.enter_commit_scope()?,
-            // Space steps through the open file's hunks in the editor, then advances the file.
-            (Char(' '), _) => review_advance_nvim(app, session),
             (Char('+'), _) => app.send_path_to_agent(),
             // One send path, one store: the host's. The editor reports comment anchors over
             // RPC; send/list/count all read the same store as the built-in pane.

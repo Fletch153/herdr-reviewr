@@ -50,6 +50,28 @@ frame | grep -q "survives restarts" && fail "a deleted comment came back after r
 frame | grep -q "Send (0)" || fail "expected an empty send counter after the persisted delete"
 echo "ok 3 - deleting the last comment persists"
 
+# 4. Reviewed ticks persist across a restart too.
+read -r COL ROW <<< "$(locate_right 'one.txt')"
+[ -n "${COL:-}" ] || fail "cannot locate one.txt in the file list"
+click "$COL" "$ROW"; sleep 0.5
+keys Enter; sleep 0.6
+frame | grep -q "1 reviewed" || fail "Enter on the file row did not mark it reviewed"
+frame | grep -q "✓" || fail "no tick rendered for the reviewed file"
+keys q; sleep 0.5; keys y 2>/dev/null || true
+sleep 0.8
+tui_start
+wait_for "one.txt"
+wait_for "CHANGE ONE"
+frame | grep -q "✓" || fail "the reviewed tick did not survive the restart"
+frame | grep -q "1 reviewed" || fail "the reviewed counter did not survive the restart"
+echo "ok 4 - reviewed ticks survive a restart"
+
+# 5. A content change drops the tick on the next poll (user/agent edit or branch switch).
+printf 'POST-REVIEW CHANGE\n' >> "$REPO/src/one.txt"
+for _ in $(seq 20); do frame | grep -q "reviewed" || break; sleep 0.25; done
+frame | grep -q "reviewed" && fail "the tick outlived a content change"
+echo "ok 5 - a content change clears the tick"
+
 keys Tab; sleep 0.3
 keys q; sleep 0.3; keys y 2>/dev/null || true
 echo "# all persistence assertions passed"

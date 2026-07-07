@@ -251,8 +251,11 @@ How it behaves:
   (`i`/`a`/`o`/…) and pastes there flip to All files at the same spot and land as real input;
   every other mutating key answers `E21`. **`Enter`/`Backspace` walk the review**: hunk to
   hunk, then on to the next/previous changed file (backward entries land on the file's last
-  hunk); in All files the pair walks file to file. `Space` from the file list does the same
-  forward walk, and `]c`/`[c` hop hunks in place. **`<leader>rh` reverts the hunk under the
+  hunk); in All files the pair walks file to file, marking each file it leaves. `Enter` on a
+  file row in the list marks it reviewed directly, and `]c`/`[c` hop hunks in place. Reviewed
+  ticks are a property of the file, not the view — they show in every tab and scope, persist
+  across restarts (a private ref, like comments), and drop only when the file's content
+  changes (your edit, the agent's, or a branch switch). **`<leader>rh` reverts the hunk under the
   cursor** to the base (buffer and disk, one undo block); reverting a file's last hunk moves
   on and the clean file drops from Changes. Deliberate limits of the flip: macros and `.`
   can't repeat it, and counts/registers (`3i`, `"aI`) don't carry across it.

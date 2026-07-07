@@ -19,20 +19,22 @@ wait_for "one.txt"
 wait_for "ONEHUNK1"
 wait_for "unchanged lines" # the fold marker doubles as the Changes-view sentinel
 
-# 1. Space from the files pane steps the open file's hunks in the editor: the first press
-#    must NOT advance the file (focus() started the cursor on hunk 1 of 2).
+# 1. Space is RETIRED as a review key: in the files pane it neither marks nor advances.
 keys Space; sleep 0.8
-frame | grep -q "file reviewed" && fail "the first Space skipped the hunk walk and advanced the file"
-frame | grep -q "ONEHUNK1" || fail "Space left the open file"
-echo "ok 1 - Space steps within the file first"
+frame | grep -q "file reviewed" && fail "Space still marks/advances from the files pane"
+frame | grep -q "ONEHUNK1" || fail "Space disturbed the open file"
+echo "ok 1 - Space is retired as the review key"
 
-# 2. Enter inside the editor is the same walk: past the last hunk it marks the file reviewed
-#    and opens the next changed file. (Space is NOT an editor key — it is the reviewr leader.)
+# 2. Enter inside the editor steps the hunks first (focus() started on hunk 1 of 2), and only
+#    past the last hunk marks the file reviewed and opens the next changed file.
 keys Tab; sleep 0.4
+keys Enter; sleep 0.8
+frame | grep -q "file reviewed" && fail "the first Enter skipped the hunk walk and advanced"
+frame | grep -q "ONEHUNK1" || fail "the hunk step left the file"
 keys Enter
 wait_for "file reviewed"
 wait_for "TWOHUNK1"
-echo "ok 2 - Enter past the last hunk advances to the next file"
+echo "ok 2 - Enter walks the hunks, then marks and advances"
 
 # 3. Enter is the same walk: one step for two.txt's second hunk, the next finishes the review.
 keys Enter; sleep 0.8
@@ -73,6 +75,20 @@ frame | grep -q "TWOHUNK1" || fail "Space navigated in All files (the leader is 
 esc
 echo "ok 6 - Space stays the leader in All files"
 
-keys Tab; sleep 0.3
+# 7. Ticks are per-FILE, not per-view: both files were reviewed by the walk in the Changes
+#    tab — their ✓ must show in the All files tree too.
+keys Tab; sleep 0.4
+frame | grep -q "✓" || fail "no reviewed ticks in the All files tree"
+echo "ok 7 - ticks show across tabs"
+
+# 8. Enter on a file row in the files pane toggles its tick directly.
+keys 1; sleep 0.8
+frame | grep -q "2 reviewed" || fail "expected both files reviewed before the toggle"
+keys Enter; sleep 0.6
+frame | grep -q "1 reviewed" || fail "Enter on a reviewed file row did not clear its tick"
+keys Enter; sleep 0.6
+frame | grep -q "2 reviewed" || fail "Enter on a file row did not re-mark it"
+echo "ok 8 - Enter in the files pane toggles the reviewed mark"
+
 keys q; sleep 0.3; keys y 2>/dev/null || true
 echo "# all nav assertions passed"

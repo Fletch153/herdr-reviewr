@@ -245,17 +245,20 @@ keys Space r x
 wait_gone "needs a guard"
 ok "delete under the cursor clears the inline card"
 
-# 8. Space steps the editor through the file's change hunks before advancing the file.
+# 8. Enter reviews from the files pane: it marks the highlighted file and jumps to the next
+#    unreviewed one. Space is retired as a review key — it must do nothing here.
 keys Tab # back to the files pane
 sleep 0.3
 keys k # hello.txt (opens; the cursor lands on its first change)
 wait_for "XYZTEST"
-keys Space # hop to the second hunk (the deletion boundary) — must NOT advance the file yet
+keys Space
 sleep 0.6
-frame | grep -q "bravo line one" && fail "space advanced the file instead of stepping the hunk"
-keys Space # exhausted: hello is marked reviewed and the next unreviewed file opens
+frame | grep -q "bravo line one" && fail "space still advances the file"
+frame | grep -q "reviewed" && fail "space still marks the file reviewed"
+keys Enter # mark hello.txt reviewed; the next unreviewed file opens
 wait_for "bravo line one"
-ok "space steps through hunks, then advances to the next file"
+frame | grep -q "✓" || fail "no reviewed tick after the files-pane Enter"
+ok "enter marks the file reviewed and advances; space is retired"
 
 # 9. Quit: savable edits were already autosaved, so only a buffer that CANNOT write — an
 #    unnamed scratch with text — trips the confirm; y quits; no orphans.

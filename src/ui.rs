@@ -1602,6 +1602,10 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::SelectAll => ("a", "select all"),
         A::ConfirmDelete => ("y/↵", "delete"),
         A::Review => {
+            // nvim mode retired Space: Enter marks from the list and walks in the editor.
+            if app.editor_nvim {
+                return ("enter".into(), "review".into());
+            }
             return (
                 "space".into(),
                 if app.focus == Focus::Diff { "next block" } else { "review" }.into(),
@@ -1859,12 +1863,15 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("j / k  ↑ / ↓", "move the cursor"),
                     ("PgUp/PgDn · Ctrl-u/d", "page / half-page"),
                     ("Tab", "switch files ⇄ editor (editor: normal/visual mode only)"),
-                    ("← / → / Enter", "collapse / expand the folder tree"),
+                    ("← / →", "collapse / expand a folder"),
                     ("x", "expand every folder with changes · again collapses back"),
                     ("backspace", "delete the file / folder under the cursor (confirms first)"),
                     ("[ / ]", "narrow / widen the file list"),
                     ("/", "filter the file list"),
-                    ("space", "step the open file's hunks, then mark reviewed → next file"),
+                    (
+                        "enter",
+                        "file row: mark reviewed → next unreviewed · folder: expand/collapse",
+                    ),
                     ("p / view chip", "markdown: rendered ⇄ raw — sticky, follows the selection"),
                 ],
             ),
