@@ -181,18 +181,30 @@ wait_for "UGONE alpha"
 keys k # ...to the second file for the comment flow
 wait_for "bravo line one"
 
-# 6. Comment flow inside nvim: focus the editor, space rc, type the note, Enter; the extmark
-#    note paints at the end of the commented line.
+# 6. Comment flow: space rc in the editor asks the HOST to open its composer; the saved note
+#    lands in the reviewer's one store — the same store behind the header count, the list, and
+#    send — and paints back into the editor as the boxed inline card.
 keys Tab
 sleep 0.3
 keys Space r c
-wait_for "Review note"
+wait_for "Leave a comment"
+frame | grep -q "comment · src/other.txt:3" || fail "composer not anchored to the editor cursor"
 keys -l "needs a guard"
 keys Enter
+wait_for "╭─ comment · src/other.txt:3"
 wait_for "needs a guard"
-ok "comment recorded with its inline note"
+frame | grep -q "Send (1)" || fail "the header Send count did not pick up the comment"
+ok "comment composes in the host and paints as an inline card"
 
-# 7. Send: space rs delivers the tagged payload to the stub agent.
+# 6b. The comments list overlay (space rl routes to the host): grouped and jumpable; esc closes.
+keys Space r l
+wait_for "Comments (1)"
+keys Escape
+wait_gone "Comments (1)"
+ok "comments list opens from the editor"
+
+# 7. Send: space rs dispatches the un-sent comments through the host's one send path; the
+#    count zeroes and the comment stays tracked (sent, resolve-only).
 keys Space r s
 for _ in $(seq 40); do
   grep -q "send wY:pFOCUS" "$REVIEWR_STUB_LOG" 2>/dev/null && break
@@ -200,11 +212,28 @@ for _ in $(seq 40); do
 done
 grep -q "send wY:pFOCUS" "$REVIEWR_STUB_LOG" || fail "send did not reach the stub agent"
 grep -q "<review>" "$REVIEWR_STUB_LOG" || fail "payload missing the <review> wrapper"
+wait_gone "Send (1)"
+frame | grep -q "Send (0)" || fail "the header Send count did not reset after dispatch"
 ok "send delivers the review payload to the agent"
 
-# 8. Quit: q from the files pane; the modified buffer raises the confirm; y quits; no orphans.
-keys Tab # files pane
+# 7b. Delete under the cursor (space rx): the card clears from the editor.
+keys Space r x
+wait_gone "needs a guard"
+ok "delete under the cursor clears the inline card"
+
+# 8. Space steps the editor through the file's change hunks before advancing the file.
+keys Tab # back to the files pane
 sleep 0.3
+keys k # hello.txt (opens; the cursor lands on its first change)
+wait_for "XYZTEST"
+keys Space # hop to the second hunk (the deletion boundary) — must NOT advance the file yet
+sleep 0.6
+frame | grep -q "bravo line one" && fail "space advanced the file instead of stepping the hunk"
+keys Space # exhausted: hello is marked reviewed and the next unreviewed file opens
+wait_for "bravo line one"
+ok "space steps through hunks, then advances to the next file"
+
+# 9. Quit: q from the files pane; the modified buffer raises the confirm; y quits; no orphans.
 keys q
 wait_for "quit anyway"
 ok "quit guards on the unsaved editor buffer"

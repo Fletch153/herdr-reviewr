@@ -149,6 +149,9 @@ fn show_deleted_command(rel: &str, base: &str) -> String {
     )
 }
 
+/// A queued nvim→host notification: `(method, params)` as decoded from the wire.
+pub type Notification = (String, Vec<Value>);
+
 struct RpcResponse {
     msgid: u64,
     result: Result<Value, RpcFailure>,
@@ -169,6 +172,9 @@ pub struct Nvim {
     front: Arc<Mutex<Grid>>,
     dirty: Arc<AtomicBool>,
     dead: Arc<Mutex<Option<String>>>,
+    /// Non-redraw notifications from nvim (reviewr.nvim's `rpcnotify` bridge), queued by the
+    /// reader for the event loop to drain — the nvim→host half of the comment protocol.
+    notes: Arc<Mutex<Vec<Notification>>>,
     resp_rx: Receiver<RpcResponse>,
     next_msgid: u64,
     reader: Option<JoinHandle<()>>,
@@ -190,13 +196,14 @@ impl Nvim {
         let front = Arc::new(Mutex::new(Grid::new(cols, rows)));
         let dirty = Arc::new(AtomicBool::new(false));
         let dead: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let notes: Arc<Mutex<Vec<Notification>>> = Arc::new(Mutex::new(Vec::new()));
         let (resp_tx, resp_rx) = channel::<RpcResponse>();
 
         let reader = std::thread::spawn({
-            let (writer, front, dirty, dead) =
-                (writer.clone(), front.clone(), dirty.clone(), dead.clone());
+            let (writer, front, dirty, dead, notes) =
+                (writer.clone(), front.clone(), dirty.clone(), dead.clone(), notes.clone());
             let mut work = Grid::new(cols, rows);
-            move || reader_loop(stdout, &writer, &front, &dirty, &dead, &resp_tx, &mut work)
+            move || reader_loop(stdout, &writer, &front, &dirty, &dead, &notes, &resp_tx, &mut work)
         });
 
         let mut nvim = Self {
@@ -205,6 +212,7 @@ impl Nvim {
             front,
             dirty,
             dead,
+            notes,
             resp_rx,
             next_msgid: 1,
             reader: Some(reader),
@@ -254,6 +262,19 @@ impl Nvim {
     #[must_use]
     pub fn needs_redraw(&self) -> bool {
         self.dirty.swap(false, Ordering::SeqCst)
+    }
+
+    /// Drain the queued nvim→host notifications (everything except `redraw`) — reviewr.nvim's
+    /// `rpcnotify` bridge for comment actions. Order preserved; empty while nothing arrived.
+    pub fn take_notifications(&self) -> Vec<Notification> {
+        std::mem::take(&mut *lock(&self.notes))
+    }
+
+    /// `nvim_exec_lua` as a notification: run `code` inside nvim with `args` bound to `...`,
+    /// discarding the result. The host→nvim half of the comment protocol — args travel as
+    /// msgpack values (they arrive as Lua tables), so no string escaping is ever in play.
+    pub fn exec_lua_fire(&self, code: &str, args: Vec<Value>) -> Result<(), RpcFailure> {
+        self.notify("nvim_exec_lua", vec![Value::from(code), Value::Array(args)])
     }
 
     /// `nvim_ui_try_resize` (notification — the resulting `grid_resize` event is the ack).
@@ -454,14 +475,17 @@ impl Drop for Nvim {
 }
 
 /// The reader thread: decode messages until the channel ends; apply redraw batches to the
-/// private working grid, publishing to `front` (+ dirty) on each flush; route responses;
-/// answer unexpected nvim→host requests with an error so nvim never blocks on us.
+/// private working grid, publishing to `front` (+ dirty) on each flush; queue other
+/// notifications for the event loop (the comment bridge); route responses; answer unexpected
+/// nvim→host requests with an error so nvim never blocks on us.
+#[expect(clippy::too_many_arguments)] // the reader's shared-state plumbing, built once in start()
 fn reader_loop(
     stdout: std::process::ChildStdout,
     writer: &Mutex<Option<ChildStdin>>,
     front: &Mutex<Grid>,
     dirty: &AtomicBool,
     dead: &Mutex<Option<String>>,
+    notes: &Mutex<Vec<Notification>>,
     resp_tx: &Sender<RpcResponse>,
     work: &mut Grid,
 ) {
@@ -470,9 +494,13 @@ fn reader_loop(
     let reason = loop {
         match rpc::read_msg(&mut reader) {
             Ok(rpc::RpcIn::Notification { method, params }) => {
-                if method == "redraw" && grid::apply_redraw(work, &mut mode_shapes, &params).flush {
-                    lock(front).copy_from(work);
-                    dirty.store(true, Ordering::SeqCst);
+                if method == "redraw" {
+                    if grid::apply_redraw(work, &mut mode_shapes, &params).flush {
+                        lock(front).copy_from(work);
+                        dirty.store(true, Ordering::SeqCst);
+                    }
+                } else {
+                    lock(notes).push((method, params));
                 }
             }
             Ok(rpc::RpcIn::Response { msgid, error, result }) => {

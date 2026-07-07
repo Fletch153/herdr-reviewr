@@ -130,3 +130,42 @@ fn shutdown_force_reaps_cleanly() {
     assert!(!nv.is_running());
     drop(nv); // completing under the harness timeout is the no-hang assertion
 }
+
+#[test]
+fn rpcnotify_and_exec_lua_bridge_round_trips() {
+    if !nvim_present() {
+        eprintln!("skipping: nvim not on PATH");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut nv = start(dir.path(), 40, 10);
+    // nvim → host: a notification sent to the UI channel lands in the drain queue.
+    nv.command_fire(
+        "lua vim.rpcnotify(vim.api.nvim_list_uis()[1].chan, 'reviewr', 'comment', {file='a.rs', start=2})",
+    )
+    .unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    let mut notes = Vec::new();
+    while Instant::now() < deadline && notes.is_empty() {
+        notes = nv.take_notifications();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(notes.len(), 1, "one queued notification");
+    let (method, params) = &notes[0];
+    assert_eq!(method, "reviewr");
+    assert_eq!(params.first().and_then(rmpv::Value::as_str), Some("comment"));
+    assert!(nv.take_notifications().is_empty(), "drain consumes the queue");
+    // host → nvim: exec_lua's msgpack args arrive as Lua values, no escaping layer at all.
+    nv.exec_lua_fire(
+        "vim.g.reviewr_bridge = select(1, ...).text",
+        vec![rmpv::Value::Map(vec![(
+            rmpv::Value::from("text"),
+            rmpv::Value::from("it's a 'quote' test"),
+        )])],
+    )
+    .unwrap();
+    wait_for(&mut nv, "exec_lua side effect", |nv| {
+        nv.eval("get(g:, 'reviewr_bridge', '')").ok().and_then(|v| v.as_str().map(String::from))
+            == Some("it's a 'quote' test".to_string())
+    });
+}

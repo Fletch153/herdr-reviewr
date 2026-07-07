@@ -47,10 +47,12 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::supports_keyboard_enhancement;
 use ratatui::layout::Rect;
 
-use crate::app::{App, Focus, Mode};
+use rmpv::Value;
+
+use crate::app::{App, Focus, Mode, NvimAnchor};
 use crate::config::Config;
 use crate::export::{Agent, Clipboard};
-use crate::model::Scope;
+use crate::model::{Scope, Side};
 
 /// Entry point: parse config, set up the terminal, run the loop, restore.
 pub fn run() -> Result<()> {
@@ -81,7 +83,7 @@ pub fn run() -> Result<()> {
         // Eager start: overlap nvim's spawn + init.lua load with the initial reload and first
         // paint, so the first file click renders instantly. The real size syncs on frame 1.
         match session.start(&app.repo, 80, 24) {
-            Ok(()) => {}
+            Ok(()) => push_editor_theme(&app, &session),
             Err(e) => {
                 app.editor_nvim = false;
                 app.status = format!("editor=nvim disabled: {e}");
@@ -112,6 +114,9 @@ struct NvimSession {
     last_base: Option<String>,
     /// Whether the last-published view was focused (Changes) or plain (All files).
     last_focus: Option<bool>,
+    /// The comment-card set last pushed to the editor, keyed by store revision + the view it
+    /// was computed for — cards re-push exactly when the store or the shown diff moved.
+    last_cards: Option<(u64, String, String, bool)>,
     /// Each death grants one automatic respawn on the next open; after that the dead panel's
     /// `r` restarts manually (a crash-looping nvim must not spin).
     auto_respawned: bool,
@@ -132,7 +137,17 @@ impl NvimSession {
         self.engine = Some(engine);
         self.last_size = Some((cols, rows));
         self.last_sent = None;
+        self.last_cards = None;
         Ok(())
+    }
+
+    /// nvim mode: hop the editor's cursor to the next change hunk in the open buffer.
+    /// `Some(true)` = moved; `Some(false)` = no further hunk (the caller advances the file);
+    /// `None` = editor busy or gone (do nothing rather than mis-advance the review).
+    fn next_change(&mut self) -> Option<bool> {
+        let e = self.engine.as_mut().filter(|e| e.is_running())?;
+        let v = e.eval("luaeval(\"require'reviewr.diff'.next_change()\")").ok()?;
+        Some(v.as_bool().unwrap_or_else(|| v.as_i64().unwrap_or(0) != 0))
     }
 
     fn shutdown(&mut self) {
@@ -155,9 +170,6 @@ trait NvimBridge {
     fn feed_keys(&mut self, notation: &str);
     fn feed_paste(&mut self, text: &str);
     fn feed_mouse(&mut self, button: &str, action: &str, modifier: &str, row: u16, col: u16);
-    /// Run an Ex command fire-and-forget (`ReviewrSend`, `ReviewrList`): outcomes paint in the
-    /// editor's own message area.
-    fn run_command(&mut self, cmd: &str);
     /// How many buffers hold unsaved changes; `None` when the editor is gone or busy (a prompt
     /// is up) — callers must not block quitting on it.
     fn modified_count(&mut self) -> Option<i64>;
@@ -191,12 +203,6 @@ impl NvimBridge for NvimSession {
         }
     }
 
-    fn run_command(&mut self, cmd: &str) {
-        if let Some(e) = self.engine_alive() {
-            let _ = e.command_fire(cmd);
-        }
-    }
-
     fn modified_count(&mut self) -> Option<i64> {
         let e = self.engine.as_mut().filter(|e| e.is_running())?;
         e.eval("len(getbufinfo({'bufmodified':1}))").ok().and_then(|v| v.as_i64())
@@ -218,6 +224,125 @@ fn request_quit(app: &mut App, session: &mut dyn NvimBridge) {
     }
 }
 
+/// A string field of a msgpack map payload.
+fn map_str<'a>(map: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    map?.as_map()?.iter().find(|(k, _)| k.as_str() == Some(key))?.1.as_str()
+}
+
+/// A u32 field of a msgpack map payload (0 when absent/mistyped — rejected downstream).
+fn map_u32(map: Option<&Value>, key: &str) -> u32 {
+    let field =
+        map.and_then(Value::as_map).and_then(|m| m.iter().find(|(k, _)| k.as_str() == Some(key)));
+    field.and_then(|(_, v)| v.as_u64()).and_then(|n| u32::try_from(n).ok()).unwrap_or(0)
+}
+
+/// Drain and dispatch reviewr.nvim's `rpcnotify` bridge: the editor reports comment intents
+/// (the anchor under its cursor or visual range) and the host — the single comment store —
+/// acts on them, exactly like the built-in pane's keys. Unknown methods and malformed
+/// payloads are ignored: a plugin bug must never take the reviewer down.
+fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
+    let notes = match session.engine_alive() {
+        Some(e) => e.take_notifications(),
+        None => return,
+    };
+    for (method, params) in notes {
+        if method != "reviewr" {
+            continue;
+        }
+        let action = params.first().and_then(Value::as_str).unwrap_or_default().to_string();
+        let payload = params.get(1);
+        let file = map_str(payload, "file").unwrap_or_default().to_string();
+        let side = if map_str(payload, "side") == Some("old") { Side::Old } else { Side::New };
+        let line = map_u32(payload, "line");
+        match action.as_str() {
+            "comment" => app.start_comment_at(NvimAnchor {
+                file,
+                side,
+                start: map_u32(payload, "start"),
+                end: map_u32(payload, "end"),
+                lines: map_str(payload, "lines").unwrap_or_default().to_string(),
+            }),
+            "edit" => app.start_edit_at(&file, side, line),
+            "delete" => app.delete_comment_at(&file, side, line),
+            "resolve" => app.resolve_comment_at(&file, side, line),
+            "list" => {
+                if app.store.is_empty() {
+                    app.status = "no comments yet".to_string();
+                } else {
+                    app.open_list();
+                }
+            }
+            "send" => app.export(&Agent),
+            "yank" => app.export(&Clipboard),
+            _ => {}
+        }
+    }
+}
+
+/// The msgpack payload for `reviewr.comments.apply`: one map per view-matching comment on the
+/// open file — buffer line range, anchor side, text, the reviewer's location label, and
+/// sentness. Values travel as msgpack (they arrive as Lua tables), so no escaping exists.
+fn comment_card_values(app: &App) -> Value {
+    let items: Vec<Value> = app
+        .nvim_comment_cards()
+        .iter()
+        .map(|c| {
+            Value::Map(vec![
+                (Value::from("start"), Value::from(c.start)),
+                (Value::from("end"), Value::from(c.end)),
+                (Value::from("side"), Value::from(if c.side == Side::Old { "old" } else { "new" })),
+                (Value::from("text"), Value::from(c.text.as_str())),
+                (Value::from("location"), Value::from(c.location())),
+                (Value::from("sent"), Value::from(c.sent)),
+            ])
+        })
+        .collect();
+    Value::Array(items)
+}
+
+/// Recolor the editor's comment-card highlight groups to the reviewer's palette (peach title,
+/// quiet border), so the inline cards read as the same UI as the built-in pane. Non-RGB
+/// palette entries keep the plugin's default links.
+fn push_editor_theme(app: &App, session: &NvimSession) {
+    fn hex(c: ratatui::style::Color) -> Option<String> {
+        match c {
+            ratatui::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            _ => None,
+        }
+    }
+    let p = app.palette();
+    let mut cmds = Vec::new();
+    if let Some(x) = hex(p.peach) {
+        cmds.push(format!("hi ReviewrCardTitle guifg={x} gui=bold"));
+        cmds.push(format!("hi ReviewrCommentLine guifg={x}"));
+    }
+    if let Some(x) = hex(p.overlay0) {
+        cmds.push(format!("hi ReviewrCardBorder guifg={x}"));
+    }
+    if let Some(x) = hex(p.text) {
+        cmds.push(format!("hi ReviewrCardBody guifg={x}"));
+    }
+    if !cmds.is_empty()
+        && let Some(e) = session.engine_alive()
+    {
+        let _ = e.command_fire(&cmds.join(" | "));
+    }
+}
+
+/// Space in nvim mode: step through the open file's change hunks in the editor; once past the
+/// last, fall back to the coarse advance — mark the file reviewed and move to the next
+/// unreviewed one, which then opens focused on its first change.
+fn review_advance_nvim(app: &mut App, session: &mut NvimSession) {
+    if app.tab == crate::app::Tab::Changes && app.diff_path.is_some() && session.alive() {
+        // Some(true): hopped to the next hunk. None: the editor is busy or gone — do nothing
+        // rather than mis-advance the review. Only a definite "no further hunk" falls through.
+        if session.next_change() != Some(false) {
+            return;
+        }
+    }
+    app.review_advance();
+}
+
 /// Make the editor follow the reviewer's selection and scope: open `diff_path` in nvim when it
 /// changes (or a click re-requested it), re-diff in place when only the scope/base changed, and
 /// respawn a dead editor once per death. `:confirm edit`'s unsaved prompt renders inside the
@@ -232,9 +357,15 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);
     let same_path = session.last_sent.as_deref() == Some(rel.as_str());
-    let same_base = session.last_base.as_deref() == Some(base.as_str());
-    let same_focus = session.last_focus == Some(focus);
-    if !force && same_path && same_base && same_focus {
+    let same_view = !force
+        && same_path
+        && session.last_base.as_deref() == Some(base.as_str())
+        && session.last_focus == Some(focus);
+    // Comment cards re-push when the store or the shown diff moved (the store revision is the
+    // cheap change detector); a pending cursor jump also counts as work.
+    let cards_key = (app.store.rev(), rel.clone(), base.clone(), focus);
+    let same_cards = session.last_cards.as_ref() == Some(&cards_key);
+    if same_view && same_cards && app.nvim_goto.is_none() {
         return;
     }
     if session.engine_alive().is_none() {
@@ -244,7 +375,10 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         session.auto_respawned = true;
         let (cols, rows) = (grid.width.max(12), grid.height.max(3));
         match session.start(&app.repo, cols, rows) {
-            Ok(()) => app.status = "editor restarted".to_string(),
+            Ok(()) => {
+                app.status = "editor restarted".to_string();
+                push_editor_theme(app, session);
+            }
             Err(e) => {
                 app.status = format!("editor restart failed: {e}");
                 return;
@@ -254,24 +388,46 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         // A live open succeeded before this one: the next death earns a fresh respawn.
         session.auto_respawned = false;
     }
-    if let Some(engine) = session.engine_alive() {
-        if !force && same_path && app.repo.join(&rel).exists() {
-            // Only the scope/base or the tab's presentation moved: sync the open buffer in
-            // place, no :edit (which would prompt on a modified buffer for no reason).
-            let _ = engine.sync_view(&base, focus);
-        } else if app.repo.join(&rel).exists() {
-            // The Changes tab opens into the focused view (unchanged regions folded, cursor
-            // on the first change — the diff-pane experience); All files opens plain.
-            let _ = engine.open_file(&app.repo.join(&rel), &base, focus);
-            session.last_sent = Some(rel);
-        } else {
-            // Deleted in the worktree: an all-red scratch view of the base content, never a
-            // phantom :edit (an empty [New File] would set the user's LSP complaining).
-            let _ = engine.show_deleted(&rel, &base);
-            session.last_sent = Some(rel);
+    if session.engine_alive().is_none() {
+        return;
+    }
+    if !same_view {
+        let exists = app.repo.join(&rel).exists();
+        if let Some(engine) = session.engine_alive() {
+            if !force && same_path && exists {
+                // Only the scope/base or the tab's presentation moved: sync the open buffer in
+                // place, no :edit (which would prompt on a modified buffer for no reason).
+                let _ = engine.sync_view(&base, focus);
+            } else if exists {
+                // The Changes tab opens into the focused view (unchanged regions folded, cursor
+                // on the first change — the diff-pane experience); All files opens plain.
+                let _ = engine.open_file(&app.repo.join(&rel), &base, focus);
+            } else {
+                // Deleted in the worktree: an all-red scratch view of the base content, never a
+                // phantom :edit (an empty [New File] would set the user's LSP complaining).
+                let _ = engine.show_deleted(&rel, &base);
+            }
         }
+        session.last_sent = Some(rel);
         session.last_base = Some(base);
         session.last_focus = Some(focus);
+    }
+    if !same_cards {
+        // Notifications execute in order inside nvim, so the cards always land after the
+        // open/sync they were computed for.
+        if let Some(engine) = session.engine_alive() {
+            let _ = engine.exec_lua_fire(
+                "require('reviewr.comments').apply(...)",
+                vec![comment_card_values(app)],
+            );
+        }
+        session.last_cards = Some(cards_key);
+    }
+    if let Some(line) = app.nvim_goto.take() {
+        // A comment jump: land the editor's cursor (opening any folds) after the open above.
+        if let Some(engine) = session.engine_alive() {
+            let _ = engine.command_fire(&format!("call cursor({line}, 1) | silent! normal! zvzz"));
+        }
     }
 }
 
@@ -342,6 +498,11 @@ fn event_loop(
         // keep revealing so the anchored line stays above the growing box.
         let size = terminal.size()?;
         let area = Rect::new(0, 0, size.width, size.height);
+        // The editor's comment intents (rpcnotify) act before layout, so the compose overlay
+        // and the store's counters render in this same frame.
+        if app.editor_nvim {
+            handle_nvim_notifications(app, session);
+        }
         let viewport = ui::diff_viewport_height(area, app.list_pct);
         let effective = if app.composing() {
             let box_h = ui::composer_height(app, ui::diff_inner_width(area, app.list_pct));
@@ -783,21 +944,17 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
             (Char('b'), false) => app.set_scope(Scope::Branch)?,
             (Char('t'), false) => app.set_scope(Scope::LastTurn)?,
             (Char('C'), false) => app.enter_commit_scope()?,
-            (Char(' '), _) => app.review_advance(),
+            // Space steps through the open file's hunks in the editor, then advances the file.
+            (Char(' '), _) => review_advance_nvim(app, session),
             (Char('+'), _) => app.send_path_to_agent(),
-            // One send path, one store: comments live in reviewr.nvim, so `s` and `l` drive
-            // the editor's commands; outcomes paint in its message area.
-            (Char('s' | 'S'), _) => {
-                if session.alive() {
-                    session.run_command("ReviewrSend");
-                } else {
-                    app.status = "editor not running".to_string();
-                }
-            }
+            // One send path, one store: the host's. The editor reports comment anchors over
+            // RPC; send/list/count all read the same store as the built-in pane.
+            (Char('s' | 'S'), _) => app.export(&Agent),
             (Char('l'), _) => {
-                if session.alive() {
-                    session.run_command("ReviewrList");
-                    app.focus = Focus::Diff; // the quickfix lives in nvim; put the keys there
+                if app.store.is_empty() {
+                    app.status = "no comments yet".to_string();
+                } else {
+                    app.open_list();
                 }
             }
             (Backspace, _) => app.request_delete(),
@@ -1018,14 +1175,8 @@ fn handle_mouse(
                         ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
                         ui::HeaderHit::Base => app.open_branch_picker(),
                         ui::HeaderHit::Commit => app.open_commit_picker(),
-                        // One send path: comments live in reviewr.nvim.
-                        ui::HeaderHit::Send => {
-                            if session.alive() {
-                                session.run_command("ReviewrSend");
-                            } else {
-                                app.status = "editor not running".to_string();
-                            }
-                        }
+                        // One send path, one store: the host's, same as the built-in pane.
+                        ui::HeaderHit::Send => app.export(&Agent),
                     }
                 } else if let Some(i) = ui::hit_file(
                     area,

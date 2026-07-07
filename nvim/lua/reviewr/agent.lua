@@ -1,7 +1,8 @@
--- Resolve the herdr agent pane and send text to it. A faithful port of `src/herdr.rs`: prefer the
--- pane the sidebar was opened from (`focused_pane_id`), else the sole agent in this tab, else the
--- sole agent in the workspace, excluding our own pane and non-agent panes. herdr exits 0 even on
--- failure (reporting a JSON `{"error":...}` envelope), so success is judged from the envelope.
+-- Resolve the herdr agent pane — `:ReviewrDoctor`'s diagnostic (sends themselves go through
+-- the host, which does its own resolution in `src/herdr.rs`; this mirrors it). Prefer the pane
+-- the sidebar was opened from (`focused_pane_id`), else the sole agent in this tab, else the
+-- sole agent in the workspace, excluding our own pane and non-agent panes. herdr exits 0 even
+-- on failure (reporting a JSON `{"error":...}` envelope), so success is judged from the envelope.
 
 local M = {}
 
@@ -102,21 +103,6 @@ function M.resolve_pane()
     return nil, "no unambiguous agent in this tab or workspace"
   end
   return a.pane_id, nil
-end
-
--- Fill the agent pane's input with `text` (without submitting) and focus it. Returns (true) or
--- (false, err) — err set when no agent resolves or herdr rejects the send.
-function M.send(text)
-  local pane, err = M.resolve_pane()
-  if not pane then
-    return false, err
-  end
-  local _, serr = herdr({ "agent", "send", pane, text })
-  if serr then
-    return false, serr
-  end
-  pcall(herdr, { "agent", "focus", pane }) -- focus is best-effort; never fails the send
-  return true, nil
 end
 
 -- Exposed for the headless tests.

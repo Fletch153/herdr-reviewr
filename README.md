@@ -247,10 +247,15 @@ How it behaves:
   switches back in normal/visual mode — while inserting or on the cmdline it types, and every
   other key goes to nvim (`<C-i>` jumplist etc. work under the kitty keyboard protocol).
 - **Review**: the bundled `reviewr.nvim` provides inline red/green vs the base (no gitsigns
-  needed), `<leader>rc` to comment on a line or visual selection, `<leader>rx` to delete one,
-  `<leader>rl` for the comments quickfix, `<leader>rs` to send to the agent (also the reviewer's
-  `s` key and header **Send** button), `:ReviewrYank` to copy, `:ReviewrDiff` for a split diff
-  and `:ReviewrDoctor` to debug agent wiring.
+  needed) and `]c`/`[c` hunk hops; `Space` from the file list steps change-by-change, then marks
+  the file reviewed and advances. Comments live in the reviewer itself — one store behind the
+  header's **Send (n)** button, the `l` list (jump, edit, resolve, batch-resolve) and the send
+  path: `<leader>rc` comments on a line or visual selection (the reviewer's composer opens over
+  the editor), `<leader>re` edits an un-sent comment (sent ones are resolve-only),
+  `<leader>rx`/`<leader>rr` delete/resolve under the cursor, `<leader>rl`/`<leader>rs`/`<leader>ry`
+  open the list / send to the agent (also `s` and the header button) / copy all. Saved comments
+  paint back into the editor as inline boxed cards, styled to the reviewer's theme.
+  `:ReviewrDiff` opens a split diff; `:ReviewrDoctor` debugs agent wiring.
 - **Unsaved edits** follow vim semantics: switching files keeps modified buffers loaded in the
   background (`hidden`), and quitting the reviewer asks before discarding them. Closing the
   reviewer (or its herdr pane, however hard) always takes the embedded nvim with it — it is a

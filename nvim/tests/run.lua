@@ -17,85 +17,141 @@ local function check(name, cond, detail)
   end
 end
 
--- format.format_all: wrapper, preamble, sort-by-file-then-line + 1-based numbering, ref shapes,
--- and note normalization (blank lines dropped).
-local format = require("reviewr.format")
-local text = format.format_all({
-  { file = "src/a.rs", lo = 10, hi = 10, code = "let x = 1;", note = "rename x" },
-  { file = "src/a.rs", lo = 2, hi = 3, code = "fn f() {}", note = "\n  doc me \n\n" },
-})
-check("review wrapper", text:find("<review>", 1, true) and text:find("</review>", 1, true))
-check("preamble present", text:find("carefully consider and resolve", 1, true) ~= nil)
-check("first comment is the earlier line", text:find('<comment n="1">\n<ref>src/a.rs:2%-3</ref>') ~= nil, text)
-check("single-line ref", text:find("<ref>src/a.rs:10</ref>", 1, true) ~= nil)
--- normalize_note mirrors export.rs::normalize_text: trailing space trimmed and blank lines
--- dropped, but leading indent kept — so "\n  doc me \n\n" becomes "  doc me".
-check("note normalized (blank lines dropped, indent kept)", text:find("<note>  doc me</note>", 1, true) ~= nil, text)
+-- Work in a fresh non-git dir so comments.anchor's relpath falls back to cwd-relative.
+local root = vim.fn.tempname()
+vim.fn.mkdir(root, "p")
+vim.cmd("cd " .. vim.fn.fnameescape(root))
 
--- comments store: record -> pending -> mark_sent.
 local comments = require("reviewr.comments")
-local buf = vim.api.nvim_create_buf(false, true)
-vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "a", "b", "c" })
-comments.record(buf, "/tmp/x.rs", 1, 2, "a\nb", "note1")
-check("record adds a pending comment", #comments.pending() == 1)
-comments.mark_sent()
-check("mark_sent clears pending", #comments.pending() == 0)
+local diff = require("reviewr.diff")
 
--- delete_at removes exactly the comment covering the line, in the right buffer.
-local buf2 = vim.api.nvim_create_buf(false, true)
-vim.api.nvim_buf_set_name(buf2, "/tmp/y.rs")
-vim.api.nvim_buf_set_lines(buf2, 0, -1, false, { "l1", "l2", "l3", "l4" })
-comments.record(buf2, "/tmp/y.rs", 1, 2, "l1\nl2", "first")
-comments.record(buf2, "/tmp/y.rs", 4, 4, "l4", "second")
-check("delete_at misses an uncommented line", comments.delete_at(buf2, 3) == nil)
-local removed = comments.delete_at(buf2, 2)
-check("delete_at removes the covering comment", removed and removed.note == "first")
-local left = 0
-for _, c in ipairs(comments.items) do
-  if c.abs == "/tmp/y.rs" then
-    left = left + 1
+-- anchor(): new-side buffers report cwd-relative paths and marker-prefixed snippets — `+`
+-- inside a change hunk, space context (the Changes view's unified-diff shape).
+local buf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_name(buf, root .. "/y.rs")
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "l1", "l2", "l3", "l4" })
+vim.api.nvim_set_current_buf(buf)
+diff._hunks[buf] = { { lo = 2, hi = 2 } }
+local a = comments.anchor(1, 2)
+check("anchor reports the cwd-relative file", a and a.file == "y.rs", vim.inspect(a))
+check("anchor is new-side with the 1-based range", a and a.side == "new" and a.start == 1 and a["end"] == 2)
+check("anchor snippet carries diff markers", a and a.lines == " l1\n+l2", a and a.lines)
+
+-- A plain (All files) buffer captures undecorated code.
+vim.b[buf].reviewr_plain = true
+local ap = comments.anchor(2, 3)
+check("plain-view snippet has no markers", ap and ap.lines == "l2\nl3", ap and ap.lines)
+vim.b[buf].reviewr_plain = false
+
+-- Cursor-line default and inverted ranges normalize.
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+local ac = comments.anchor()
+check("anchor defaults to the cursor line", ac and ac.start == 3 and ac["end"] == 3)
+local ai = comments.anchor(4, 2)
+check("inverted ranges normalize", ai and ai.start == 2 and ai["end"] == 4)
+
+-- The deleted-file scratch anchors old-side under its repo-relative name.
+local dbuf = vim.api.nvim_create_buf(true, true)
+vim.api.nvim_buf_set_name(dbuf, "reviewr://deleted/src/gone.rs")
+vim.api.nvim_buf_set_lines(dbuf, 0, -1, false, { "old1", "old2" })
+vim.api.nvim_set_current_buf(dbuf)
+local ad = comments.anchor(1, 2)
+check("deleted scratch anchors old-side", ad and ad.side == "old" and ad.file == "src/gone.rs")
+check("deleted snippet is all-removed", ad and ad.lines == "-old1\n-old2", ad and ad.lines)
+
+-- Headless (no attached UI): intents cannot reach a host.
+check("notify without a host reports false", comments.notify("comment", {}) == false)
+
+-- apply(): the host's cards paint as boxed virt_lines under the anchor plus the line-number
+-- accent; a later empty push clears everything.
+vim.api.nvim_set_current_buf(buf)
+comments.apply({
+  { start = 1, ["end"] = 2, side = "new", text = "needs a guard", location = "y.rs:1-2", sent = false },
+})
+local ns = vim.api.nvim_get_namespaces()["reviewr_comments"]
+local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+local card, accents
+accents = 0
+for _, m in ipairs(marks) do
+  local d = m[4]
+  if d.virt_lines then
+    card = d
+    check("card sits under the anchor's last line", m[2] == 1)
+  elseif d.number_hl_group == "ReviewrCommentLine" then
+    accents = accents + 1
   end
 end
-check("the other comment survives the delete", left == 1)
+check("both anchored lines carry the accent", accents == 2, accents)
+check("a card rendered", card ~= nil)
+if card then
+  local flat = {}
+  for _, line in ipairs(card.virt_lines) do
+    local s = ""
+    for _, chunk in ipairs(line) do
+      s = s .. chunk[1]
+    end
+    flat[#flat + 1] = s
+  end
+  check("card top titles the location", flat[1]:find("╭─", 1, true) and flat[1]:find("comment · y.rs:1-2", 1, true), flat[1])
+  check("card body holds the note", flat[2]:find("needs a guard", 1, true) ~= nil, flat[2])
+  check("card closes its box", flat[#flat]:find("╰", 1, true) ~= nil, flat[#flat])
+end
+comments.apply({})
+check("an empty push clears the cards", #vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {}) == 0)
 
--- yank copies the pending payload into the registers and marks sent.
-local text_before = #comments.pending()
-check("a pending comment remains for yank", text_before >= 1)
-require("reviewr.init").yank()
-local reg = vim.fn.getreg('"')
-check("yank writes the tagged payload", reg:find("<review>", 1, true) ~= nil, reg)
-check("yank marks comments sent", #comments.pending() == 0)
-
--- clear drops everything.
-comments.clear()
-check("clear empties the store", #comments.items == 0)
+-- Old-side cards skip the accent on a live (new-side) buffer but still box the note.
+comments.apply({
+  { start = 1, ["end"] = 1, side = "old", text = "gone", location = "y.rs:1 (removed)", sent = true },
+})
+local marks2 = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+local accent2, card2 = 0, 0
+for _, m in ipairs(marks2) do
+  if m[4].virt_lines then
+    card2 = card2 + 1
+  elseif m[4].number_hl_group then
+    accent2 = accent2 + 1
+  end
+end
+check("old-side card renders without the accent", card2 == 1 and accent2 == 0)
+comments.apply({})
 
 -- The focused (Changes) view's fold expression: changed lines and their 3-line context stay
 -- visible (0); everything else folds (1); buffers without hunk data never fold.
-local diff = require("reviewr.diff")
-local dbuf = vim.api.nvim_create_buf(false, true)
-vim.api.nvim_set_current_buf(dbuf)
-diff._hunks[dbuf] = { { lo = 10, hi = 12 } }
+local fbuf = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_set_current_buf(fbuf)
+diff._hunks[fbuf] = { { lo = 10, hi = 12 } }
 check("far-away lines fold", diff.foldexpr(3) == 1 and diff.foldexpr(20) == 1)
 check("context stays visible", diff.foldexpr(7) == 0 and diff.foldexpr(15) == 0)
 check("changed lines stay visible", diff.foldexpr(10) == 0 and diff.foldexpr(12) == 0)
 check("edge of context folds", diff.foldexpr(6) == 1 and diff.foldexpr(16) == 1)
-diff._hunks[dbuf] = {}
+diff._hunks[fbuf] = {}
 check("no hunks, no folds", diff.foldexpr(3) == 0)
 
--- agent.send resolves via the focused pane (the tab is otherwise ambiguous) and delivers the
--- payload through the stub.
-local agent = require("reviewr.agent")
-local ok, err = agent.send("PAYLOAD-XYZ")
-check("send succeeds via the stub", ok == true, err)
-local log = table.concat(vim.fn.readfile(assert(vim.env.REVIEWR_STUB_LOG)), "\n")
-check("delivered to the focused pane", log:find("send wY:pFOCUS", 1, true) ~= nil, log)
-check("delivered the payload", log:find("PAYLOAD-XYZ", 1, true) ~= nil, log)
+-- next_change/prev_change walk the hunks and report exhaustion (the reviewer's Space walk).
+local sbuf = vim.api.nvim_create_buf(true, false)
+local lines = {}
+for i = 1, 20 do
+  lines[i] = "line " .. i
+end
+vim.api.nvim_buf_set_lines(sbuf, 0, -1, false, lines)
+vim.api.nvim_set_current_buf(sbuf)
+diff._hunks[sbuf] = { { lo = 5, hi = 6 }, { lo = 12, hi = 12 } }
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+check("next_change hops to the first hunk", diff.next_change() == true and vim.fn.line(".") == 5)
+check("next_change hops to the second hunk", diff.next_change() == true and vim.fn.line(".") == 12)
+check("next_change reports exhaustion", diff.next_change() == false)
+vim.api.nvim_win_set_cursor(0, { 20, 0 })
+check("prev_change hops back", diff.prev_change() == true and vim.fn.line(".") == 12)
+check("prev_change hops again", diff.prev_change() == true and vim.fn.line(".") == 5)
+check("prev_change reports exhaustion", diff.prev_change() == false)
+diff._hunks[sbuf] = nil
+check("no hunk data: next_change is a quiet no-op", diff.next_change() == false)
 
--- An error envelope (herdr still exits 0) is surfaced as a failed send.
-vim.env.REVIEWR_STUB_MODE = "error"
-local ok2, err2 = agent.send("NOPE")
-check("error envelope is a failed send", ok2 == false and err2 ~= nil, err2)
+-- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):
+-- the focused pane wins over an otherwise-ambiguous tab.
+local agent = require("reviewr.agent")
+local pane, err = agent.resolve_pane()
+check("resolve_pane picks the focused agent", pane == "wY:pFOCUS", err)
 
 if failures > 0 then
   print(("\n%d failure(s)"):format(failures))

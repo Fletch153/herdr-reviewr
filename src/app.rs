@@ -41,6 +41,19 @@ pub struct EditorRequest {
     pub line: Option<u32>,
 }
 
+/// nvim mode: what a new comment anchors to, as reported by the editor — the buffer's file,
+/// which diff side its lines live on (`Old` only for the deleted-file scratch view, whose
+/// buffer *is* the base), the 1-based line range, and the captured snippet (marker-prefixed
+/// on the Changes view, plain on All files — mirroring the built-in pane's snapshots).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NvimAnchor {
+    pub file: String,
+    pub side: Side,
+    pub start: u32,
+    pub end: u32,
+    pub lines: String,
+}
+
 /// What the file-list cursor points at, by path, so it can be restored to the same target
 /// after the tree rebuilds on a poll.
 enum Anchor {
@@ -174,8 +187,6 @@ pub enum FooterAction {
     Search,
     /// Enter in search mode: jump to the next match.
     SearchNext,
-    /// nvim-editor mode: `s` sends via the editor's `:ReviewrSend` (one store, one path).
-    NvimSend,
     /// nvim-editor mode: the diff-focus hint that keys go to the editor.
     NvimHint,
     /// nvim-editor mode: restart a crashed editor.
@@ -306,6 +317,13 @@ pub struct App {
     /// nvim mode: whether the embedded editor is dead (synced each frame pre-draw), so the
     /// footer can offer restart without `App` holding the engine.
     pub nvim_dead: bool,
+    /// nvim mode: the lines a new comment will anchor to, captured from the editor's cursor or
+    /// visual selection (the editor is the review surface, so the anchor comes from it, not
+    /// from the built-in diff cursor). Set when the compose opens; cleared when it closes.
+    pub nvim_anchor: Option<NvimAnchor>,
+    /// nvim mode: a 1-based buffer line the editor's cursor should land on — set by comment
+    /// jumps (the list's Enter/click, an edit open) and consumed by the per-frame editor sync.
+    pub nvim_goto: Option<u32>,
     /// Whether a mouse drag is currently moving the pane divider.
     pub resizing: bool,
     pub select_anchor: Option<usize>,
@@ -401,6 +419,8 @@ impl App {
             editor_nvim: false,
             nvim_reopen: false,
             nvim_dead: false,
+            nvim_anchor: None,
+            nvim_goto: None,
             resizing: false,
             select_anchor: None,
             store: CommentStore::new(),
@@ -1877,10 +1897,77 @@ impl App {
         }
     }
 
+    /// nvim mode: open the composer for a fresh comment anchored to the editor-reported
+    /// selection — the embedded editor is the review surface, so the anchor comes from its
+    /// cursor/visual range, not the built-in diff cursor. The anchor is pinned for the life
+    /// of the compose (scope switches are already inert while composing).
+    pub fn start_comment_at(&mut self, anchor: NvimAnchor) {
+        if anchor.file.is_empty() || anchor.start == 0 || anchor.end < anchor.start {
+            return;
+        }
+        self.input.clear();
+        self.caret = 0;
+        self.resume_list = false;
+        self.nvim_anchor = Some(anchor);
+        self.mode = Mode::Composing { editing: None };
+    }
+
+    /// The store index of a view-matching comment covering `line` on `side` of `file` — the
+    /// nvim-mode counterpart of [`Self::comment_under_cursor`], keyed by buffer coordinates
+    /// instead of diff rows.
+    pub fn comment_at(&self, file: &str, side: Side, line: u32) -> Option<usize> {
+        self.store.iter().position(|c| {
+            c.file == file
+                && c.side == side
+                && self.comment_matches_current(c)
+                && c.start <= line
+                && line <= c.end
+        })
+    }
+
+    /// nvim mode: edit the comment covering the editor's cursor (sent ones stay resolve-only,
+    /// as everywhere else).
+    pub fn start_edit_at(&mut self, file: &str, side: Side, line: u32) {
+        match self.comment_at(file, side, line) {
+            Some(i) => self.start_edit_index(i),
+            None => self.status = "no comment under the cursor".to_string(),
+        }
+    }
+
+    /// nvim mode: delete the comment covering the editor's cursor.
+    pub fn delete_comment_at(&mut self, file: &str, side: Side, line: u32) {
+        match self.comment_at(file, side, line) {
+            Some(i) => {
+                logln!("comment delete [{i}]");
+                self.remove_comment(i);
+                self.status = "comment deleted".to_string();
+            }
+            None => self.status = "no comment under the cursor".to_string(),
+        }
+    }
+
+    /// nvim mode: resolve (remove) the comment covering the editor's cursor.
+    pub fn resolve_comment_at(&mut self, file: &str, side: Side, line: u32) {
+        match self.comment_at(file, side, line) {
+            Some(i) => {
+                logln!("comment resolve [{i}]");
+                self.remove_comment(i);
+                self.status = format!("resolved ({} left)", self.store.len());
+            }
+            None => self.status = "no comment under the cursor".to_string(),
+        }
+    }
+
     pub fn start_edit(&mut self) {
+        let Some(i) = self.target_comment() else { return };
+        self.start_edit_index(i);
+    }
+
+    /// Open the composer over the existing comment at store index `i` (unless it was already
+    /// sent — a sent comment is a record of what the agent received: resolve-only).
+    pub fn start_edit_index(&mut self, i: usize) {
         // Editing from the comments-list overlay returns there on finish (else to the diff).
         let from_list = self.mode == Mode::List;
-        let Some(i) = self.target_comment() else { return };
         let Some(c) = self.store.get(i) else { return };
         // A sent comment is a record of what the agent already received — it can be resolved but
         // not rewritten out from under it.
@@ -1923,6 +2010,10 @@ impl App {
         }
         self.focus = Focus::Diff;
         self.reveal_diff = true; // scroll the edited line into view before the box opens
+        // nvim mode: also land the editor's cursor on the comment (same stale-comment guard).
+        if self.editor_nvim && self.diff_path.as_deref() == Some(file.as_str()) {
+            self.nvim_goto = Some(start);
+        }
         self.caret = text.chars().count(); // edit opens with the caret at the end
         self.input = text;
         self.resume_list = from_list;
@@ -2054,6 +2145,7 @@ impl App {
     fn leave_compose(&mut self) {
         self.input.clear();
         self.caret = 0;
+        self.nvim_anchor = None;
         let resume = std::mem::take(&mut self.resume_list);
         if resume && !self.store.is_empty() {
             self.list_cursor = self.list_cursor.min(self.store.len() - 1);
@@ -2127,6 +2219,21 @@ impl App {
     }
 
     fn build_comment(&self, text: String) -> Option<Comment> {
+        // nvim mode: the anchor was captured from the editor when the compose opened.
+        if let Some(a) = &self.nvim_anchor {
+            return Some(Comment {
+                file: a.file.clone(),
+                side: a.side,
+                start: a.start,
+                end: a.end,
+                lines: a.lines.clone(),
+                text,
+                diff_anchored: self.diff.view == View::Diff,
+                scope: self.scope,
+                base: self.scope_base(),
+                sent: false,
+            });
+        }
         // Anchor to the file the open diff belongs to (`diff_path`), not the file-list
         // selection — they diverge if the list shifts under a comment in progress.
         let file = self.diff_path.clone()?;
@@ -2134,14 +2241,6 @@ impl App {
         // The File view marks every comment as content-anchored, so it ages by file existence,
         // not changeset membership (specs/review-model.md).
         let diff_anchored = self.diff.view == View::Diff;
-        // Pin the comment to the exact diff it was made against: its scope plus a restore key —
-        // the commit SHA, the branch name, or nothing for last-turn / an All-files comment. This
-        // is what makes cycling commits/branches show only that diff's comments.
-        let base = match self.scope {
-            Scope::Commit => self.selected_commit.clone(),
-            Scope::Branch => self.base.clone(),
-            Scope::LastTurn => None,
-        };
         Some(Comment {
             file,
             side,
@@ -2151,9 +2250,20 @@ impl App {
             text,
             diff_anchored,
             scope: self.scope,
-            base,
+            base: self.scope_base(),
             sent: false,
         })
+    }
+
+    /// The restore key that pins a comment to the exact diff it was made against: the commit
+    /// SHA, the branch name, or nothing for last-turn. This is what makes cycling commits and
+    /// branches show only that diff's comments.
+    fn scope_base(&self) -> Option<String> {
+        match self.scope {
+            Scope::Commit => self.selected_commit.clone(),
+            Scope::Branch => self.base.clone(),
+            Scope::LastTurn => None,
+        }
     }
 
     /// The `path:line` the composer is anchored to (selection for a new comment,
@@ -2162,8 +2272,13 @@ impl App {
         match self.mode {
             Mode::Composing { editing: Some(i) } => self.store.get(i).map(Comment::location),
             Mode::Composing { editing: None } => {
-                let file = self.diff_path.clone()?;
-                let (side, start, end, _) = self.selection_anchor()?;
+                let (file, side, start, end) = if let Some(a) = &self.nvim_anchor {
+                    (a.file.clone(), a.side, a.start, a.end)
+                } else {
+                    let file = self.diff_path.clone()?;
+                    let (side, start, end, _) = self.selection_anchor()?;
+                    (file, side, start, end)
+                };
                 // Only `location()` is read here, which ignores `diff_anchored`.
                 let c = Comment {
                     file,
@@ -2246,6 +2361,13 @@ impl App {
             }
         }
         cards
+    }
+
+    /// nvim mode: the view-matching comments for the open file, in store order — what the
+    /// editor paints as inline cards.
+    pub fn nvim_comment_cards(&self) -> Vec<&Comment> {
+        let Some(file) = self.diff_path.as_deref() else { return Vec::new() };
+        self.store.iter().filter(|c| c.file == file && self.comment_matches_current(c)).collect()
     }
 
     /// The store index to act on: the comment under the diff cursor, or — in the list overlay —
@@ -2562,6 +2684,11 @@ impl App {
             self.diff_cursor = idx;
             self.select_anchor = None;
         }
+        // nvim mode: the jump lands in the editor too (same stale-comment guard — never move
+        // the cursor onto a same-numbered line of a different file).
+        if self.editor_nvim && self.diff_path.as_deref() == Some(file.as_str()) {
+            self.nvim_goto = Some(start);
+        }
         self.focus = Focus::Diff;
         self.reveal_diff = true;
         self.reveal_files = true;
@@ -2690,7 +2817,7 @@ impl App {
             } else {
                 out.push((A::TogglePane, Primary));
             }
-            out.push((A::NvimSend, Normal));
+            out.push((A::Send, Normal));
             out.push((A::List, Normal));
             if self.tab == Tab::Changes {
                 out.push((A::Review, Normal));

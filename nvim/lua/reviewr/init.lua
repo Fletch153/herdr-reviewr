@@ -1,52 +1,17 @@
--- reviewr.nvim: leave review comments while navigating/editing in nvim, then batch-send them to
--- the herdr Claude agent. Red/green diff comes from the user's gitsigns (inline) plus `:ReviewrDiff`
--- (nvim's built-in diff against the base). Commands and keymaps are wired in plugin/reviewr.lua.
+-- reviewr.nvim: the editor half of the herdr reviewer's nvim mode. Comments, send, and the
+-- list live in the HOST (see comments.lua for the bridge); this module keeps the pieces that
+-- are purely editor-side. Commands and keymaps are wired in plugin/reviewr.lua.
 
 local M = {}
 
-local comments = require("reviewr.comments")
-local format = require("reviewr.format")
-local agent = require("reviewr.agent")
-
--- The git ref the diff/changed-file views compare against. v1 uses HEAD (the reviewer's default
--- Commit@HEAD): shows uncommitted work as red/green.
+-- The git ref the diff views compare against: published by the reviewer per scope
+-- (`g:reviewr_base`); `HEAD` covers standalone nvim use.
 local function base_ref()
   local b = vim.g.reviewr_base
   if type(b) == "string" and b ~= "" then
     return b
   end
   return "HEAD"
-end
-
--- Send every un-sent comment to the agent as one tagged review, then mark them sent.
-function M.send()
-  local pending = comments.pending()
-  if #pending == 0 then
-    vim.notify("reviewr: nothing new to send", vim.log.levels.INFO)
-    return
-  end
-  local ok, err = agent.send(format.format_all(pending))
-  if ok then
-    comments.mark_sent()
-    vim.notify(("reviewr: sent %d comment(s) to the agent"):format(#pending))
-  else
-    vim.notify("reviewr: send failed — " .. (err or "unknown"), vim.log.levels.ERROR)
-  end
-end
-
--- Copy every un-sent comment to the clipboard (system `+` and unnamed registers) as the same
--- tagged review payload, then mark them sent — the reviewer's `y` parity.
-function M.yank()
-  local pending = comments.pending()
-  if #pending == 0 then
-    vim.notify("reviewr: nothing new to copy", vim.log.levels.INFO)
-    return
-  end
-  local text = format.format_all(pending)
-  vim.fn.setreg("+", text)
-  vim.fn.setreg('"', text)
-  comments.mark_sent()
-  vim.notify(("reviewr: copied %d comment(s) to the clipboard"):format(#pending))
 end
 
 -- Open the current file's diff against the base in nvim's built-in diff mode (red/green), with the

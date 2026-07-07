@@ -983,6 +983,20 @@ fn render_nvim_view(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>>, a
             frame.render_widget(Paragraph::new(lines), inner);
         }
     }
+    // Composing (nvim mode): the same inline input box the built-in pane uses, anchored to
+    // the pane's bottom over the grid — the code stays visible above while the note is typed.
+    // Same width as the pane interior, so the caret math in the key handler holds.
+    if app.composing() {
+        let box_h = composer_height(app, inner.width as usize).min(inner.height as usize).max(1);
+        let box_rect = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - box_h as u16,
+            width: inner.width,
+            height: box_h as u16,
+        };
+        frame.render_widget(Clear, box_rect);
+        render_composer(frame, app, box_rect);
+    }
 }
 
 /// Copy the editor's cell grid into the frame buffer. The grid is the truth for widths: a
@@ -1054,11 +1068,12 @@ fn blit_nvim_grid(
             }
         }
     }
-    // nvim never paints its cursor into cells — draw it here, but only when the editor has
-    // focus and isn't busy. XOR of REVERSED keeps it visible on already-reversed cells
-    // (e.g. a visual selection).
+    // nvim never paints its cursor into cells — draw it here, but only when the keys actually
+    // route to the editor (diff focus, no reviewer modal capturing input) and it isn't busy.
+    // XOR of REVERSED keeps it visible on already-reversed cells (e.g. a visual selection).
     let (cur_row, cur_col) = grid.cursor;
     if app.focus == Focus::Diff
+        && app.mode == Mode::Normal
         && grid.cursor_visible
         && cur_row < rows
         && cur_col < grid.cols.min(inner.width)
@@ -1587,7 +1602,6 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             };
             return ("⇥".into(), dest.into());
         }
-        A::NvimSend => ("s", "send"),
         A::NvimHint => ("nvim", "keys go to the editor"),
         A::RestartEditor => ("r", "restart editor"),
         A::QuitAnyway => ("y/↵", "quit"),
@@ -1836,10 +1850,10 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 vec![
                     ("tab", "back to the files pane · every other key goes to nvim"),
                     ("space rc", "comment on the line / visual selection"),
-                    ("space rx", "delete the comment under the cursor"),
-                    ("space rl / rs", "list comments (quickfix) · send to the agent"),
+                    ("space re / rx / rr", "edit / delete / resolve the comment under the cursor"),
+                    ("space rl / rs / ry", "comments list · send to the agent · copy all"),
                     ("space rd", "side-by-side diff vs the base"),
-                    (":ReviewrYank", "copy all pending comments to the clipboard"),
+                    ("]c / [c", "next / previous change in the file"),
                     (":ReviewrDoctor", "diagnose agent/send wiring"),
                     ("note", "without the kitty keyboard protocol, ctrl+i is tab"),
                 ],
@@ -1847,9 +1861,9 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
             (
                 "Review & send",
                 vec![
-                    ("Space", "file list: mark the whole file reviewed → next"),
-                    ("s", "send comments to the agent (via the editor)"),
-                    ("l", "open the comments quickfix in the editor"),
+                    ("Space", "step through the file's changes, then mark reviewed → next file"),
+                    ("s", "send un-sent comments to the agent"),
+                    ("l", "comments list — jump, edit, resolve"),
                     ("+", "send the highlighted file's path to the agent"),
                 ],
             ),

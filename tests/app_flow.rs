@@ -4,7 +4,7 @@ use std::cell::RefCell;
 
 use anyhow::{Result, bail};
 use common::Repo;
-use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode, Tab};
+use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode, NvimAnchor, Tab};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
@@ -3083,4 +3083,99 @@ fn slash_filters_the_list_when_the_file_pane_is_focused() {
     app.focus = Focus::Files;
     app.slash();
     assert_eq!(app.mode, Mode::Filter, "/ on the file list still filters");
+}
+
+// --- nvim-mode comments: editor-reported anchors drive the same store ----------------------
+
+fn nvim_anchor(file: &str, start: u32, end: u32) -> NvimAnchor {
+    NvimAnchor { file: file.into(), side: Side::New, start, end, lines: "+BETA".into() }
+}
+
+#[test]
+fn nvim_anchor_comment_lands_in_the_store_with_scope_pinning() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.editor_nvim = true;
+    app.start_comment_at(nvim_anchor("a.rs", 2, 2));
+    assert!(app.composing());
+    assert_eq!(app.pending_location().as_deref(), Some("a.rs:2"));
+    typed(&mut app, "needs a guard");
+    app.submit_comment();
+    assert!(!app.composing());
+    assert!(app.nvim_anchor.is_none(), "the anchor is cleared when the compose closes");
+    let c = app.store.get(0).expect("comment stored");
+    assert_eq!((c.file.as_str(), c.side, c.start, c.end), ("a.rs", Side::New, 2, 2));
+    assert_eq!(c.lines, "+BETA");
+    assert!(c.diff_anchored, "authored on the Changes view");
+    assert!(!c.sent);
+    assert_eq!(app.unsent_count(), 1, "the Send counter sees it immediately");
+}
+
+#[test]
+fn nvim_anchor_rejects_an_empty_or_inverted_range() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.start_comment_at(nvim_anchor("", 1, 1));
+    assert!(!app.composing(), "no file, no compose");
+    app.start_comment_at(nvim_anchor("a.rs", 0, 1));
+    assert!(!app.composing(), "line numbers are 1-based");
+    app.start_comment_at(nvim_anchor("a.rs", 3, 2));
+    assert!(!app.composing(), "inverted range");
+}
+
+#[test]
+fn comment_at_targets_by_buffer_line_and_side() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.start_comment_at(nvim_anchor("a.rs", 2, 3));
+    typed(&mut app, "range note");
+    app.submit_comment();
+    assert_eq!(app.comment_at("a.rs", Side::New, 2), Some(0));
+    assert_eq!(app.comment_at("a.rs", Side::New, 3), Some(0));
+    assert_eq!(app.comment_at("a.rs", Side::New, 4), None, "outside the range");
+    assert_eq!(app.comment_at("a.rs", Side::Old, 2), None, "wrong side");
+    assert_eq!(app.comment_at("b.rs", Side::New, 2), None, "wrong file");
+}
+
+#[test]
+fn nvim_edit_delete_resolve_at_respect_the_sent_flag() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.editor_nvim = true;
+    app.start_comment_at(nvim_anchor("a.rs", 2, 2));
+    typed(&mut app, "first");
+    app.submit_comment();
+
+    // Un-sent: editable in place.
+    app.start_edit_at("a.rs", Side::New, 2);
+    assert!(matches!(app.mode, Mode::Composing { editing: Some(0) }));
+    assert_eq!(app.input, "first");
+    app.cancel_comment();
+
+    // Sent: a record of what the agent received — resolve-only.
+    app.store.get_mut(0).unwrap().sent = true;
+    app.start_edit_at("a.rs", Side::New, 2);
+    assert!(!app.composing());
+    assert_eq!(app.status, "sent — resolve only");
+
+    app.resolve_comment_at("a.rs", Side::New, 2);
+    assert!(app.store.is_empty(), "resolve removes the comment");
+
+    app.delete_comment_at("a.rs", Side::New, 2);
+    assert_eq!(app.status, "no comment under the cursor");
+}
+
+#[test]
+fn nvim_jump_from_the_list_sets_the_editor_goto() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.editor_nvim = true;
+    app.start_comment_at(nvim_anchor("a.rs", 2, 2));
+    typed(&mut app, "jump target");
+    app.submit_comment();
+    app.nvim_goto = None;
+    app.open_list();
+    app.open_comment(0);
+    assert_eq!(app.nvim_goto, Some(2), "the editor cursor is asked to land on the comment");
+    assert_eq!(app.mode, Mode::Normal, "the list closed on jump");
 }

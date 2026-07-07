@@ -123,11 +123,19 @@ impl Comment {
 #[derive(Default, Debug)]
 pub struct CommentStore {
     items: Vec<Comment>,
+    /// Bumped on every mutation — a cheap change detector, so the nvim-mode watcher can
+    /// re-push comment cards to the editor exactly when the store moved.
+    rev: u64,
 }
 
 impl CommentStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The mutation counter: unequal values mean the store changed in between.
+    pub fn rev(&self) -> u64 {
+        self.rev
     }
 
     pub fn len(&self) -> usize {
@@ -148,6 +156,7 @@ impl CommentStore {
 
     /// Append a comment; returns its index.
     pub fn add(&mut self, comment: Comment) -> usize {
+        self.rev += 1;
         self.items.push(comment);
         self.items.len() - 1
     }
@@ -155,6 +164,7 @@ impl CommentStore {
     /// Replace the text of the comment at `index`. Returns `false` if out of range.
     pub fn edit(&mut self, index: usize, text: String) -> bool {
         if let Some(c) = self.items.get_mut(index) {
+            self.rev += 1;
             c.text = text;
             true
         } else {
@@ -162,8 +172,10 @@ impl CommentStore {
         }
     }
 
-    /// Mutable access to the comment at `index`, for toggling its `sent` flag.
+    /// Mutable access to the comment at `index`, for toggling its `sent` flag. Counted as a
+    /// mutation (conservatively — handing out `&mut` means the caller may change it).
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Comment> {
+        self.rev += 1;
         self.items.get_mut(index)
     }
 
@@ -177,16 +189,23 @@ impl CommentStore {
                 n += 1;
             }
         }
+        self.rev += u64::from(n > 0);
         n
     }
 
     /// Remove and return the comment at `index` (delete, or consume one on export).
     pub fn take(&mut self, index: usize) -> Option<Comment> {
-        if index < self.items.len() { Some(self.items.remove(index)) } else { None }
+        if index < self.items.len() {
+            self.rev += 1;
+            Some(self.items.remove(index))
+        } else {
+            None
+        }
     }
 
     /// Remove and return every comment (consume-all on a successful export).
     pub fn take_all(&mut self) -> Vec<Comment> {
+        self.rev += 1;
         std::mem::take(&mut self.items)
     }
 }
@@ -239,6 +258,25 @@ mod tests {
         assert!(s.edit(i, "second".into()));
         assert_eq!(s.get(i).unwrap().text, "second");
         assert!(!s.edit(99, "nope".into()));
+    }
+
+    #[test]
+    fn rev_bumps_on_every_mutation() {
+        let mut s = CommentStore::new();
+        let r0 = s.rev();
+        let i = s.add(comment("a.rs", 1, 1, "x"));
+        assert!(s.rev() > r0, "add bumps");
+        let r1 = s.rev();
+        s.edit(i, "y".into());
+        assert!(s.rev() > r1, "edit bumps");
+        let r2 = s.rev();
+        assert_eq!(s.mark_unsent_as_sent(), 1);
+        assert!(s.rev() > r2, "sent flip bumps");
+        let r3 = s.rev();
+        assert_eq!(s.mark_unsent_as_sent(), 0);
+        assert_eq!(s.rev(), r3, "a no-op flip does not bump");
+        s.take(i);
+        assert!(s.rev() > r3, "take bumps");
     }
 
     #[test]
