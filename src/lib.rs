@@ -766,6 +766,21 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
         return Ok(());
     }
 
+    // Esc-prefixed characters arrive as Alt+char in terminals without the kitty protocol —
+    // a fast "Esc then Space" burst becomes Alt+Space. Only the composer (word jumps,
+    // Alt+Enter — handled above) and the editor (forwarded as <A-x> notation) bind Alt
+    // combinations; everywhere else an aliased char must not fire the plain binding (it
+    // toggled list checkboxes and could resolve a comment the user never targeted).
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, Char(_) | Enter)
+        && !(app.editor_nvim
+            && app.mode == Mode::Normal
+            && app.focus == Focus::Diff
+            && app.tab.is_file_tab())
+    {
+        return Ok(());
+    }
+
     // The read-only PR tab: navigate the snapshot and open links; authoring keys are inert.
     if app.tab == crate::app::Tab::Pr {
         match key.code {
