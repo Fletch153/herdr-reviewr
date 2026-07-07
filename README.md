@@ -368,6 +368,32 @@ herdr plugin uninstall persiyanov.reviewr   # config is keyed by id and survives
 herdr plugin link .
 ```
 
+### Testing
+
+`cargo test` covers the model, routing, and the engine (including integration tests against a
+real `nvim --embed`). The interactive behavior is gated by live tmux harnesses that drive the
+real binary with synthesized keys and SGR mouse events and assert on captured frames:
+
+```bash
+scripts/tui-all.sh          # the full sweep (each gate also runs standalone)
+```
+
+| Gate | Covers |
+| --- | --- |
+| `tui-test.sh` | paint, focus, typing, autosave, deleted/added files, plain All files, compose/send, hunk stepping, quit guard, no orphans |
+| `tui-edit-test.sh` | multiline compose, edit-in-place, sent-is-resolve-only, list editing, Esc/Alt aliasing, batch resolve |
+| `tui-scope-test.sh` | comment scope pinning, re-diff on scope flips, list jump restoring the authoring view |
+| `tui-mouse-test.sh` | row/dir/grid clicks, wheel scrolling, header Send, scope chip |
+| `tui-death-test.sh` | `:qa!` death, auto-respawn, manual restart, card theme survival, no orphans |
+| `tui-rename-test.sh` | renamed files diff against their old path |
+| `tui-split-test.sh` | `rd` split dissolving from either side, divider drag, help overlay |
+
+Shared plumbing lives in `scripts/tui-lib.sh`. Conventions that keep the gates race-free: only
+wait for text that was absent before the triggering key (`wait_for`/`wait_gone`), and send a
+real Escape via `esc` — a bare Escape immediately followed by another key merges into
+`Alt+<key>` in terminals without the kitty protocol. The reviewr.nvim Lua suite runs headless:
+see the header of `nvim/tests/run.lua`.
+
 ## Roadmap
 
 Customizable keybindings, structured (JSON) export, in-diff search, a side-by-side split view,
