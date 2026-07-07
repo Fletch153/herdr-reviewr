@@ -363,7 +363,23 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     if !app.editor_nvim || !app.tab.is_file_tab() {
         return;
     }
-    let Some(rel) = app.diff_path.clone() else { return };
+    let Some(rel) = app.diff_path.clone() else {
+        // A file tab with nothing selected (e.g. the first visit to All files swaps in an
+        // empty stash): the editor keeps its buffer — it is an editor — but the view switch
+        // must still autosave and drop into the plain presentation like any other. Without
+        // this, flipping 1<->2 without touching the tree neither saved nor re-presented.
+        if session.last_focus != Some(false)
+            && session.last_sent.is_some()
+            && let Some(engine) = session.engine_alive()
+        {
+            let base = app.nvim_base_ref();
+            logln!("nvim_sync: no selection on {:?} - plain sync", app.tab);
+            let _ = engine.sync_view(&base, false);
+            session.last_base = Some(base);
+            session.last_focus = Some(false);
+        }
+        return;
+    };
     let base = app.nvim_base_ref();
     let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);
@@ -423,10 +439,12 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             if !force && same_path && exists {
                 // Only the scope/base or the tab's presentation moved: sync the open buffer in
                 // place, no :edit (which would prompt on a modified buffer for no reason).
+                logln!("nvim_sync: sync_view base={base} focus={focus}");
                 let _ = engine.sync_view(&base, focus);
             } else if exists {
                 // The Changes tab opens into the focused view (unchanged regions folded, cursor
                 // on the first change — the diff-pane experience); All files opens plain.
+                logln!("nvim_sync: open {rel} focus={focus}");
                 let _ = engine.open_file(&app.repo.join(&rel), &base, focus);
             } else {
                 // Deleted in the worktree: an all-red scratch view of the base content, never a
