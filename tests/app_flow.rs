@@ -2637,6 +2637,10 @@ fn the_branch_picker_sections_lineage_skips_the_divider_and_picks_a_base() {
 
 fn goto_file(app: &mut App, path: &str) {
     for _ in 0..app.file_rows.len() {
+        // Rewind to the top first, so the target can sit before the current cursor too.
+        app.move_cursor(-1).unwrap();
+    }
+    for _ in 0..app.file_rows.len() {
         if app.current_entry().map(|e| e.path.as_str()) == Some(path) {
             return;
         }
@@ -2663,17 +2667,26 @@ fn preview_mode_toggles_only_for_markdown_files() {
     assert!(app.cursor_is_markdown());
     assert!(has_preview(&app), "the preview hint shows while highlighting a markdown file");
     app.open_preview();
-    assert_eq!(app.mode, Mode::Preview, "a markdown file opens the preview");
+    assert!(app.md_showing(), "a markdown file opens the rendered view");
     app.preview_scroll_by(3);
     assert_eq!(app.preview_scroll, 3);
     app.close_preview();
-    assert_eq!(app.mode, Mode::Normal);
+    assert!(!app.md_view);
 
+    // The view is sticky: with it on, a non-markdown file simply shows the editor and the
+    // preference survives until the next markdown file.
+    app.open_preview();
     goto_file(&mut app, "code.rs");
     assert!(!app.cursor_is_markdown());
+    assert!(app.md_view && !app.md_showing(), "the preference survives a non-md selection");
+    goto_file(&mut app, "README.md");
+    assert!(app.md_showing(), "the next markdown file renders again");
+    app.close_preview();
+
+    goto_file(&mut app, "code.rs");
     assert!(!has_preview(&app), "no preview hint while highlighting a non-markdown file");
     app.open_preview();
-    assert_eq!(app.mode, Mode::Normal, "preview is refused for non-markdown files");
+    assert!(!app.md_view, "the view is refused for non-markdown files");
     assert!(app.status.contains("markdown"), "and it says why: {:?}", app.status);
 }
 

@@ -99,10 +99,12 @@ impl ExportTarget for Clipboard {
     }
 
     fn export(&self, text: &str) -> Result<()> {
-        let (cmd, args) = select_tool(CLIPBOARD_TOOLS, crate::proc::on_path).context(
-            "no clipboard tool found (install wl-clipboard, xclip, or xsel) — \
-             use \"Add all to chat\" instead",
-        )?;
+        // A local clipboard tool wins when present; without one (typical on a remote or
+        // headless box, where a tool could only reach the box's own selection anyway) the
+        // text goes out as OSC 52 — the terminal at the other end owns the real clipboard.
+        let Some((cmd, args)) = select_tool(CLIPBOARD_TOOLS, crate::proc::on_path) else {
+            return osc52_copy(text);
+        };
         let mut child = Command::new(cmd)
             .args(args)
             .stdin(Stdio::piped())
@@ -119,6 +121,31 @@ impl ExportTarget for Clipboard {
         }
         Ok(())
     }
+}
+
+/// Write `text` to the terminal clipboard as an OSC 52 sequence on stdout. Write-only (no
+/// terminal reply needed), so it works from a TUI in raw mode and travels through SSH and
+/// multiplexers that pass OSC 52 on.
+pub fn osc52_copy(text: &str) -> Result<()> {
+    let mut out = std::io::stdout().lock();
+    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes())).context("writing OSC 52")?;
+    out.flush().context("flushing OSC 52")?;
+    Ok(())
+}
+
+/// Standard base64 (RFC 4648 with padding) — hand-rolled to keep the dependency tree flat.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 /// The first clipboard tool the `present` predicate accepts, preserving list order.
@@ -150,8 +177,18 @@ impl ExportTarget for Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::{CLIPBOARD_TOOLS, format_all, format_comment, select_tool};
+    use super::{CLIPBOARD_TOOLS, base64, format_all, format_comment, select_tool};
     use crate::model::{Comment, Scope, Side};
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64("héllo\n".as_bytes()), "aMOpbGxvCg==");
+    }
 
     #[test]
     fn clipboard_tool_selection_prefers_list_order_and_can_be_empty() {

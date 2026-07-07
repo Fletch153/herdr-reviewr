@@ -271,8 +271,14 @@ How it behaves:
   Quitting saves everything savable first; the quit confirmation only appears for buffers that
   genuinely can't write. Closing the reviewer (or its herdr pane, however hard) always takes
   the embedded nvim with it — it is a child process, so an orphaned editor is impossible.
-- **Markdown**: `p` (or the `[md view]` header chip) renders a markdown file with the built-in
-  viewer over the editor; `p`, `esc` or the `[raw]` chip returns.
+- **Markdown**: `p` (or the header chip, which names the view currently showing) toggles a
+  markdown file between the built-in rendered view and the raw editor. The choice is sticky:
+  while on, every markdown file you select renders, non-markdown files show the editor as
+  normal, and the file list stays fully navigable.
+- **Clipboard**: `"+`/`"*` yanks inside the embed copy through the host — OSC 52 out the real
+  terminal when no clipboard tool is installed (the only mechanism that reaches your actual
+  clipboard over SSH). Pastes from outside arrive as terminal pastes; `"+p` pastes what was
+  last yanked in the embed and never blocks on a terminal query.
 - Not in this mode (the editor owns the pane): per-file comment badges in the tree.
 
 Requires `nvim` on `PATH` — without it reviewr logs a note and keeps the diff view.

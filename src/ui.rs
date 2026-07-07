@@ -53,7 +53,7 @@ pub fn render_with_nvim(frame: &mut Frame, app: &App, nvim: Option<&NvimView<'_>
         // Embedded-nvim editor mode: the diff pane hosts the editor's cell grid; the file list
         // stays exactly as in the default mode. The markdown preview wins over both bases —
         // in nvim mode it must paint OVER the editor grid or the toggle would be invisible.
-        if app.mode == Mode::Preview {
+        if app.md_showing() {
             render_markdown_preview(frame, app, p.diff);
         } else if app.editor_nvim {
             render_nvim_view(frame, app, nvim, p.diff);
@@ -510,13 +510,13 @@ fn commit_chip(app: &App) -> String {
     }
 }
 
-/// The markdown view toggle, shown only when the file under the cursor is markdown. Clicking
-/// it renders the file with the built-in markdown viewer; clicking again returns to raw.
+/// The markdown view toggle, shown only when the file under the cursor is markdown. The label
+/// names the view CURRENTLY showing (the user's ask — not the action); clicking toggles.
 fn md_chip(app: &App) -> String {
-    if !app.cursor_is_markdown() {
+    if !app.is_markdown_open() {
         return String::new();
     }
-    if app.mode == Mode::Preview { " [raw]".to_string() } else { " [md view]".to_string() }
+    if app.md_view { " [md view]".to_string() } else { " [raw]".to_string() }
 }
 
 fn send_button(app: &App) -> String {
@@ -1614,7 +1614,6 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::ExpandTree => ("enter", "expand tree"),
         A::CollapseTree => ("enter", "collapse tree"),
         A::Preview => ("p", "preview"),
-        A::ExitPreview => ("p", "diff"),
         A::SendPath => ("+", "→ chat"),
         A::TogglePane => {
             let dest = if app.focus == Focus::Files {
@@ -1866,7 +1865,7 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("[ / ]", "narrow / widen the file list"),
                     ("/", "filter the file list"),
                     ("space", "step the open file's hunks, then mark reviewed → next file"),
-                    ("p / [md view] chip", "render a markdown file · p, esc or [raw] back"),
+                    ("p / view chip", "markdown: rendered ⇄ raw — sticky, follows the selection"),
                 ],
             ),
             (
@@ -1880,6 +1879,7 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                         "i a o … / paste",
                         "Changes is read-only — these flip to All files at the same spot",
                     ),
+                    ("ctrl+i", "in All files: back to the Changes review, edit included"),
                     ("space rd", "side-by-side diff vs the base (dp/do editable)"),
                     ("space rh", "revert the hunk under the cursor (last hunk → next file)"),
                 ],

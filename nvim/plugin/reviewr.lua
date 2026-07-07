@@ -20,6 +20,30 @@ vim.api.nvim_set_hl(0, "ReviewrCommentLine", { link = "Title", default = true })
 vim.api.nvim_set_hl(0, "ReviewrGutterAdd", { link = "DiffAdd", default = true })
 vim.api.nvim_set_hl(0, "ReviewrGutterDel", { link = "DiffDelete", default = true })
 
+-- Clipboard: the embed has no terminal to answer OSC 52 queries, so nvim's own OSC 52
+-- provider (the natural pick on a tool-less remote box) hangs every `"+` access for ~10s
+-- ("waiting for OSC 52 response"). Copies instead hand the text to the host, which emits
+-- OSC 52 through the real terminal it owns; pastes answer instantly from a local cache —
+-- content from outside the embed arrives as a terminal paste, never as a register read.
+local clip = { ["+"] = { {}, "v" }, ["*"] = { {}, "v" } }
+local function clip_copy(reg)
+  return function(lines, regtype)
+    clip[reg] = { lines, regtype }
+    require("reviewr.comments").notify("clipboard", { text = table.concat(lines, "\n") })
+  end
+end
+local function clip_paste(reg)
+  return function()
+    return clip[reg][1], clip[reg][2]
+  end
+end
+vim.g.clipboard = {
+  name = "reviewr-host",
+  copy = { ["+"] = clip_copy("+"), ["*"] = clip_copy("*") },
+  paste = { ["+"] = clip_paste("+"), ["*"] = clip_paste("*") },
+}
+vim.g.loaded_clipboard_provider = nil -- re-resolve in case startup already touched a register
+
 local cmd = vim.api.nvim_create_user_command
 
 cmd("ReviewrComment", function(opts)

@@ -312,6 +312,16 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
             },
             "send" => app.export(&Agent),
             "yank" => app.export(&Clipboard),
+            // A `"+`/`"*` yank in the embed: the editor has no terminal of its own, so the
+            // host copies on its behalf (tool if present, else OSC 52 through the real tty).
+            "clipboard" => {
+                let text = map_str(payload, "text").unwrap_or_default();
+                if !text.is_empty()
+                    && let Err(e) = crate::export::ExportTarget::export(&Clipboard, text)
+                {
+                    app.status = format!("clipboard: {e:#}");
+                }
+            }
             _ => {}
         }
     }
@@ -644,7 +654,7 @@ fn event_loop(
             app.reveal_file_cursor(file_vp);
         }
         app.bound_file_scroll(file_vp);
-        if app.mode == Mode::Preview {
+        if app.md_showing() {
             let (lines, vp) = ui::preview_metrics(app, area, app.list_pct);
             app.bound_preview_scroll(lines, vp);
         }
@@ -1004,9 +1014,16 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
         return Ok(());
     }
 
-    if app.mode == Mode::Preview {
+    // The markdown view covers only the diff pane: with the FILES pane focused every key
+    // (list navigation, tabs, filters…) behaves exactly as normal and the render follows the
+    // selection. Only diff-pane focus routes here — scroll the render, or leave it.
+    if app.md_showing() && app.focus == Focus::Diff {
         match (key.code, ctrl) {
             (Esc | Char('q' | 'p'), _) => app.close_preview(),
+            (Tab, _) => app.toggle_focus(),
+            (Char('1'), _) => app.set_tab(crate::app::Tab::Changes)?,
+            (Char('2'), _) => app.set_tab(crate::app::Tab::AllFiles)?,
+            (Char('3'), _) => app.set_tab(crate::app::Tab::Pr)?,
             (Char('j') | Down, _) => app.preview_scroll_by(1),
             (Char('k') | Up, _) => app.preview_scroll_by(-1),
             (PageDown, _) => app.preview_scroll_by(PAGE),
@@ -1067,6 +1084,16 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
                 };
                 if key.code == Tab && key.modifiers.is_empty() && normal_ish {
                     app.toggle_focus();
+                } else if key.code == Char('i')
+                    && key.modifiers == KeyModifiers::CONTROL
+                    && normal_ish
+                    && app.tab == crate::app::Tab::AllFiles
+                {
+                    // The insert flip's return ticket: ctrl+i in All files goes back to the
+                    // Changes review of the same file, the fresh edit already in the diff.
+                    // (Distinct from Tab only under the kitty protocol; elsewhere it arrives
+                    // as Tab and toggles focus above. In Changes, <C-i> stays the jumplist.)
+                    app.set_tab(crate::app::Tab::Changes)?;
                 } else if let Some(notation) = nvim_keys::key_notation(&key) {
                     // Space is deliberately NOT intercepted here: it is the leader for every
                     // reviewr map (space rc/rd/…) — the editor walk lives on Enter/Backspace.
@@ -1293,16 +1320,17 @@ fn handle_mouse(
         }
         return Ok(());
     }
-    if app.mode == Mode::Preview {
+    // The markdown view owns only the diff pane's interior: wheel scrolls the render, clicks
+    // there have nothing to hit. The header (chips), the file list and the divider all fall
+    // through to their normal handlers, so browsing stays fully live while rendered.
+    if app.md_showing()
+        && m.row > 0
+        && !ui::in_files_pane(area, app.list_pct, m.column, m.row)
+        && !ui::hit_divider(area, app.list_pct, m.column, m.row)
+    {
         match m.kind {
             MouseEventKind::ScrollDown => app.preview_scroll_by(3),
             MouseEventKind::ScrollUp => app.preview_scroll_by(-3),
-            // The header chip reads [raw] while previewing: clicking it toggles back.
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(ui::HeaderHit::MdView) = ui::hit_header(area, app, m.column, m.row) {
-                    app.close_preview();
-                }
-            }
             _ => {}
         }
         return Ok(());
@@ -1356,7 +1384,7 @@ fn handle_mouse(
                         ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
                         ui::HeaderHit::Base => app.open_branch_picker(),
                         ui::HeaderHit::Commit => app.open_commit_picker(),
-                        ui::HeaderHit::MdView => app.open_preview(),
+                        ui::HeaderHit::MdView => app.toggle_md_view(),
                         // One send path, one store: the host's, same as the built-in pane.
                         ui::HeaderHit::Send => app.export(&Agent),
                     }
@@ -1438,7 +1466,7 @@ fn handle_mouse(
                     ui::HeaderHit::Scope => app.set_scope(app.scope.cycle())?,
                     ui::HeaderHit::Base => app.open_branch_picker(),
                     ui::HeaderHit::Commit => app.open_commit_picker(),
-                    ui::HeaderHit::MdView => app.open_preview(),
+                    ui::HeaderHit::MdView => app.toggle_md_view(),
                     ui::HeaderHit::Send => app.export(&Agent),
                 }
             } else if let Some(i) = ui::hit_file(

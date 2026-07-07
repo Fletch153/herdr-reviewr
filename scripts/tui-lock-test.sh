@@ -46,6 +46,13 @@ frame | grep -q "FLIPPED" || fail "the view drifted off the flipped file after a
 frame | grep -q "decoy content" && fail "the poll re-opened the file under the stale cursor"
 echo "ok 2b - the flip selects the file in the tree (view is poll-stable)"
 
+# 2c. ctrl+i (kitty CSI u encoding, straight to the app) returns to the Changes review of
+#     the same file, with the fresh edit in the diff.
+keys -l "$(printf '\033[105;5u')"
+wait_for "unchanged lines"
+frame | grep -q "FLIPPED" || fail "the review lost the fresh edit after ctrl+i"
+echo "ok 2c - ctrl+i returns to the review with the edit included"
+
 # 3. o flips too, opening a line below the cursor.
 keys Tab; sleep 0.3
 keys 1; sleep 0.8

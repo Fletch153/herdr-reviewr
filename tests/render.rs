@@ -947,7 +947,7 @@ fn the_markdown_preview_renders_the_document() {
     app.reload().unwrap();
 
     app.open_preview();
-    assert_eq!(app.mode, Mode::Preview);
+    assert!(app.md_showing(), "the markdown view is on and the open file renders");
     let out = render(&app);
     assert!(out.contains("Heading"), "the heading text shows");
     assert!(!out.contains("# Heading"), "the '#' marker is rendered away, not shown raw");

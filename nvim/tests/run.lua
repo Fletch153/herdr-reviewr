@@ -426,6 +426,28 @@ vim.cmd("silent! bwipeout!")
 
 vim.cmd("cd " .. vim.fn.fnameescape(root))
 
+-- Clipboard: `"+`/`"*` never touch a terminal (the embed has none to answer) — copies report
+-- a host intent and pastes answer instantly from the cache. No OSC 52 hang, ever.
+local csent = {}
+local keep_clip_notify = comments.notify
+comments.notify = function(action, payload)
+  csent[#csent + 1] = { action = action, payload = payload }
+  return true
+end
+vim.fn.setreg("+", { "CLIPLINE1", "CLIPLINE2" })
+check(
+  "a plus-register write reports a clipboard intent",
+  -- linewise registers carry a trailing empty element: the copied text ends in a newline,
+  -- exactly what a line yank means on a clipboard.
+  #csent == 1 and csent[1].action == "clipboard" and csent[1].payload.text == "CLIPLINE1\nCLIPLINE2\n",
+  vim.inspect(csent)
+)
+check(
+  "a plus-register read answers from the cache",
+  vim.deep_equal(vim.fn.getreg("+", 1, true), { "CLIPLINE1", "CLIPLINE2" })
+)
+comments.notify = keep_clip_notify
+
 -- The Enter/Backspace review walk: hunk to hunk inside the focused view, a "nav" intent to
 -- the host at the file boundary (and immediately in the plain view, which has no hunks).
 -- Foreign buffers (quickfix, help, scratches) keep the keys' native meaning.

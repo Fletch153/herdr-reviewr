@@ -136,7 +136,6 @@ pub enum Mode {
     Filter,
     /// Incremental text search within the open diff/file; the query lives in `search`.
     Search,
-    Preview,
     /// Browsing the `?` keybinding help overlay.
     Help,
     /// Confirming a file/folder deletion; the target lives in `pending_delete`.
@@ -194,7 +193,6 @@ pub enum FooterAction {
     /// `Mode::ConfirmQuit`: quit despite unsaved editor buffers.
     QuitAnyway,
     Preview,
-    ExitPreview,
     SendPath,
     Send,
     List,
@@ -252,6 +250,9 @@ pub struct App {
     /// the query does not drift the origin.
     search_origin: usize,
     pub preview_scroll: usize,
+    /// Sticky markdown-view preference: while on, any open markdown file renders with the
+    /// built-in viewer instead of the editor; toggled by `p` or the header chip.
+    pub md_view: bool,
     /// Top visible line of the `?` help overlay; reset when it opens.
     pub help_scroll: usize,
     pub file_cursor: usize,
@@ -409,6 +410,7 @@ impl App {
             search: String::new(),
             search_origin: 0,
             preview_scroll: 0,
+            md_view: false,
             help_scroll: 0,
             file_cursor: 0,
             file_scroll: 0,
@@ -680,26 +682,40 @@ impl App {
         self.current_entry().is_some_and(|e| is_markdown_path(&e.path))
     }
 
+    /// Whether the diff pane is currently showing the rendered markdown view: the sticky
+    /// `md_view` preference is on AND the open file is markdown. Selecting another markdown
+    /// file keeps the rendered view; a non-markdown file shows the normal editor/diff and the
+    /// preference stays armed for the next markdown file.
+    pub fn md_showing(&self) -> bool {
+        self.md_view && self.is_markdown_open()
+    }
+
     pub fn open_preview(&mut self) {
         if self.composing() || self.mode != Mode::Normal {
             return;
         }
-        if !self.cursor_is_markdown() {
-            self.status = "preview is for markdown files".to_string();
+        if !self.is_markdown_open() && !self.cursor_is_markdown() {
+            self.status = "the markdown view is for markdown files".to_string();
             return;
         }
         self.preview_scroll = 0;
-        self.mode = Mode::Preview;
+        self.md_view = true;
     }
 
     pub fn close_preview(&mut self) {
-        if self.mode == Mode::Preview {
-            self.mode = Mode::Normal;
+        self.md_view = false;
+    }
+
+    pub fn toggle_md_view(&mut self) {
+        if self.md_view {
+            self.close_preview();
+        } else {
+            self.open_preview();
         }
     }
 
     pub fn preview_scroll_by(&mut self, delta: isize) {
-        if self.mode == Mode::Preview {
+        if self.md_showing() {
             self.preview_scroll = self.preview_scroll.saturating_add_signed(delta);
         }
     }
@@ -973,9 +989,6 @@ impl App {
             }
             self.load_left();
         }
-        if self.mode == Mode::Preview && !self.is_markdown_open() {
-            self.close_preview();
-        }
         Ok(())
     }
 
@@ -1189,6 +1202,7 @@ impl App {
         self.diff_scroll = 0;
         self.h_scroll = 0;
         self.select_anchor = None;
+        self.preview_scroll = 0; // a fresh file starts its markdown view at the top
     }
 
     /// Scroll the diff horizontally by `delta` columns, clamped at the left edge. A no-op
@@ -2345,7 +2359,6 @@ impl App {
             | Mode::BranchPick
             | Mode::Filter
             | Mode::Search
-            | Mode::Preview
             | Mode::Help
             | Mode::ConfirmDelete
             | Mode::ConfirmQuit => None,
@@ -2911,13 +2924,6 @@ impl App {
             }
             Mode::Search => {
                 return vec![(A::SearchNext, Primary), (A::Cancel, Normal)];
-            }
-            Mode::Preview => {
-                return vec![
-                    (A::ExitPreview, Primary),
-                    (A::Tabs, Orientation),
-                    (A::Quit, Orientation),
-                ];
             }
             Mode::Help => {
                 return vec![(A::CloseHelp, Primary)];
