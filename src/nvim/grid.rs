@@ -479,6 +479,42 @@ mod tests {
     }
 
     #[test]
+    fn grid_line_zero_repeat_writes_nothing_but_updates_the_carry() {
+        let mut g = Grid::new(10, 1);
+        // Seed real content, then replay nvim's hl-reset pattern: an explicit `repeat: 0`
+        // entry must not stamp a cell (it once blanked the first text column whenever a
+        // number_hl_group extmark redrew the row) — but its hl id must still carry over.
+        apply(
+            &mut g,
+            &[ev(
+                "grid_line",
+                vec![
+                    Value::from(1),
+                    Value::from(0),
+                    Value::from(0),
+                    line_cells(vec![cell("f", &[7]), cell("n", &[])]),
+                ],
+            )],
+        );
+        apply(
+            &mut g,
+            &[ev(
+                "grid_line",
+                vec![
+                    Value::from(1),
+                    Value::from(0),
+                    Value::from(0),
+                    line_cells(vec![cell(" ", &[9, 0]), cell("X", &[])]),
+                ],
+            )],
+        );
+        // The zero-repeat " " wrote nothing: "X" landed at col 0 (with the carried hl 9),
+        // and col 1 still holds the original "n".
+        assert_eq!(g.row(0)[0], Cell { text: CellText::Char('X'), hl: 9 });
+        assert_eq!(g.row(0)[1], Cell { text: CellText::Char('n'), hl: 7 });
+    }
+
+    #[test]
     fn grid_line_repeat_fills_a_row() {
         let mut g = Grid::new(80, 1);
         apply(

@@ -109,7 +109,7 @@ fn sq(s: &str) -> String {
 
 /// The `:confirm edit` command payload for `abs`: `fnameescape` (computed inside nvim) handles
 /// vim-special characters, so only single quotes need doubling for the outer vimscript string;
-/// `stopinsert` first normalizes insert mode so the Ex command lands cleanly. `silent! update`
+/// `stopinsert` first normalizes insert mode so the Ex command lands cleanly. `silent! update!`
 /// is the reviewer's autosave — every reviewer-driven switch writes the leaving buffer's edits
 /// to disk (`autowriteall` can't do this: under `hidden`, :edit hides the buffer without ever
 /// "abandoning" it, so the option never fires). The payload also publishes the reviewer's diff
@@ -122,7 +122,7 @@ fn open_file_command(abs: &Path, base: &str, focus_changes: bool) -> String {
     let path = sq(&abs.to_string_lossy());
     let tail = if focus_changes { "focus" } else { "unfocus" };
     format!(
-        "silent! update | let g:reviewr_base='{}' | silent! checktime | stopinsert \
+        "silent! update! | let g:reviewr_base='{}' | silent! checktime | stopinsert \
          | exe 'confirm edit ' . fnameescape('{path}') | lua require('reviewr.diff').{tail}()",
         sq(base)
     )
@@ -134,7 +134,7 @@ fn open_file_command(abs: &Path, base: &str, focus_changes: bool) -> String {
 /// the file as it exists now, undecorated).
 fn sync_view_command(base: &str, focused: bool) -> String {
     format!(
-        "silent! update | let g:reviewr_base='{}' | silent! checktime \
+        "silent! update! | let g:reviewr_base='{}' | silent! checktime \
          | lua require('reviewr.diff').set_view({focused})",
         sq(base)
     )
@@ -148,7 +148,7 @@ fn show_deleted_command(rel: &str, base: &str) -> String {
     // The scratch swap goes through the API (no :edit), so `autowriteall` doesn't cover it —
     // save the leaving buffer explicitly (update: write only when modified).
     format!(
-        "silent! update | let g:reviewr_base='{}' | let g:reviewr_deleted='{}' \
+        "silent! update! | let g:reviewr_base='{}' | let g:reviewr_deleted='{}' \
          | lua require('reviewr.diff').show_deleted(vim.g.reviewr_deleted)",
         sq(base),
         sq(rel)
@@ -581,7 +581,7 @@ mod tests {
     fn open_file_command_confirm_edits_via_fnameescape() {
         assert_eq!(
             open_file_command(Path::new("/repo/src/a b.rs"), "abc123", true),
-            "silent! update | let g:reviewr_base='abc123' | silent! checktime | stopinsert \
+            "silent! update! | let g:reviewr_base='abc123' | silent! checktime | stopinsert \
              | exe 'confirm edit ' . fnameescape('/repo/src/a b.rs') \
              | lua require('reviewr.diff').focus()"
         );
@@ -589,7 +589,7 @@ mod tests {
         // focused view instead of entering it.
         assert_eq!(
             open_file_command(Path::new("/repo/o'brien.rs"), "HEAD", false),
-            "silent! update | let g:reviewr_base='HEAD' | silent! checktime | stopinsert \
+            "silent! update! | let g:reviewr_base='HEAD' | silent! checktime | stopinsert \
              | exe 'confirm edit ' . fnameescape('/repo/o''brien.rs') \
              | lua require('reviewr.diff').unfocus()"
         );
@@ -599,12 +599,12 @@ mod tests {
     fn sync_view_command_publishes_the_base_and_presentation() {
         assert_eq!(
             sync_view_command("deadbeef", true),
-            "silent! update | let g:reviewr_base='deadbeef' | silent! checktime \
+            "silent! update! | let g:reviewr_base='deadbeef' | silent! checktime \
              | lua require('reviewr.diff').set_view(true)"
         );
         assert_eq!(
             sync_view_command("HEAD", false),
-            "silent! update | let g:reviewr_base='HEAD' | silent! checktime \
+            "silent! update! | let g:reviewr_base='HEAD' | silent! checktime \
              | lua require('reviewr.diff').set_view(false)"
         );
     }
@@ -613,7 +613,7 @@ mod tests {
     fn show_deleted_command_hands_the_path_over_via_a_variable() {
         assert_eq!(
             show_deleted_command("src/o'ld.rs", "abc123"),
-            "silent! update | let g:reviewr_base='abc123' | let g:reviewr_deleted='src/o''ld.rs' \
+            "silent! update! | let g:reviewr_base='abc123' | let g:reviewr_deleted='src/o''ld.rs' \
              | lua require('reviewr.diff').show_deleted(vim.g.reviewr_deleted)"
         );
     }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Live gate for undo scoping in the review surface: undo must cover the user's own edits since
-# load and nothing more. With the user's 'undofile' a fresh buffer would open with history from
-# earlier sessions, and a checktime reload of an agent-changed file is itself an undo step
-# ('undoreload') — one u (or a client Undo button) then reverts the agent's work and the
-# autosave persists the reversion. The host pushes noundofile + undoreload=0, and the Changes
-# view is locked outright — editing (and undo) live in All files.
+# Live gate for undo scoping in the review surface: undo covers this session only. With the
+# user's 'undofile' a fresh buffer would open with history from earlier sessions — the host
+# pushes noundofile. The Changes view is locked outright (undo inert there); in All files a
+# checktime reload of an agent-changed file IS undoable (vim's default 'undoreload', kept
+# deliberately: an explicit u repaints visibly, is redoable, and is the recovery hatch for
+# the agent-blind-overwrite race — clearing history there turned that race into silent loss).
 set -uo pipefail
 SOCK=rvundo
 TUI_INIT_EXTRA="vim.o.number = true
@@ -44,15 +44,21 @@ echo "ok 1 - undo is inert in the read-only Changes view"
 frame | grep -qF "line b" && fail "the fold over unchanged lines is gone (file expanded)"
 echo "ok 2 - the folded hunk view survives the undo attempt"
 
-# 5. The real undo-scoping property, exercised where editing lives: in All files, undo after
-#    the reload must not revert the agent's work (reload cleared history; no undofile past).
+# 5. In All files, a reload is an explicit, visible, redoable undo step: u reverts to the
+#    pre-agent buffer (the instant autosave persists that choice), C-r brings it back.
 keys Tab; sleep 0.3
 keys 2; sleep 0.8
 keys Tab; sleep 0.4
 keys u; sleep 0.8
-frame | grep -qF "AGENT CHANGE" || fail "undo after a reload reverted the agent's change"
-frame | grep -qF "MINE" || fail "undo after a reload reverted the user's saved edit"
-echo "ok 3 - undo cannot reach past the reload of the agent's change"
+frame | grep -qF "AGENT CHANGE" && fail "undo did not revert the reload"
+frame | grep -qF "MINE" || fail "undo lost the user's own edit"
+for _ in $(seq 20); do grep -q "AGENT CHANGE" "$REPO/src/one.txt" 2>/dev/null || break; sleep 0.25; done
+grep -q "AGENT CHANGE" "$REPO/src/one.txt" && fail "the reverted state did not autosave"
+keys C-r; sleep 0.8
+wait_for "AGENT CHANGE"
+for _ in $(seq 20); do grep -q "AGENT CHANGE" "$REPO/src/one.txt" 2>/dev/null && break; sleep 0.25; done
+grep -q "AGENT CHANGE" "$REPO/src/one.txt" || fail "redo did not autosave the agent change back"
+echo "ok 3 - a reload undoes explicitly, autosaves, and redoes"
 
 # 6. In-session undo/redo still work on the user's own edits.
 keys i; keys -l "XYZQ "; esc

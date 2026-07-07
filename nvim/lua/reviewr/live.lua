@@ -23,7 +23,10 @@ function M.enable()
     callback = function(a)
       if file_buf(a.buf) and vim.bo[a.buf].modified then
         vim.api.nvim_buf_call(a.buf, function()
-          vim.cmd("silent! update")
+          -- Forced: a plain :update on a file changed since read raises the blocking
+          -- "really write (y/n)?" prompt — resolution is the same documented policy
+          -- (the user's typing is the newest intent).
+          vim.cmd("silent! update!")
         end)
       end
     end,

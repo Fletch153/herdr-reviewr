@@ -170,7 +170,8 @@ trait NvimBridge {
     fn feed_keys(&mut self, notation: &str);
     fn feed_paste(&mut self, text: &str);
     fn feed_mouse(&mut self, button: &str, action: &str, modifier: &str, row: u16, col: u16);
-    /// Write every savable modified buffer (`silent! wall`) — review-mode autosave's quit half.
+    /// Write every savable modified buffer (`silent! wall!`, forced: a changed-since-read file
+    /// must not block quitting on a prompt) — review-mode autosave's quit half.
     fn save_all(&mut self);
     /// How many buffers hold unsaved changes; `None` when the editor is gone or busy (a prompt
     /// is up) — callers must not block quitting on it.
@@ -207,7 +208,7 @@ impl NvimBridge for NvimSession {
 
     fn save_all(&mut self) {
         if let Some(e) = self.engine_alive() {
-            let _ = e.command_fire("silent! wall");
+            let _ = e.command_fire("silent! wall!");
         }
     }
 
@@ -319,10 +320,13 @@ fn comment_card_values(app: &App) -> Value {
 /// links. Runs after the user's config, so it wins over a statusline set there.
 ///
 /// Undo in the review surface must not reach past what this session loaded: with the user's
-/// `undofile`, a fresh buffer opens with history from earlier sessions, and a reload of an
-/// agent-changed file is itself an undo step (`undoreload`) — one `u` (or a client Undo
-/// button) then reverts the agent's work, and the autosave writes that reversion to disk.
-/// `noundofile undoreload=0` scopes undo to the user's own edits since load; reloads clear it.
+/// `undofile`, a fresh buffer opens with history from earlier sessions — one `u` (or a client
+/// Undo button) then reverts work the user never saw change. `noundofile` scopes undo to this
+/// session. Reloads stay undoable (vim's default `undoreload`), deliberately: with Changes
+/// locked, crossing a reload takes an explicit `u` in All files, repaints visibly, and is
+/// redoable — whereas making reloads clear history turned the agent-blind-overwrite race
+/// (agent writes from a pre-edit read; the clean buffer silently reloads) into unrecoverable
+/// loss of the user's saved edit.
 fn push_editor_theme(app: &App, session: &NvimSession) {
     fn hex(c: ratatui::style::Color) -> Option<String> {
         match c {
@@ -331,7 +335,7 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
         }
     }
     let p = app.palette();
-    let mut cmds = vec!["set laststatus=1 noruler noundofile undoreload=0".to_string()];
+    let mut cmds = vec!["set laststatus=1 noruler noundofile".to_string()];
     if let Some(x) = hex(p.peach) {
         cmds.push(format!("hi ReviewrCardTitle guifg={x} gui=bold"));
         cmds.push(format!("hi ReviewrCommentLine guifg={x}"));
