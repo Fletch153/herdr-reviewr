@@ -18,15 +18,32 @@ local function base_ref()
   return vim.env.REVIEWR_BASE or "HEAD"
 end
 
--- The base blob's lines for `rel` at `base_ref()`. A path absent from a resolvable base is an
--- added/untracked file: diff against an empty base so the whole file shows green (the
--- reviewer's semantics). nil only when the base itself doesn't resolve (no repo, bad ref) —
--- then there is nothing meaningful to diff. Kept as a list so deleted lines can be rendered
--- back as virtual lines.
+-- Renamed paths in the reviewer's changeset, `{ [new_rel] = old_rel }` — pushed by the host on
+-- every view sync so a renamed file diffs against its old path's content instead of reading
+-- as one big insertion (the built-in pane's semantics).
+M._renames = {}
+
+function M.set_renames(map)
+  M._renames = type(map) == "table" and map or {}
+end
+
+-- The base blob's lines for `rel` at `base_ref()`. A renamed file's content lives at its old
+-- path in the base, so that is tried before concluding the file is new. A path absent from a
+-- resolvable base is an added/untracked file: diff against an empty base so the whole file
+-- shows green (the reviewer's semantics). nil only when the base itself doesn't resolve (no
+-- repo, bad ref) — then there is nothing meaningful to diff. Kept as a list so deleted lines
+-- can be rendered back as virtual lines.
 local function base_lines(rel)
   local out = vim.fn.systemlist({ "git", "show", base_ref() .. ":" .. rel })
   if vim.v.shell_error == 0 then
     return out
+  end
+  local old = M._renames[rel]
+  if old then
+    out = vim.fn.systemlist({ "git", "show", base_ref() .. ":" .. old })
+    if vim.v.shell_error == 0 then
+      return out
+    end
   end
   vim.fn.system({ "git", "rev-parse", "--verify", "--quiet", base_ref() .. "^{tree}" })
   if vim.v.shell_error == 0 then

@@ -174,6 +174,35 @@ check("normal rc maps through <Cmd>", rc_n:find("<Cmd>", 1, true) ~= nil, rc_n)
 local rc_x = vim.fn.maparg("<leader>rc", "x")
 check("visual rc maps through <Cmd>", rc_x:find("<Cmd>", 1, true) ~= nil, rc_x)
 
+-- Renamed files: without the host's rename map the file reads as one big insertion (its path
+-- is absent at the base); with it, the diff runs against the old path's content.
+local gitroot = root .. "/renrepo"
+vim.fn.mkdir(gitroot, "p")
+local function git(args)
+  vim.fn.system(vim.list_extend({ "git", "-C", gitroot }, args))
+end
+git({ "init", "-qb", "main" })
+git({ "config", "user.email", "t@t" })
+git({ "config", "user.name", "t" })
+git({ "config", "commit.gpgsign", "false" })
+vim.fn.writefile({ "s1", "s2", "s3", "s4" }, gitroot .. "/old.txt")
+git({ "add", "-A" })
+git({ "commit", "-qm", "A" })
+vim.fn.rename(gitroot .. "/old.txt", gitroot .. "/new.txt")
+vim.fn.writefile({ "s1", "EDIT", "s3", "s4" }, gitroot .. "/new.txt")
+vim.cmd("cd " .. vim.fn.fnameescape(gitroot))
+vim.cmd("edit new.txt")
+local rbuf = vim.api.nvim_get_current_buf()
+diff.refresh(rbuf)
+local h = diff._hunks[rbuf]
+check("a rename without the map reads as one insertion", #h == 1 and h[1].lo == 1 and h[1].hi == 4, vim.inspect(h))
+diff.set_renames({ ["new.txt"] = "old.txt" })
+diff.refresh(rbuf)
+h = diff._hunks[rbuf]
+check("the rename map narrows the diff to the real edit", #h == 1 and h[1].lo == 2 and h[1].hi == 2, vim.inspect(h))
+diff.set_renames({})
+vim.cmd("cd " .. vim.fn.fnameescape(root))
+
 -- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):
 -- the focused pane wins over an otherwise-ambiguous tab.
 local agent = require("reviewr.agent")

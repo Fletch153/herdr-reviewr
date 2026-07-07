@@ -405,6 +405,21 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     if !same_view {
         let exists = app.repo.join(&rel).exists();
         if let Some(engine) = session.engine_alive() {
+            // The scope's rename map goes first (notifications run in order), so the diff
+            // refresh triggered by the open below already knows a renamed file's old path —
+            // without it the editor paints the whole file as one insertion.
+            let renames: Vec<(Value, Value)> = app
+                .entries
+                .iter()
+                .filter_map(|e| {
+                    let old = e.previous_path.as_deref()?;
+                    Some((Value::from(e.path.as_str()), Value::from(old)))
+                })
+                .collect();
+            let _ = engine.exec_lua_fire(
+                "require('reviewr.diff').set_renames(...)",
+                vec![Value::Map(renames)],
+            );
             if !force && same_path && exists {
                 // Only the scope/base or the tab's presentation moved: sync the open buffer in
                 // place, no :edit (which would prompt on a modified buffer for no reason).
