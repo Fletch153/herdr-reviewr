@@ -247,22 +247,33 @@ How it behaves:
   switches back in normal/visual mode — while inserting or on the cmdline it types, and every
   other key goes to nvim (`<C-i>` jumplist etc. work under the kitty keyboard protocol).
 - **Review**: the bundled `reviewr.nvim` provides inline red/green vs the base (no gitsigns
-  needed) and `]c`/`[c` hunk hops; `Space` from the file list steps change-by-change, then marks
-  the file reviewed and advances. Comments live in the reviewer itself — one store behind the
-  header's **Send (n)** button, the `l` list (jump, edit, resolve, batch-resolve) and the send
-  path: `<leader>rc` comments on a line or visual selection (the reviewer's composer opens over
-  the editor), `<leader>re` edits an un-sent comment (sent ones are resolve-only),
-  `<leader>rx`/`<leader>rr` delete/resolve under the cursor, `<leader>rl`/`<leader>rs`/`<leader>ry`
-  open the list / send to the agent (also `s` and the header button) / copy all. Saved comments
-  paint back into the editor as inline boxed cards, styled to the reviewer's theme.
-  `:ReviewrDiff` opens a split diff; `:ReviewrDoctor` debugs agent wiring.
-- **Autosave**: switching files or views from the reviewer writes your edits to disk
-  (every reviewer-driven switch runs `silent! update`), and quitting saves everything savable first — the quit
-  confirmation only appears for buffers that genuinely can't write (e.g. an unnamed scratch
-  with text). Closing the reviewer (or its herdr pane, however hard) always takes the embedded
-  nvim with it — it is a child process, so an orphaned editor is impossible.
-- Not in this mode (the editor owns the pane): the `p` markdown preview and per-file comment
-  badges in the tree.
+  needed). The **Changes view is read-only** — a review surface. Insert-entry keys
+  (`i`/`a`/`o`/…) and pastes there flip to All files at the same spot and land as real input;
+  every other mutating key answers `E21`. **`Enter`/`Backspace` walk the review**: hunk to
+  hunk, then on to the next/previous changed file (backward entries land on the file's last
+  hunk); in All files the pair walks file to file. `Space` from the file list does the same
+  forward walk, and `]c`/`[c` hop hunks in place. **`<leader>rh` reverts the hunk under the
+  cursor** to the base (buffer and disk, one undo block); reverting a file's last hunk moves
+  on and the clean file drops from Changes. Deliberate limits of the flip: macros and `.`
+  can't repeat it, and counts/registers (`3i`, `"aI`) don't carry across it.
+- **Comments** live in the reviewer itself — one store behind the header's **Send (n)**
+  button, the `l` list (jump, edit, resolve, batch-resolve) and the send path: `<leader>rc`
+  comments on a line or visual selection (the reviewer's composer opens over the editor),
+  `<leader>re` edits an un-sent comment (sent ones are resolve-only), `<leader>rx`/`<leader>rr`
+  delete/resolve under the cursor, `<leader>rl`/`<leader>rs`/`<leader>ry` open the list / send
+  to the agent (also `s` and the header button) / copy all. Saved comments paint back into the
+  editor as inline boxed cards, styled to the reviewer's theme, and **persist across pane
+  restarts** (a private ref in the repo — an accidentally closed pane keeps its review).
+  `:ReviewrDiff` opens a split diff (`dp`/`do` editable); `:ReviewrDoctor` debugs agent wiring.
+- **Live sync**: your edits autosave the moment they exist (per normal-mode change, and on
+  leaving insert), agent writes to open files appear on the reviewer's next poll, and a
+  write-under-your-edit conflict resolves to your version — your typing is the newest intent.
+  Quitting saves everything savable first; the quit confirmation only appears for buffers that
+  genuinely can't write. Closing the reviewer (or its herdr pane, however hard) always takes
+  the embedded nvim with it — it is a child process, so an orphaned editor is impossible.
+- **Markdown**: `p` (or the `[md view]` header chip) renders a markdown file with the built-in
+  viewer over the editor; `p`, `esc` or the `[raw]` chip returns.
+- Not in this mode (the editor owns the pane): per-file comment badges in the tree.
 
 Requires `nvim` on `PATH` — without it reviewr logs a note and keeps the diff view.
 
