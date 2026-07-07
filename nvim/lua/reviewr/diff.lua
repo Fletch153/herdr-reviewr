@@ -324,8 +324,11 @@ function M.revert_hunk()
     vim.bo[bufnr].modifiable = false
   end
   if #(M._hunks[bufnr] or {}) == 0 then
-    -- That was the file's last hunk: hand the walk to the next changed file.
-    require("reviewr.comments").notify("nav", { dir = "next" })
+    -- That was the file's last hunk: hand the walk to the next changed file. The file and
+    -- the presentation ride along so the host can drop the verdict if its view moved past it.
+    local rel = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
+    local view = vim.b[bufnr].reviewr_plain and "plain" or "focused"
+    require("reviewr.comments").notify("nav", { dir = "next", file = rel, view = view })
   else
     vim.notify("hunk reverted — undo in All files", vim.log.levels.INFO)
   end
@@ -557,6 +560,28 @@ function M.show_deleted(rel)
   M.unfocus() -- a fully-deleted file has nothing to fold
   M._view = "focused" -- the deleted view belongs to the Changes tab
   drop_breakindent(vim.api.nvim_get_current_win()) -- every line here is painted red
+end
+
+-- The Changes tab has nothing to show (an empty changeset): park on a reusable read-only
+-- scratch that says so, instead of leaving another tab's buffer up — a visible file there
+-- reads as "this changeset has changes". Same nameless-scheme nofile shape as the deleted
+-- scratch, and unlisted: a housekeeping buffer, not one the user should cycle onto.
+function M.show_empty()
+  local name = "reviewr://empty"
+  local buf = vim.fn.bufnr("^" .. vim.fn.fnameescape(name) .. "$")
+  if buf == -1 then
+    buf = vim.api.nvim_create_buf(false, true) -- unlisted scratch
+    vim.api.nvim_buf_set_name(buf, name)
+  end
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "no changes in scope" })
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].swapfile = false
+  vim.api.nvim_set_current_buf(buf)
+  M._hunks[buf] = {}
+  M.unfocus() -- nothing to fold or paint
+  M._view = "focused" -- the empty state belongs to the Changes tab
 end
 
 -- The reviewer's scope/base changed while this file stays open: re-diff against the new base

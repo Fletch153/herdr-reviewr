@@ -231,6 +231,14 @@ fn show_deleted_command(rel: &str, base: &str) -> String {
     )
 }
 
+/// The nothing-to-show payload (an empty changeset on the Changes tab): save the leaving
+/// buffer explicitly (the scratch swap goes through the API, so `autowriteall` doesn't
+/// cover it), leave insert if a lifted lock was mid-edit, and park on the reusable
+/// empty-state scratch.
+fn show_empty_command() -> String {
+    "silent! update! | stopinsert | lua require('reviewr.diff').show_empty()".to_string()
+}
+
 /// A queued nvim→host notification: `(method, params)` as decoded from the wire.
 pub type Notification = (String, Vec<Value>);
 
@@ -439,6 +447,12 @@ impl Nvim {
     /// Show a file that no longer exists in the worktree as the base's all-red scratch view.
     pub fn show_deleted(&self, rel: &str, base: &str) -> Result<(), RpcFailure> {
         self.command_fire(&show_deleted_command(rel, base))
+    }
+
+    /// Park the editor on the empty-state scratch: the Changes tab has nothing to show, and
+    /// leaving another tab's buffer up would misreport the changeset as non-empty.
+    pub fn show_empty(&self) -> Result<(), RpcFailure> {
+        self.command_fire(&show_empty_command())
     }
 
     /// Whether the colorscheme leaves `Normal` without a background (a "transparent" theme,
@@ -703,6 +717,14 @@ mod tests {
             show_deleted_command("src/o'ld.rs", "abc123"),
             "silent! update! | let g:reviewr_base='abc123' | let g:reviewr_deleted='src/o''ld.rs' \
              | lua require('reviewr.diff').show_deleted(vim.g.reviewr_deleted)"
+        );
+    }
+
+    #[test]
+    fn show_empty_command_saves_the_leaving_buffer_before_parking() {
+        assert_eq!(
+            show_empty_command(),
+            "silent! update! | stopinsert | lua require('reviewr.diff').show_empty()"
         );
     }
 }

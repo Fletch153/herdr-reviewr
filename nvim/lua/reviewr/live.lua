@@ -12,6 +12,14 @@ local function file_buf(bufnr)
   return vim.bo[bufnr].buftype == "" and vim.api.nvim_buf_get_name(bufnr) ~= ""
 end
 
+-- Record the on-disk stat a buffer was last synced against (load, write, checktime reload).
+local function stamp(bufnr)
+  local st = vim.uv.fs_stat(vim.api.nvim_buf_get_name(bufnr))
+  if st then
+    vim.b[bufnr].reviewr_disk = { sec = st.mtime.sec, nsec = st.mtime.nsec, size = st.size }
+  end
+end
+
 function M.enable()
   local grp = vim.api.nvim_create_augroup("ReviewrLive", { clear = true })
 
@@ -58,6 +66,51 @@ function M.enable()
       end
     end,
   })
+
+  -- Keep the disk stamps aligned with nvim's own sync points, so poll() below only ever
+  -- fires in nvim's blind spot. FileChangedShellPost covers checktime reloads, which fire
+  -- neither BufReadPost nor TextChanged.
+  vim.api.nvim_create_autocmd({ "BufReadPost", "BufWritePost", "FileChangedShellPost" }, {
+    group = grp,
+    callback = function(a)
+      if file_buf(a.buf) then
+        stamp(a.buf)
+      end
+    end,
+  })
+end
+
+-- The host's poll tick. checktime sweeps ordinary agent writes, but nvim's timestamp check
+-- compares mtime (seconds + nanoseconds) and mode only — never size or content — so a write
+-- that preserves the file's mtime exactly (cp -p, rsync -t, restoring a saved copy) is
+-- invisible to it forever; retries never heal. The stamps recorded above let this catch the
+-- detectable slice of that shadow (same mtime, different size) and apply the same
+-- FileChangedShell policy: clean buffers reload, in-flight user edits win and write out.
+-- An mtime-preserving write of the exact same byte count stays invisible (content hashing
+-- is not worth the per-tick cost).
+function M.poll()
+  vim.cmd("silent! checktime")
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) and file_buf(buf) then
+      local st = vim.uv.fs_stat(vim.api.nvim_buf_get_name(buf))
+      local s = vim.b[buf].reviewr_disk
+      if st and not s then
+        stamp(buf)
+      elseif st and (s.sec ~= st.mtime.sec or s.nsec ~= st.mtime.nsec) then
+        -- mtime moved: the checktime above already saw everything we can see. Adopt.
+        stamp(buf)
+      elseif st and s.size ~= st.size then
+        vim.api.nvim_buf_call(buf, function()
+          if vim.bo[buf].modified then
+            vim.cmd("silent! update!")
+          else
+            vim.cmd("silent! edit!")
+          end
+        end)
+        stamp(buf)
+      end
+    end
+  end
 end
 
 return M

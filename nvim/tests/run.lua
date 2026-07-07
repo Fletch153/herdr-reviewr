@@ -484,8 +484,12 @@ cr_map.callback()
 check("Enter steps to the next hunk", vim.fn.line(".") == 7 and #navs == 0, vim.fn.line("."))
 cr_map.callback()
 check(
-  "Enter past the last hunk reports nav next",
-  #navs == 1 and navs[1].action == "nav" and navs[1].payload.dir == "next",
+  "Enter past the last hunk reports nav next with its file and view",
+  #navs == 1
+    and navs[1].action == "nav"
+    and navs[1].payload.dir == "next"
+    and navs[1].payload.file == "w.txt"
+    and navs[1].payload.view == "focused",
   vim.inspect(navs)
 )
 bs_map.callback()
@@ -500,8 +504,8 @@ check("last_change lands on the final hunk", diff.last_change() == true and vim.
 diff.set_view(false) -- plain view: no hunks, the walk is file-to-file
 cr_map.callback()
 check(
-  "the plain view walks straight to the next file",
-  #navs == 3 and navs[3].payload.dir == "next",
+  "the plain view walks straight to the next file, tagged plain",
+  #navs == 3 and navs[3].payload.dir == "next" and navs[3].payload.view == "plain",
   vim.inspect(navs)
 )
 local foreign = vim.api.nvim_create_buf(false, true) -- scratch: not ours, keys stay native
@@ -563,8 +567,12 @@ vim.api.nvim_win_set_cursor(0, { 2, 0 })
 check("replace hunk reverts", diff.revert_hunk() == true and vim.fn.getline(2) == "r2")
 check("the full revert is byte-exact on disk", vim.deep_equal(vim.fn.readfile(rroot .. "/r.txt"), rbase))
 check(
-  "the last hunk's revert hands the walk onward",
-  #rnavs == 1 and rnavs[1].action == "nav" and rnavs[1].payload.dir == "next",
+  "the last hunk's revert hands the walk onward with its file and view",
+  #rnavs == 1
+    and rnavs[1].action == "nav"
+    and rnavs[1].payload.dir == "next"
+    and rnavs[1].payload.file == "r.txt"
+    and rnavs[1].payload.view == "focused",
   vim.inspect(rnavs)
 )
 vim.api.nvim_win_set_cursor(0, { 1, 0 })

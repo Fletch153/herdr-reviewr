@@ -24,7 +24,7 @@ wait_for "╭─ comment"
 wait_for "survives restarts"
 keys Tab; sleep 0.3
 keys q; sleep 0.5; keys y 2>/dev/null || true
-sleep 0.8
+wait_session_end
 echo "ok 1 - comment left, pane closed"
 
 # 2. A fresh pane on the same repo restores the comment (card + Send counter).
@@ -41,7 +41,7 @@ keys Space r x
 wait_gone "survives restarts"
 keys Tab; sleep 0.3
 keys q; sleep 0.5; keys y 2>/dev/null || true
-sleep 0.8
+wait_session_end
 tui_start
 wait_for "one.txt"
 wait_for "CHANGE ONE"
@@ -58,7 +58,7 @@ keys Enter; sleep 0.6
 frame | grep -q "1 reviewed" || fail "Enter on the file row did not mark it reviewed"
 frame | grep -q "✓" || fail "no tick rendered for the reviewed file"
 keys q; sleep 0.5; keys y 2>/dev/null || true
-sleep 0.8
+wait_session_end
 tui_start
 wait_for "one.txt"
 wait_for "CHANGE ONE"
@@ -72,6 +72,8 @@ for _ in $(seq 20); do frame | grep -q "reviewed" || break; sleep 0.25; done
 frame | grep -q "reviewed" && fail "the tick outlived a content change"
 echo "ok 5 - a content change clears the tick"
 
-keys Tab; sleep 0.3
+# Focus is already on the files pane (step 4's click) — a Tab here would move INTO the
+# editor and this q would type a macro-record key instead of quitting.
 keys q; sleep 0.3; keys y 2>/dev/null || true
+wait_session_end
 echo "# all persistence assertions passed"

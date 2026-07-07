@@ -114,6 +114,7 @@ enum PendingInput {
 /// and unit-testable. Handlers talk to it through [`NvimBridge`], letting routing tests use a
 /// recorder instead of a live nvim.
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)] // independent session facts, same shape as App
 struct NvimSession {
     engine: Option<nvim::Nvim>,
     /// Last (cols, rows) sent, so a divider drag doesn't spam resizes.
@@ -134,6 +135,9 @@ struct NvimSession {
     mouse_down: bool,
     /// Authoring input from the locked view, waiting for the flip's plain sync to publish.
     pending_input: Option<PendingInput>,
+    /// The editor is parked on the empty-state scratch (a Changes tab with no selection);
+    /// guards the park against being re-sent every sync tick.
+    parked_empty: bool,
     /// The colorscheme leaves `Normal` without a background: the blit paints the terminal
     /// default instead of nvim's reported black, so transparent themes (e.g. catppuccin's
     /// `transparent_background`) look exactly as they do in a plain terminal nvim. Sampled
@@ -150,6 +154,7 @@ impl NvimSession {
         self.last_size = Some((cols, rows));
         self.last_sent = None;
         self.last_cards = None;
+        self.parked_empty = false;
         Ok(())
     }
 
@@ -291,16 +296,49 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
                 let key = map_str(payload, "key").unwrap_or_default();
                 // Allowlist before the key is ever interpolated into a vim command.
                 if matches!(key, "i" | "I" | "a" | "A" | "o" | "O" | "gi") && app.edit_here(&file) {
-                    session.pending_input = Some(PendingInput::Key(key.to_string()));
+                    // A repeat tap against the still-locked buffer after the flip has already
+                    // published (and its key fired) is the same "get me editing" intent, not
+                    // new input: one flip fires one key, whether the taps land in one drain
+                    // batch (the overwrite below) or across two — never a literal 'i' typed
+                    // into the freshly unlocked buffer.
+                    let already_fired = session.pending_input.is_none()
+                        && session.last_focus == Some(false)
+                        && session.last_sent.as_deref() == Some(file.as_str());
+                    if !already_fired {
+                        session.pending_input = Some(PendingInput::Key(key.to_string()));
+                    }
                 }
             }
             // The review walk hit a file boundary (Enter past the last hunk / Backspace before
-            // the first): advance or retreat the open file host-side.
-            "nav" => match map_str(payload, "dir").unwrap_or_default() {
-                "next" => app.nav_advance(),
-                "prev" => app.nav_retreat(),
-                _ => {}
-            },
+            // the first): advance or retreat the open file host-side. The verdict was computed
+            // against the buffer the editor showed; on Changes that file is load-bearing (the
+            // advance marks it reviewed), so a verdict from a file the host already moved past
+            // is stale and dropped — an Enter storm at a boundary advances once instead of
+            // marking files the reviewer never saw. All-files navs stay host-authoritative
+            // (each press means one file, whatever the lagging buffer showed).
+            "nav" => {
+                // A verdict from a presentation the host has moved past is stale in BOTH
+                // directions: a locked-view (focused) verdict arriving after an insert/paste
+                // flip put the tab on All files was meant as typed text behind the flip, and
+                // a plain-view verdict arriving after a switch back to Changes predates the
+                // re-present — acting on either walks (and on Changes marks reviewed) a file
+                // the reviewer never confirmed.
+                let want_view = match app.tab {
+                    crate::app::Tab::Changes => "focused",
+                    _ => "plain",
+                };
+                let stale_view = map_str(payload, "view").is_some_and(|view| view != want_view);
+                let stale_file = app.tab == crate::app::Tab::Changes
+                    && !file.is_empty()
+                    && app.diff_path.as_deref() != Some(file.as_str());
+                if !stale_view && !stale_file {
+                    match map_str(payload, "dir").unwrap_or_default() {
+                        "next" => app.nav_advance(),
+                        "prev" => app.nav_retreat(),
+                        _ => {}
+                    }
+                }
+            }
             "send" => app.export(&Agent),
             "yank" => app.export(&Clipboard),
             // A `"+`/`"*` yank in the embed: the editor has no terminal of its own, so the
@@ -416,10 +454,30 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         return;
     }
     let Some(rel) = app.diff_path.clone() else {
-        // A file tab with nothing selected (e.g. the first visit to All files swaps in an
-        // empty stash): the editor keeps its buffer — it is an editor — but the view switch
-        // must still autosave and drop into the plain presentation like any other. Without
-        // this, flipping 1<->2 without touching the tree neither saved nor re-presented.
+        if app.tab == crate::app::Tab::Changes {
+            // Changes with nothing to show — an empty changeset, or the last change reverted
+            // away mid-session. The Changes pane presents the changeset, so it must park on
+            // the empty-state scratch rather than keep another tab's buffer up (which read as
+            // "there are changes"). Saving happens inside the park; the published-view memory
+            // resets so the next real open republishes everything into the parked editor.
+            if !session.parked_empty
+                && let Some(engine) = session.engine_alive()
+            {
+                logln!("nvim_sync: empty changeset on Changes - park empty state");
+                let _ = engine.show_empty();
+                session.parked_empty = true;
+                session.last_sent = None;
+                session.last_base = None;
+                session.last_focus = None;
+                session.last_cards = None;
+            }
+            fire_pending_input(session, false);
+            return;
+        }
+        // All files with nothing selected (e.g. the first visit swaps in an empty stash): the
+        // editor keeps its buffer — it is an editor — but the view switch must still autosave
+        // and drop into the plain presentation like any other. Without this, flipping 1<->2
+        // without touching the tree neither saved nor re-presented.
         if session.last_focus != Some(false)
             && session.last_sent.is_some()
             && let Some(engine) = session.engine_alive()
@@ -433,18 +491,19 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         fire_pending_input(session, false);
         return;
     };
+    session.parked_empty = false;
     let base = app.nvim_base_ref();
     let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);
-    let same_path = session.last_sent.as_deref() == Some(rel.as_str());
-    let same_view = !force
+    let mut same_path = session.last_sent.as_deref() == Some(rel.as_str());
+    let mut same_view = !force
         && same_path
         && session.last_base.as_deref() == Some(base.as_str())
         && session.last_focus == Some(focus);
     // Comment cards re-push when the store or the shown diff moved (the store revision is the
     // cheap change detector); a pending cursor jump also counts as work.
     let cards_key = (app.store.rev(), rel.clone(), base.clone(), focus);
-    let same_cards = session.last_cards.as_ref() == Some(&cards_key);
+    let mut same_cards = session.last_cards.as_ref() == Some(&cards_key);
     if same_view
         && same_cards
         && app.nvim_goto.is_none()
@@ -463,6 +522,14 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             Ok(()) => {
                 app.status = "editor restarted".to_string();
                 push_editor_theme(app, session);
+                // The same_* dedup was computed against the DEAD session's memory; the fresh
+                // editor has none (start() cleared last_sent/last_cards), so everything must
+                // re-publish — otherwise the goto/place-last/pending-input work item that
+                // triggered this respawn fires into the new editor's empty [No Name] buffer
+                // and is consumed, and the file only opens a frame later without it.
+                same_path = false;
+                same_view = false;
+                same_cards = false;
             }
             Err(e) => {
                 app.status = format!("editor restart failed: {e}");
@@ -510,7 +577,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
                 let _ = engine.show_deleted(&rel, &base);
             }
         }
-        session.last_sent = Some(rel);
+        session.last_sent = Some(rel.clone());
         session.last_base = Some(base);
         session.last_focus = Some(focus);
     }
@@ -525,9 +592,14 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         }
         session.last_cards = Some(cards_key);
     }
-    if let Some(line) = app.nvim_goto.take() {
-        // A comment jump: land the editor's cursor (opening any folds) after the open above.
-        if let Some(engine) = session.engine_alive() {
+    if let Some((goto_file, line)) = app.nvim_goto.take() {
+        // A comment jump: land the editor's cursor (opening any folds) after the open above —
+        // but only if the file just published is still the jump's file; a diff that moved in
+        // between (an in-flight nav intent) drops the jump rather than landing its line
+        // number in an unrelated buffer.
+        if goto_file == rel
+            && let Some(engine) = session.engine_alive()
+        {
             let _ = engine.command_fire(&format!("call cursor({line}, 1) | silent! normal! zvzz"));
         }
     }
@@ -779,9 +851,13 @@ fn event_loop(
                         && app.tab.is_file_tab()
                         && app.focus == Focus::Diff
                         && app.mode == Mode::Normal
-                        && session.alive()
                     {
-                        if app.tab == crate::app::Tab::Changes
+                        if !session.alive() {
+                            // Aimed at the editor but the editor is gone (input_paste would
+                            // no-op outside composing): say so instead of losing it silently.
+                            app.status =
+                                "editor is not running — paste dropped (r restarts)".to_string();
+                        } else if app.tab == crate::app::Tab::Changes
                             && let Some(rel) = app.diff_path.clone()
                             && app.edit_here(&rel)
                         {
@@ -811,9 +887,10 @@ fn event_loop(
             }
             // Live view: agent writes to open files must appear without any interaction, so
             // the poll also sweeps buffer timestamps (reviewr.live's FileChangedShell policy
-            // reloads clean buffers silently and never prompts).
+            // reloads clean buffers silently and never prompts). live.poll wraps checktime
+            // plus a size check for mtime-preserving writes nvim's timestamp compare misses.
             if let Some(e) = session.engine_alive() {
-                let _ = e.command_fire("silent! checktime");
+                let _ = e.exec_lua_fire("require('reviewr.live').poll()", vec![]);
             }
             logln!(
                 "poll files={} composing={} diff_cursor={} scroll={}",

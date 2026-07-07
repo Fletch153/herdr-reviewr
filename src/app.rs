@@ -96,6 +96,7 @@ struct TabStash {
     diff_scroll: usize,
     h_scroll: usize,
     select_anchor: Option<usize>,
+    filter: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -321,9 +322,11 @@ pub struct App {
     /// visual selection (the editor is the review surface, so the anchor comes from it, not
     /// from the built-in diff cursor). Set when the compose opens; cleared when it closes.
     pub nvim_anchor: Option<NvimAnchor>,
-    /// nvim mode: a 1-based buffer line the editor's cursor should land on — set by comment
-    /// jumps (the list's Enter/click, an edit open) and consumed by the per-frame editor sync.
-    pub nvim_goto: Option<u32>,
+    /// nvim mode: the file and 1-based buffer line the editor's cursor should land on — set by
+    /// comment jumps (the list's Enter/click, an edit open) and consumed by the per-frame
+    /// editor sync. Carries its file so a jump is dropped, not misdelivered, when the shown
+    /// diff moves between the click and the sync (e.g. an in-flight nav intent lands first).
+    pub nvim_goto: Option<(String, u32)>,
     /// nvim mode: land the editor's cursor on the opened file's LAST hunk once the sync
     /// publishes — the backward review walk's file entry (forward entries land on the first
     /// hunk via `focus()` itself). Consumed by the per-frame editor sync like `nvim_goto`.
@@ -989,8 +992,15 @@ impl App {
         // Explicit actions (navigation, a scope switch) request their own reveal.
         // While a modal is open — composing a comment, or the comments-list overlay — the
         // open diff is frozen, so a poll can't shift the anchor beneath the writer or reset
-        // the scroll/selection under the overlay. The file list still updates above.
-        if !self.composing() && self.mode != Mode::List && self.mode != Mode::CommitPick {
+        // the scroll/selection under the overlay. An active range-selection freezes it for
+        // the same reason: the anchor and cursor are `visible` indices, and a rebuild under
+        // them would re-target the selection so the captured snippet no longer matches what
+        // the reader marked. The file list still updates above.
+        if !self.composing()
+            && self.select_anchor.is_none()
+            && self.mode != Mode::List
+            && self.mode != Mode::CommitPick
+        {
             // A poll keeps the reader on the same file; only a different shown file resets
             // the diff view to the top.
             if self.shown_entry().map(|e| e.path) != self.diff_path {
@@ -1494,6 +1504,10 @@ impl App {
         if self.tab == tab || self.composing() {
             return Ok(());
         }
+        // The filter query is per-tab (it shapes the left pane, swapped below); a mouse tab
+        // click can arrive mid-typing, and the box must not stay open editing the other
+        // tab's query.
+        self.confirm_filter();
         self.tab = tab;
         // Entering the PR tab leaves the file tabs frozen in place and fetches the PR. A
         // `loading` frame draws before the blocking fetch the event loop services, and a
@@ -1628,6 +1642,7 @@ impl App {
         std::mem::swap(&mut self.diff_scroll, &mut self.stash.diff_scroll);
         std::mem::swap(&mut self.h_scroll, &mut self.stash.h_scroll);
         std::mem::swap(&mut self.select_anchor, &mut self.stash.select_anchor);
+        std::mem::swap(&mut self.filter, &mut self.stash.filter);
     }
 
     pub fn toggle_focus(&mut self) {
@@ -2081,7 +2096,7 @@ impl App {
         self.reveal_diff = true; // scroll the edited line into view before the box opens
         // nvim mode: also land the editor's cursor on the comment (same stale-comment guard).
         if self.editor_nvim && self.diff_path.as_deref() == Some(file.as_str()) {
-            self.nvim_goto = Some(start);
+            self.nvim_goto = Some((file.clone(), start));
         }
         self.caret = text.chars().count(); // edit opens with the caret at the end
         self.input = text;
@@ -2848,7 +2863,7 @@ impl App {
         // nvim mode: the jump lands in the editor too (same stale-comment guard — never move
         // the cursor onto a same-numbered line of a different file).
         if self.editor_nvim && self.diff_path.as_deref() == Some(file.as_str()) {
-            self.nvim_goto = Some(start);
+            self.nvim_goto = Some((file.clone(), start));
         }
         self.focus = Focus::Diff;
         self.reveal_diff = true;

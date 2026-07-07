@@ -11,7 +11,25 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/target/debug/herdr-reviewr"
 TMUX="tmux -L ${SOCK:?set SOCK before sourcing tui-lib.sh}"
 TMP="$(mktemp -d)"
-trap '$TMUX kill-server 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+# End-of-gate teardown. The reviewer must exit through its OWN quit path whenever possible:
+# the host's reap SIGKILLs the embedded nvim, whereas `tmux kill-server` under a live session
+# delivers SIGHUP — and an nvim mid-teardown can wedge on it and orphan (observed: embeds
+# parked in ep_poll for hours, RPC-dead, immune to everything but SIGKILL). So: let an
+# in-flight quit finish, then kill the server, then reap any embed still cwd'd in this gate's
+# fixture — loudly, because that means the graceful path was skipped.
+tui_cleanup() {
+  for _ in $(seq 24); do $TMUX has-session 2>/dev/null || break; sleep 0.25; done
+  $TMUX kill-server 2>/dev/null || true
+  for _p in $(pgrep -f 'nvim --embed' 2>/dev/null); do
+    case "$(readlink "/proc/$_p/cwd" 2>/dev/null)" in
+      "$TMP"*) echo "WARN: reaped an orphaned nvim --embed (pid $_p) left by this gate"
+               kill -9 "$_p" 2>/dev/null ;;
+    esac
+  done
+  rm -rf "$TMP"
+}
+trap tui_cleanup EXIT
 
 command -v tmux >/dev/null || { echo "SKIP: tmux not installed"; exit 0; }
 command -v nvim >/dev/null || { echo "SKIP: nvim not installed"; exit 0; }
@@ -47,6 +65,11 @@ fail() { echo "FAIL - $*"; frame; exit 1; }
 # Wait for text to (dis)appear; always wait for something ABSENT before the triggering key.
 wait_for() { for _ in $(seq 60); do frame | grep -qF "$1" && return 0; sleep 0.25; done; fail "waiting for: $1"; }
 wait_gone() { for _ in $(seq 60); do frame | grep -qF "$1" || return 0; sleep 0.25; done; fail "stuck: $1"; }
+# After sending the quit keys, wait for the reviewer to actually exit (the session ends with
+# its pane process). Restart-flavored gates MUST use this before the next tui_start: a second
+# session on the same socket makes every -t0 target ambiguous, and a host still tearing down
+# is exactly the state whose SIGHUP wedges nvim (see tui_cleanup).
+wait_session_end() { for _ in $(seq 24); do $TMUX has-session 2>/dev/null || return 0; sleep 0.25; done; fail "the reviewer did not quit"; }
 # A REAL Escape: give the terminal a beat so the next key can't merge into Alt+<key>.
 esc() { keys Escape; sleep 0.2; }
 

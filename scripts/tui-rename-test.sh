@@ -18,4 +18,5 @@ sleep 1
 frame | grep -q "+ stable content 02" && fail "rename painted an unchanged line as an addition"
 frame | grep -q "~ EDITED CONTENT 06" || fail "the real edit lacks its modification sign"
 frame | grep -q "stable content 06" || fail "the replaced old line is not shown as a virtual line"
+keys q; sleep 0.3; keys y 2>/dev/null || true
 echo "# rename renders as a modification, not an insertion"

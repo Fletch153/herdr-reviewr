@@ -35,11 +35,13 @@ wait_for "COMMITTED CHANGE"
 frame | grep -q "+.*COMMITTED CHANGE" || fail "committed change not painted under branch scope"
 echo "ok 2 - card hidden + re-diffed under branch scope"
 
-# 3. Last-turn scope (empty here — the stub has no turn) must keep the editor rendering the
-#    open buffer. Assert on buffer CONTENT: with no statusline the file name isn't on screen.
-keys t; sleep 1
-frame | grep -q "base two" || fail "editor pane lost after last-turn switch"
-echo "ok 3 - last-turn scope renders"
+# 3. Last-turn scope (empty here — the stub has no turn) parks the editor on the empty
+#    greeter — the previously open buffer must NOT linger (the empty-changeset contract;
+#    tui-empty-test.sh pins the full round trip). Step 4's list-restore then proves the
+#    park is reversible.
+keys t
+wait_for "no changes in scope"
+echo "ok 3 - empty last-turn scope parks on the greeter"
 
 # 4. The comments list restores the authoring scope on Enter and the card returns.
 keys l
@@ -50,5 +52,9 @@ wait_for "╭─ comment"
 frame | grep -q "\[commit\]" || fail "scope chip did not restore to commit"
 echo "ok 4 - list jump restores scope and card"
 
-keys q; sleep 0.3; keys y
+# The list jump landed focus in the editor — Tab back to the files pane so q quits instead
+# of starting a macro recording inside nvim.
+keys Tab; sleep 0.3
+keys q; sleep 0.3; keys y 2>/dev/null || true
+wait_session_end
 echo "# all scope-pinning assertions passed"
