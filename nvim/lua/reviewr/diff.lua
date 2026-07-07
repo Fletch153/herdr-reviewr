@@ -33,21 +33,36 @@ end
 -- shows green (the reviewer's semantics). nil only when the base itself doesn't resolve (no
 -- repo, bad ref) — then there is nothing meaningful to diff. Kept as a list so deleted lines
 -- can be rendered back as virtual lines.
+local function show_blob(spec)
+  local raw = vim.fn.system({ "git", "show", spec })
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+  -- Split the raw blob so the trailing-newline byte survives: an EOL-only difference is a
+  -- real change git lists, and the view must be able to say so.
+  local eol = raw == "" or raw:sub(-1) == "\n"
+  local lines = vim.split(eol and raw:sub(1, -2) or raw, "\n", { plain = true })
+  if raw == "" then
+    lines = {}
+  end
+  return lines, eol
+end
+
 local function base_lines(rel)
-  local out = vim.fn.systemlist({ "git", "show", base_ref() .. ":" .. rel })
-  if vim.v.shell_error == 0 then
-    return out
+  local lines, eol = show_blob(base_ref() .. ":" .. rel)
+  if lines then
+    return lines, eol
   end
   local old = M._renames[rel]
   if old then
-    out = vim.fn.systemlist({ "git", "show", base_ref() .. ":" .. old })
-    if vim.v.shell_error == 0 then
-      return out
+    lines, eol = show_blob(base_ref() .. ":" .. old)
+    if lines then
+      return lines, eol
     end
   end
   vim.fn.system({ "git", "rev-parse", "--verify", "--quiet", base_ref() .. "^{tree}" })
   if vim.v.shell_error == 0 then
-    return {}
+    return {}, true
   end
   return nil
 end
@@ -79,7 +94,7 @@ function M.refresh(bufnr)
     return
   end
   local rel = vim.fn.fnamemodify(abs, ":.") -- relative to cwd; the review pane's cwd is the repo root
-  local base = base_lines(rel)
+  local base, base_eol = base_lines(rel)
   if not base then
     return
   end
@@ -150,6 +165,20 @@ function M.refresh(bufnr)
         end
       end
     end
+  end
+  -- A final-newline difference is invisible to the line diff above but is a real change git
+  -- lists the file for — without a marker the file reads "unchanged yet still listed".
+  -- Mirrors git's "\ No newline at end of file" note; a hunk entry keeps it steppable and
+  -- unfolded (del: context-style, no green gutter).
+  if #base > 0 and last > 0 and vim.bo[bufnr].endofline ~= base_eol then
+    local note = base_eol and "\\ no newline at end of file (base has one)"
+      or "\\ newline at end of file (base has none)"
+    ranges[#ranges + 1] = { lo = last, hi = last, del = true }
+    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, last - 1, 0, {
+      virt_lines = { { { note, "DiffChange" } } },
+      sign_text = "~",
+      sign_hl_group = "DiffChange",
+    })
   end
 end
 

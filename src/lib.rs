@@ -299,8 +299,7 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
             "insert" => {
                 let key = map_str(payload, "key").unwrap_or_default();
                 // Allowlist before the key is ever interpolated into a vim command.
-                if matches!(key, "i" | "I" | "a" | "A" | "o" | "O" | "gi") && app.edit_here(&file)
-                {
+                if matches!(key, "i" | "I" | "a" | "A" | "o" | "O" | "gi") && app.edit_here(&file) {
                     session.pending_input = Some(PendingInput::Key(key.to_string()));
                 }
             }
@@ -355,7 +354,10 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
         }
     }
     let p = app.palette();
-    let mut cmds = vec!["set laststatus=1 noruler noundofile".to_string()];
+    // nofixendofline: nvim otherwise appends a trailing newline to a no-EOL file on every
+    // save — the autosave then manufactures a 1-byte diff no line-based view can show, and a
+    // fully-undone change keeps the file listed as changed forever.
+    let mut cmds = vec!["set laststatus=1 noruler noundofile nofixendofline".to_string()];
     if let Some(x) = hex(p.peach) {
         cmds.push(format!("hi ReviewrCardTitle guifg={x} gui=bold"));
         cmds.push(format!("hi ReviewrCommentLine guifg={x}"));
