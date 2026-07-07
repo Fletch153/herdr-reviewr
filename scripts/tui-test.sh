@@ -130,18 +130,23 @@ keys Escape
 wait_for "TABBED"
 ok "insert-mode Tab types instead of switching focus"
 
-# 4. Switching files with a modified buffer: nvim's default `hidden` keeps the edits safe in
-#    the background (no prompt, nothing lost) — vim-native; the quit guard covers data loss.
+# 4. Switching files AUTOSAVES the modified buffer (review-mode `autowriteall`): the edit is
+#    on disk by the time the next file shows.
 keys Tab # back to the file list (normal mode now)
 sleep 0.5
 keys j # select the second file
 wait_for "bravo line one"
-ok "second file opens; the modified buffer hides in the background"
+for _ in $(seq 40); do
+  grep -q "XYZTEST" "$REPO/src/hello.txt" 2>/dev/null && break
+  sleep 0.25
+done
+grep -q "XYZTEST" "$REPO/src/hello.txt" || fail "switching files did not autosave the edit"
+ok "switching files autosaves the modified buffer to disk"
 
-# 5. Switching back shows the unsaved edits intact — nothing was discarded.
+# 5. Switching back shows the (saved) edits, of course.
 keys k
 wait_for "XYZTEST"
-ok "unsaved edits survive the file switch"
+ok "edits are intact after the round trip"
 
 # 5b. A worktree-deleted file shows the base content as a red scratch view — not a phantom
 #     "[New File]" buffer (which would provoke LSP complaints).
@@ -235,10 +240,21 @@ keys Space # exhausted: hello is marked reviewed and the next unreviewed file op
 wait_for "bravo line one"
 ok "space steps through hunks, then advances to the next file"
 
-# 9. Quit: q from the files pane; the modified buffer raises the confirm; y quits; no orphans.
+# 9. Quit: savable edits were already autosaved, so only a buffer that CANNOT write — an
+#    unnamed scratch with text — trips the confirm; y quits; no orphans.
+keys Tab # into the editor
+sleep 0.3
+keys -l ":enew"
+keys Enter
+keys i
+keys -l "unsaveable scratch"
+keys Escape
+wait_for "unsaveable scratch"
+keys Tab # back to the files pane
+sleep 0.3
 keys q
 wait_for "quit anyway"
-ok "quit guards on the unsaved editor buffer"
+ok "quit guards on an unsaveable editor buffer"
 keys y
 for _ in $(seq 40); do
   $TMUX has-session 2>/dev/null || break

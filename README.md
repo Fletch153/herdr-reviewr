@@ -256,10 +256,11 @@ How it behaves:
   open the list / send to the agent (also `s` and the header button) / copy all. Saved comments
   paint back into the editor as inline boxed cards, styled to the reviewer's theme.
   `:ReviewrDiff` opens a split diff; `:ReviewrDoctor` debugs agent wiring.
-- **Unsaved edits** follow vim semantics: switching files keeps modified buffers loaded in the
-  background (`hidden`), and quitting the reviewer asks before discarding them. Closing the
-  reviewer (or its herdr pane, however hard) always takes the embedded nvim with it — it is a
-  child process, so an orphaned editor is impossible.
+- **Autosave**: switching files or views from the reviewer writes your edits to disk
+  (every reviewer-driven switch runs `silent! update`), and quitting saves everything savable first — the quit
+  confirmation only appears for buffers that genuinely can't write (e.g. an unnamed scratch
+  with text). Closing the reviewer (or its herdr pane, however hard) always takes the embedded
+  nvim with it — it is a child process, so an orphaned editor is impossible.
 - Not in this mode (the editor owns the pane): the `p` markdown preview and per-file comment
   badges in the tree.
 

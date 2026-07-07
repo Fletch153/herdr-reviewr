@@ -170,6 +170,8 @@ trait NvimBridge {
     fn feed_keys(&mut self, notation: &str);
     fn feed_paste(&mut self, text: &str);
     fn feed_mouse(&mut self, button: &str, action: &str, modifier: &str, row: u16, col: u16);
+    /// Write every savable modified buffer (`silent! wall`) — review-mode autosave's quit half.
+    fn save_all(&mut self);
     /// How many buffers hold unsaved changes; `None` when the editor is gone or busy (a prompt
     /// is up) — callers must not block quitting on it.
     fn modified_count(&mut self) -> Option<i64>;
@@ -203,6 +205,12 @@ impl NvimBridge for NvimSession {
         }
     }
 
+    fn save_all(&mut self) {
+        if let Some(e) = self.engine_alive() {
+            let _ = e.command_fire("silent! wall");
+        }
+    }
+
     fn modified_count(&mut self) -> Option<i64> {
         let e = self.engine.as_mut().filter(|e| e.is_running())?;
         e.eval("len(getbufinfo({'bufmodified':1}))").ok().and_then(|v| v.as_i64())
@@ -215,9 +223,12 @@ impl NvimBridge for NvimSession {
     }
 }
 
-/// nvim mode's quit guard: ask before discarding unsaved editor buffers, but never block
+/// nvim mode's quit guard: autosave whatever can be written first (the write queues ahead of
+/// the count request, so the count sees the result), then ask before discarding what remains —
+/// only buffers that genuinely can't write, e.g. an unnamed scratch with text. Never block
 /// quitting on a dead or wedged editor (an unanswered eval means "unknown" — quit).
 fn request_quit(app: &mut App, session: &mut dyn NvimBridge) {
+    session.save_all();
     match session.modified_count() {
         Some(n) if n > 0 => app.mode = Mode::ConfirmQuit,
         _ => app.should_quit = true,
