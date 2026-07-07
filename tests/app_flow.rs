@@ -3132,9 +3132,28 @@ fn comment_at_targets_by_buffer_line_and_side() {
     app.submit_comment();
     assert_eq!(app.comment_at("a.rs", Side::New, 2), Some(0));
     assert_eq!(app.comment_at("a.rs", Side::New, 3), Some(0));
-    assert_eq!(app.comment_at("a.rs", Side::New, 4), None, "outside the range");
+    assert_eq!(
+        app.comment_at("a.rs", Side::New, 4),
+        Some(0),
+        "the card row: a click on the virt_lines box lands the cursor on end+1"
+    );
+    assert_eq!(app.comment_at("a.rs", Side::New, 5), None, "past the card row");
     assert_eq!(app.comment_at("a.rs", Side::Old, 2), None, "wrong side");
     assert_eq!(app.comment_at("b.rs", Side::New, 2), None, "wrong file");
+}
+
+#[test]
+fn comment_at_prefers_an_exact_anchor_over_a_neighbor_card_row() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.start_comment_at(nvim_anchor("a.rs", 2, 3));
+    typed(&mut app, "upper");
+    app.submit_comment();
+    app.start_comment_at(nvim_anchor("a.rs", 4, 4));
+    typed(&mut app, "lower");
+    app.submit_comment();
+    // Line 4 is both "upper"'s card row and "lower"'s anchor: the exact anchor wins.
+    assert_eq!(app.comment_at("a.rs", Side::New, 4), Some(1));
 }
 
 #[test]

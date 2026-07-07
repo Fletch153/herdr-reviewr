@@ -26,6 +26,19 @@ wait_for "Send (0)"
 wait_for "resolved (0 left)"
 echo "ok 1 - rr resolves the comment under the cursor"
 
+# 1b. Clicking the CARD lands the cursor on the line below the anchor (virt_lines behavior);
+#     rr must still find the comment from there.
+keys Space r c; sleep 0.3
+keys -l "card click"; keys Enter
+wait_for "card click"
+loc=$(locate "card click")
+click "$(echo $loc | cut -d' ' -f1)" "$(echo $loc | cut -d' ' -f2)"
+sleep 0.5
+keys Space r r
+wait_gone "╭─ comment"
+wait_for "Send (0)"
+echo "ok 1b - rr resolves after a click on the card itself"
+
 # 2. space ry yank: with no clipboard tool it must surface the error, not wedge; with one it
 #    reports the copy. Either way the reviewer stays interactive.
 keys Space r c; sleep 0.3

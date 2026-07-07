@@ -1916,13 +1916,15 @@ impl App {
     /// nvim-mode counterpart of [`Self::comment_under_cursor`], keyed by buffer coordinates
     /// instead of diff rows.
     pub fn comment_at(&self, file: &str, side: Side, line: u32) -> Option<usize> {
-        self.store.iter().position(|c| {
-            c.file == file
-                && c.side == side
-                && self.comment_matches_current(c)
-                && c.start <= line
-                && line <= c.end
-        })
+        let base =
+            |c: &Comment| c.file == file && c.side == side && self.comment_matches_current(c);
+        self.store
+            .iter()
+            .position(|c| base(c) && c.start <= line && line <= c.end)
+            // The card renders as virt_lines under `end`, and a mouse click ON the card puts
+            // the cursor on the NEXT buffer line — treat that row as the comment's too, so a
+            // card click followed by rr/rx/re works. Exact anchors take precedence above.
+            .or_else(|| self.store.iter().position(|c| base(c) && c.end + 1 == line))
     }
 
     /// nvim mode: edit the comment covering the editor's cursor (sent ones stay resolve-only,
