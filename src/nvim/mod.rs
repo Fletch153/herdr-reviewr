@@ -40,15 +40,69 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const EXIT_WAIT: Duration = Duration::from_millis(500);
 const EXIT_POLL_STEP: Duration = Duration::from_millis(10);
 
-/// Whether `nvim` is on the `PATH` — the deciding factor for whether nvim-editor mode can run.
+/// The nvim binary the editor mode runs. `Command::new("nvim")` took the first PATH hit —
+/// which, under a service manager's PATH, can be an ancient distro nvim (0.9) while the
+/// user's shell resolves a current one: their config then explodes mid-load (`invalid event
+/// 'PackChanged'`) and the editor opens undecorated. Every `nvim` on PATH is version-probed
+/// once and the NEWEST wins; `$REVIEWR_NVIM` overrides outright.
+fn resolve_nvim() -> Option<PathBuf> {
+    use std::sync::OnceLock;
+    static RESOLVED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    RESOLVED
+        .get_or_init(|| {
+            if let Some(over) = std::env::var_os("REVIEWR_NVIM") {
+                let p = PathBuf::from(over);
+                return nvim_version(&p).map(|_| p);
+            }
+            let mut best: Option<(PathBuf, (u64, u64, u64))> = None;
+            for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+                let cand = dir.join("nvim");
+                if !cand.is_file() {
+                    continue;
+                }
+                if let Some(v) = nvim_version(&cand)
+                    && best.as_ref().is_none_or(|(_, bv)| v > *bv)
+                {
+                    best = Some((cand, v));
+                }
+            }
+            best.map(|(p, v)| {
+                logln!("nvim resolved: {} (v{}.{}.{})", p.display(), v.0, v.1, v.2);
+                p
+            })
+        })
+        .clone()
+}
+
+/// `(major, minor, patch)` from `nvim --version`'s first line, `None` when the binary doesn't
+/// run or doesn't identify as NVIM.
+fn nvim_version(bin: &Path) -> Option<(u64, u64, u64)> {
+    let out = Command::new(bin)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let first = std::str::from_utf8(&out.stdout).ok()?.lines().next()?.to_string();
+    parse_nvim_version(&first)
+}
+
+fn parse_nvim_version(line: &str) -> Option<(u64, u64, u64)> {
+    let rest = line.strip_prefix("NVIM v")?;
+    let mut it = rest.split(|c: char| !c.is_ascii_digit());
+    let maj = it.next()?.parse().ok()?;
+    let min = it.next()?.parse().ok()?;
+    let pat = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((maj, min, pat))
+}
+
+/// Whether a usable `nvim` exists — the deciding factor for whether nvim-editor mode can run.
 #[must_use]
 pub fn nvim_present() -> bool {
-    Command::new("nvim")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    resolve_nvim().is_some()
 }
 
 /// The bundled `reviewr.nvim` directory: `$HERDR_PLUGIN_ROOT/nvim` in a herdr install (managed
@@ -89,7 +143,7 @@ pub struct StartOpts {
 /// The `nvim --embed` argv (pure, unit-testable): env is inherited (`HERDR_*` must reach
 /// `reviewr.nvim` for agent send), cwd is the repo, stdio piped.
 fn spawn_command(repo: &Path, opts: &StartOpts) -> Command {
-    let mut cmd = Command::new("nvim");
+    let mut cmd = Command::new(resolve_nvim().unwrap_or_else(|| PathBuf::from("nvim")));
     cmd.arg("--embed");
     if opts.clean {
         cmd.arg("--clean");
@@ -547,11 +601,23 @@ mod tests {
     }
 
     #[test]
+    fn nvim_version_lines_parse_including_dev_suffixes() {
+        assert_eq!(parse_nvim_version("NVIM v0.12.3"), Some((0, 12, 3)));
+        assert_eq!(parse_nvim_version("NVIM v0.9.5"), Some((0, 9, 5)));
+        assert_eq!(parse_nvim_version("NVIM v0.13.0-dev-123+gabc"), Some((0, 13, 0)));
+        assert_eq!(parse_nvim_version("VIM - Vi IMproved 9.0"), None);
+        assert!(parse_nvim_version("NVIM v0.12.3") < parse_nvim_version("NVIM v0.13.0-dev"));
+        assert!(parse_nvim_version("NVIM v0.9.5") < parse_nvim_version("NVIM v0.12.0"));
+    }
+
+    #[test]
     fn spawn_command_embeds_with_rtp_in_the_repo() {
         let opts = StartOpts { clean: true, rtp: Some(PathBuf::from("/plug in/nvim")) };
         let cmd = spawn_command(Path::new("/repo"), &opts);
         let (program, args) = argv(&cmd);
-        assert_eq!(program, "nvim");
+        // The program is whichever nvim resolution picked on this machine (newest on PATH,
+        // or the bare name when none resolves) — only its identity is stable.
+        assert!(program.ends_with("nvim"), "{program}");
         assert_eq!(
             args,
             vec![
