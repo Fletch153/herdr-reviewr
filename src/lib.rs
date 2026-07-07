@@ -317,6 +317,12 @@ fn comment_card_values(app: &App) -> Value {
 /// reviewer chrome already says what's open; `laststatus=1` keeps the labels in the `rd` split,
 /// where two windows need telling apart). Non-RGB palette entries keep the plugin's default
 /// links. Runs after the user's config, so it wins over a statusline set there.
+///
+/// Undo in the review surface must not reach past what this session loaded: with the user's
+/// `undofile`, a fresh buffer opens with history from earlier sessions, and a reload of an
+/// agent-changed file is itself an undo step (`undoreload`) — one `u` (or a client Undo
+/// button) then reverts the agent's work, and the autosave writes that reversion to disk.
+/// `noundofile undoreload=0` scopes undo to the user's own edits since load; reloads clear it.
 fn push_editor_theme(app: &App, session: &NvimSession) {
     fn hex(c: ratatui::style::Color) -> Option<String> {
         match c {
@@ -325,7 +331,7 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
         }
     }
     let p = app.palette();
-    let mut cmds = vec!["set laststatus=1 noruler".to_string()];
+    let mut cmds = vec!["set laststatus=1 noruler noundofile undoreload=0".to_string()];
     if let Some(x) = hex(p.peach) {
         cmds.push(format!("hi ReviewrCardTitle guifg={x} gui=bold"));
         cmds.push(format!("hi ReviewrCommentLine guifg={x}"));
