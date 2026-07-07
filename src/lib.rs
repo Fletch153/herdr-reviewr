@@ -352,13 +352,7 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
             "buf" => {
                 if !file.is_empty() && app.nvim_buf.as_deref() != Some(file.as_str()) {
                     app.nvim_buf = Some(file.clone());
-                    let in_changeset = app.entries.iter().any(|e| e.path == file);
-                    if in_changeset {
-                        app.adopt_editor_file(&file);
-                        session.last_sent = Some(file.clone());
-                        session.last_base = Some(app.nvim_base_ref());
-                        session.last_focus = Some(app.tab == crate::app::Tab::Changes);
-                    }
+                    adopt_editor_buffer(app, session);
                 }
             }
             "send" => app.export(&Agent),
@@ -471,10 +465,52 @@ fn fire_pending_input(session: &mut NvimSession, focus: bool) {
     }
 }
 
+/// Sync the host's open selection to the file the editor actually shows (`nvim_buf`): when the
+/// editor has moved onto a changeset file of its own accord that isn't the current `diff_path`,
+/// adopt it so `diff_path` and the file-list cursor follow the editor. Marking it as the published
+/// file (`last_sent`) means the per-frame sync issues no redundant `:edit` that would reset the
+/// editor's cursor — it is already there. `last_base`/`last_focus` are deliberately left alone:
+/// they describe the published *presentation* (scope + focused/plain), so if the current tab needs
+/// a different one than the editor still shows (e.g. a leftover focused view when All files wants
+/// plain), `nvim_sync` must still run that transition.
+///
+/// The direction guard `diff_path == last_sent` is load-bearing: it fires the reconcile only when
+/// the host is NOT mid-publish, so the sole remaining divergence is the editor's. When the *host*
+/// drives the selection (list `j`/`k`, a click, a scope flip), `diff_path` moves to the new file a
+/// frame before the editor re-opens it, so `nvim_buf` still holds the old one — reconciling then
+/// would yank the selection back to the editor's stale buffer and fight the user. In that window
+/// `diff_path != last_sent` (the open is pending), so the guard leaves it to `nvim_sync`.
+///
+/// The `buf` intent already adopts editor-driven jumps at `BufEnter` time; this also covers the
+/// case a `BufEnter` cannot report — a file the editor already sits on *enters* the changeset later
+/// (an agent write turns an unchanged file into a changed one, whose checktime reload fires no
+/// `BufEnter`). Running every `nvim_sync` frame reconciles that against the source of truth for
+/// what the editor shows, whatever reload reshaped the changeset. A native jump never changes the
+/// tab or scope, so the presentation memory is already correct on that path.
+fn adopt_editor_buffer(app: &mut App, session: &mut NvimSession) {
+    // Host-driven open in flight: the editor has yet to follow `diff_path`, so its buffer is stale
+    // — honour the host's selection, don't adopt backwards.
+    if app.diff_path.as_deref() != session.last_sent.as_deref() {
+        return;
+    }
+    let Some(file) = app.nvim_buf.clone() else { return };
+    if app.diff_path.as_deref() == Some(file.as_str())
+        || !app.entries.iter().any(|e| e.path == file)
+    {
+        return;
+    }
+    app.adopt_editor_file(&file);
+    session.last_sent = Some(file);
+}
+
 fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     if !app.editor_nvim || !app.tab.is_file_tab() {
         return;
     }
+    // The editor's real buffer may have entered the changeset since it was last reported (an agent
+    // write making it a changed file, which fires no BufEnter) — reconcile the selection to it so
+    // the sidebar follows, whatever reshaped the changeset.
+    adopt_editor_buffer(app, session);
     let Some(rel) = app.diff_path.clone() else {
         if app.tab == crate::app::Tab::Changes {
             // Changes with nothing to show — an empty changeset, or the last change reverted

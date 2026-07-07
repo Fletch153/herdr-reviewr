@@ -72,12 +72,23 @@ wait_for "GAMMA_STABLE"
 sleep 0.8                                       # a poll cycle: the host must not yank it back
 frame | grep -q "GAMMA_STABLE" || fail "C: the host yanked the editor off the out-of-changeset file"
 row_selected beta.txt || fail "C: the sidebar selection was lost on an out-of-changeset jump"
+# The user-reported leak: cards key on the buffer the editor actually shows (nvim_card_file), not
+# the changeset selection (diff_path, still beta). The bare jump to gamma must show no stale card
+# from beta. (This alone does not catch the diff_path regression — apply doesn't repaint until a
+# store bump — but it locks "a jump shows no leaked card" against jump-time repaint regressions.)
+frame | grep -qF "BETANOTE_B" && fail "C1: the in-changeset comment card leaked onto the out-of-changeset buffer on jump"
+echo "ok C1 - the jump shows no stale in-changeset comment card on the out-of-changeset buffer"
 keys -l '3G'; sleep 0.2
 keys Space r c; sleep 0.4
 keys -l 'GAMMANOTE'; keys Enter; sleep 0.5
 wait_for "╭─ comment"
+# Authoring a comment on gamma bumps the store, re-firing apply on the gamma buffer. Keyed on
+# diff_path (=beta) that repaint painted beta's BETANOTE_B here and dropped GAMMANOTE — the exact
+# user-reported leak. Assert the leak's ABSENCE first (it names the bug), then that gamma's own
+# card did paint; both must hold at once.
+frame | grep -qF "BETANOTE_B" && fail "C2: the in-changeset comment card leaked onto the out-of-changeset buffer after a comment there"
 frame | grep -qF "GAMMANOTE" || fail "C: comment card on the out-of-changeset file did not paint"
-echo "ok C - an out-of-changeset jump keeps the selection put, paints cards, and is not yanked"
+echo "ok C - an out-of-changeset jump keeps the selection put, paints its own cards without leaking the in-changeset comment, and is not yanked"
 
 keys Escape
 keys Tab; sleep 0.3
