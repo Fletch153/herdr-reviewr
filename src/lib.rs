@@ -311,9 +311,12 @@ fn comment_card_values(app: &App) -> Value {
     Value::Array(items)
 }
 
-/// Recolor the editor's comment-card highlight groups to the reviewer's palette (peach title,
-/// quiet border), so the inline cards read as the same UI as the built-in pane. Non-RGB
-/// palette entries keep the plugin's default links.
+/// Push the reviewer's presentation into a freshly (re)started editor: recolor the comment-card
+/// highlight groups to the palette (peach title, quiet border) so the inline cards read as the
+/// same UI as the built-in pane, and hide the statusline in the single-window review (the
+/// reviewer chrome already says what's open; `laststatus=1` keeps the labels in the `rd` split,
+/// where two windows need telling apart). Non-RGB palette entries keep the plugin's default
+/// links. Runs after the user's config, so it wins over a statusline set there.
 fn push_editor_theme(app: &App, session: &NvimSession) {
     fn hex(c: ratatui::style::Color) -> Option<String> {
         match c {
@@ -322,7 +325,7 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
         }
     }
     let p = app.palette();
-    let mut cmds = Vec::new();
+    let mut cmds = vec!["set laststatus=1 noruler".to_string()];
     if let Some(x) = hex(p.peach) {
         cmds.push(format!("hi ReviewrCardTitle guifg={x} gui=bold"));
         cmds.push(format!("hi ReviewrCommentLine guifg={x}"));

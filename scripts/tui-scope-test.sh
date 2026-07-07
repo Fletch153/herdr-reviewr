@@ -35,9 +35,10 @@ wait_for "COMMITTED CHANGE"
 frame | grep -q "+.*COMMITTED CHANGE" || fail "committed change not painted under branch scope"
 echo "ok 2 - card hidden + re-diffed under branch scope"
 
-# 3. Last-turn scope must keep rendering.
+# 3. Last-turn scope (empty here — the stub has no turn) must keep the editor rendering the
+#    open buffer. Assert on buffer CONTENT: with no statusline the file name isn't on screen.
 keys t; sleep 1
-frame | grep -q "f1.txt" || fail "pane lost after last-turn switch"
+frame | grep -q "base two" || fail "editor pane lost after last-turn switch"
 echo "ok 3 - last-turn scope renders"
 
 # 4. The comments list restores the authoring scope on Enter and the card returns.

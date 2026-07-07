@@ -114,6 +114,12 @@ wait_for "unchanged lines"
 wait_for "alpha filler 9"
 ok "file opens focused on the diff (context, folds, deleted line shown)"
 
+# 2b. No statusline in the single-window review: the host pushes laststatus=1 + noruler, so
+#     the bottom of the editor pane is content, not "src/hello.txt  1,1  All" chrome.
+frame | grep -qE '[0-9]+,[0-9]+(-[0-9]+)?[[:space:]]+(All|Top|Bot|[0-9]+%)' \
+  && fail "the editor statusline/ruler is showing in the single-window review"
+ok "single-window review renders without a statusline"
+
 # 3. Keys reach nvim: Tab focuses the editor, insert-typing lands, Esc leaves insert.
 keys Tab
 keys i
