@@ -227,16 +227,39 @@ local function drop_folds(win)
   end
 end
 
+-- nvim cannot paint 'breakindent' whitespace: on a wrapped green/red line the continuation
+-- row's indent keeps the normal background, an unhighlighted gap inside the line
+-- (neovim/neovim#26392 — no extmark reaches that region; only native diff mode does). While
+-- our line paint is active the indent is dropped so highlighted lines wrap edge-to-edge; the
+-- user's value returns with the plain view. 'showbreak' is left alone: its marker is the
+-- wrap cue, two cells rather than an indent's width.
+local function drop_breakindent(win)
+  if vim.w[win].reviewr_saved_bri == nil then
+    vim.w[win].reviewr_saved_bri = vim.api.nvim_get_option_value("breakindent", { win = win })
+  end
+  vim.api.nvim_set_option_value("breakindent", false, { win = win })
+end
+
+local function restore_breakindent(win)
+  local saved = vim.w[win].reviewr_saved_bri
+  if saved ~= nil then
+    vim.api.nvim_set_option_value("breakindent", saved, { win = win })
+    vim.w[win].reviewr_saved_bri = nil
+  end
+end
+
 function M.focus()
   local bufnr = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
   vim.b[bufnr].reviewr_plain = false
   M.refresh(bufnr)
   local ranges = M._hunks[bufnr]
   if not ranges or #ranges == 0 then
+    restore_breakindent(win) -- nothing painted here: an earlier buffer's drop must not linger
     return
   end
-  local win = vim.api.nvim_get_current_win()
   apply_folds(win)
+  drop_breakindent(win)
   local first = math.min(ranges[1].lo, vim.api.nvim_buf_line_count(bufnr))
   vim.api.nvim_win_set_cursor(win, { first, 0 })
 end
@@ -252,9 +275,11 @@ function M.set_view(focused)
   local ranges = M._hunks[bufnr]
   if focused and ranges and #ranges > 0 then
     apply_folds(win)
+    drop_breakindent(win)
     vim.cmd("silent! normal! zx")
   else
     drop_folds(win)
+    restore_breakindent(win)
   end
 end
 
@@ -286,6 +311,7 @@ function M.show_deleted(rel)
   end
   M._hunks[buf] = {}
   M.unfocus() -- a fully-deleted file has nothing to fold
+  drop_breakindent(vim.api.nvim_get_current_win()) -- every line here is painted red
 end
 
 -- The reviewer's scope/base changed while this file stays open: re-diff against the new base
@@ -298,7 +324,9 @@ function M.unfocus()
   local bufnr = vim.api.nvim_get_current_buf()
   vim.b[bufnr].reviewr_plain = true
   M.refresh(bufnr) -- plain flag set: clears the buffer's marks
-  drop_folds(vim.api.nvim_get_current_win())
+  local win = vim.api.nvim_get_current_win()
+  drop_folds(win)
+  restore_breakindent(win)
 end
 
 -- Install the autocmd that keeps the markers current. Scoped to review-mode nvim because this

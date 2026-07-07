@@ -201,6 +201,32 @@ diff.refresh(rbuf)
 h = diff._hunks[rbuf]
 check("the rename map narrows the diff to the real edit", #h == 1 and h[1].lo == 2 and h[1].hi == 2, vim.inspect(h))
 diff.set_renames({})
+
+-- The wrap-gap workaround: nvim can't paint 'breakindent' whitespace on wrapped rows
+-- (neovim/neovim#26392), so views that paint lines drop the option and hand the user's value
+-- back with the plain view; a paint-less focus clears a leftover drop instead of keeping it.
+local wwin = vim.api.nvim_get_current_win()
+vim.wo[wwin].breakindent = true
+diff.focus()
+check("focus drops breakindent while lines are painted", vim.wo[wwin].breakindent == false)
+diff.focus() -- reapplying must not adopt the dropped value as "the user's"
+diff.set_view(false)
+check("the plain view restores the user's breakindent", vim.wo[wwin].breakindent == true)
+diff.set_view(true)
+check("the focused view drops breakindent again", vim.wo[wwin].breakindent == false)
+diff.unfocus()
+check("unfocus restores breakindent", vim.wo[wwin].breakindent == true)
+diff.show_deleted("old.txt")
+check("the all-red deleted view drops breakindent", vim.wo[wwin].breakindent == false)
+vim.api.nvim_set_current_buf(rbuf)
+diff.focus() -- painted again (drop active) before moving to a clean file
+vim.fn.writefile({ "c1" }, gitroot .. "/clean.txt")
+git({ "add", "clean.txt" })
+git({ "commit", "-qm", "B" })
+vim.cmd("edit clean.txt")
+diff.focus()
+check("a paint-less focus clears the lingering drop", vim.wo[wwin].breakindent == true)
+
 vim.cmd("cd " .. vim.fn.fnameescape(root))
 
 -- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):
