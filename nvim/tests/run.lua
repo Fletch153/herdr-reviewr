@@ -227,6 +227,50 @@ vim.cmd("edit clean.txt")
 diff.focus()
 check("a paint-less focus clears the lingering drop", vim.wo[wwin].breakindent == true)
 
+-- The focused view locks the buffer ('nomodifiable' — a review surface, keyed on the view,
+-- not on hunk count); the plain view hands the user's modifiable back; save/restore is
+-- nil-guarded so reapplying never adopts the lock as "the user's" value, and unfocus leaves
+-- the deleted scratch's own nomodifiable alone. Scratches are never locked.
+check("a hunk-less focus still locks the buffer", vim.bo.modifiable == false)
+vim.api.nvim_set_current_buf(rbuf)
+diff.focus()
+check("focus locks the changed buffer", vim.bo[rbuf].modifiable == false)
+diff.focus() -- reapply: the lock must not become "the user's" saved value
+diff.set_view(false)
+check("the plain view restores modifiable", vim.bo[rbuf].modifiable == true)
+diff.set_view(true)
+check("refocusing locks again", vim.bo[rbuf].modifiable == false)
+diff.unfocus()
+check("unfocus unlocks", vim.bo[rbuf].modifiable == true)
+diff.show_deleted("old.txt")
+check("the deleted scratch stays locked through its unfocus", vim.bo.modifiable == false)
+local ubuf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(ubuf)
+vim.api.nvim_buf_set_lines(ubuf, 0, -1, false, { "user scratch" })
+diff.focus()
+check("an unnamed scratch is never locked", vim.bo[ubuf].modifiable == true)
+
+-- The rd split is an editing surface (dp/do write the working buffer): opening it lifts the
+-- focused lock; dissolving it from either side re-asserts the lock. Uses clean.txt — the
+-- split needs a file that exists at base (new.txt is the rename's post-move name).
+vim.cmd("edit clean.txt")
+local cbuf = vim.api.nvim_get_current_buf()
+diff.focus()
+local init = require("reviewr.init")
+init.diff()
+check("the rd split lifts the lock", vim.bo[cbuf].modifiable == true)
+for _, w in ipairs(vim.api.nvim_list_wins()) do
+  if vim.api.nvim_win_get_buf(w) == cbuf then
+    vim.api.nvim_set_current_win(w)
+  end
+end
+vim.cmd("only") -- closes the scratch side; bufhidden=wipe funnels into the teardown
+vim.wait(500, function()
+  return vim.bo[cbuf].modifiable == false
+end)
+check("split teardown re-locks the working buffer", vim.bo[cbuf].modifiable == false)
+diff.unfocus()
+
 vim.cmd("cd " .. vim.fn.fnameescape(root))
 
 -- ReviewrDoctor's pane resolution (sends go through the host; this mirrors its picker):

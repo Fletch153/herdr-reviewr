@@ -44,14 +44,16 @@ wait_for "注意 🚨 需要修改"
 frame | grep -q "Send (1)" || fail "wide-char comment did not land in the store"
 echo "ok 2 - wide-char note round-trips composer → store → card"
 
-# 3. Typing CJK into the editor lands (insert mode, then autosave on switch writes it).
+# 3. Typing CJK lands in the All files editor (Changes is read-only); autosave on switch.
+keys Tab; sleep 0.3
+keys 2; sleep 0.8
+keys Tab; sleep 0.3
 keys i
 keys -l "插入的文字 "
 esc   # settle: a burst Esc+Tab can read a stale insert mode and misroute one Tab (known)
 wait_for "插入的文字"
 keys Tab; sleep 0.3
-keys 2; sleep 0.8   # view switch runs the autosave
-keys 1; sleep 0.8
+keys 1; sleep 0.8   # view switch runs the autosave
 grep -q "插入的文字" "$REPO/src/uni.txt" || { echo "--- disk:"; cat "$REPO/src/uni.txt"; echo "--- title row:"; frame | sed -n '2p' | cut -c1-60; fail "typed CJK not autosaved to disk"; }
 echo "ok 3 - typed CJK autosaves to disk"
 

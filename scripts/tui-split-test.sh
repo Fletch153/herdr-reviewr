@@ -39,6 +39,24 @@ frame | grep -q "~ row 05 REWRITTEN" || fail "working file not restored after cl
 frame | grep -q "txt \[" && fail "scratch still on screen after closing its window"
 echo "ok 2b - closing the scratch side recovers identically"
 
+# 2c. The split is an editing surface even though Changes is read-only: `do` on the working
+#     side pulls the base line back in (the split lifts the lock), and after teardown the
+#     working buffer is locked again (typing is inert).
+keys Space r d
+wait_for "txt ["
+keys -l "/REWRITTEN"; keys Enter
+sleep 0.3
+keys d o
+sleep 0.5
+frame | grep -q "row 05 REWRITTEN" && fail "do did not pull the base line (split still locked?)"
+echo "ok 2c - do edits the working buffer inside the split"
+keys -l ":q"; keys Enter
+sleep 0.8
+keys x
+sleep 0.5
+frame | grep -q "E21" || fail "the working buffer accepted an edit after split teardown"
+echo "ok 2d - teardown re-locks the working buffer"
+
 # 3. Divider drag: grab the pane divider and pull it left; the split point must move.
 D0=$(div_col)
 X=$((D0 + 1))

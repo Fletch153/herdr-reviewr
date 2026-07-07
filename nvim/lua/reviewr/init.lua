@@ -23,6 +23,7 @@ function M.diff()
     return
   end
   local rel = vim.fn.fnamemodify(abs, ":.")
+  local working = vim.api.nvim_get_current_buf()
   local ft = vim.bo.filetype
   local base = base_ref()
   local content = vim.fn.systemlist({ "git", "show", base .. ":" .. rel })
@@ -30,6 +31,9 @@ function M.diff()
     vim.notify(("reviewr: no %s version of %s"):format(base, rel), vim.log.levels.WARN)
     return
   end
+  -- The split is an editing surface: dp/do pull base lines into the working buffer, so the
+  -- focused view's lock is lifted for the split's lifetime and re-asserted at teardown.
+  require("reviewr.diff").unlock(working)
   vim.cmd("diffthis")
   vim.cmd("leftabove vnew")
   local scratch = vim.api.nvim_get_current_buf()
@@ -64,6 +68,11 @@ function M.diff()
     callback = function()
       vim.schedule(function()
         vim.cmd("silent! diffoff!")
+        -- Both teardown paths funnel through this wipe: restore the review lock if the
+        -- working buffer is still presented focused (explicit false — nil means unpresented).
+        if vim.api.nvim_buf_is_valid(working) and vim.b[working].reviewr_plain == false then
+          require("reviewr.diff").lock(working)
+        end
       end)
     end,
   })

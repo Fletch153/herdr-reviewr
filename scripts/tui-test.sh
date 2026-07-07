@@ -120,15 +120,24 @@ frame | grep -qE '[0-9]+,[0-9]+(-[0-9]+)?[[:space:]]+(All|Top|Bot|[0-9]+%)' \
   && fail "the editor statusline/ruler is showing in the single-window review"
 ok "single-window review renders without a statusline"
 
-# 3. Keys reach nvim: Tab focuses the editor, insert-typing lands, Esc leaves insert.
+# 3. Changes is a read-only review surface: an edit attempt is inert (E21), nothing lands.
 keys Tab
+keys x
+sleep 0.5
+frame | grep -q "E21" || fail "the Changes buffer accepted an edit"
+ok "the Changes view is read-only"
+
+# 3b. All files is the authoring surface: insert-typing lands there.
+keys Tab; sleep 0.3 # back to the file list
+keys 2; sleep 0.8   # All files (plain view, unlocked)
+keys Tab; sleep 0.3
 keys i
 keys -l "XYZTEST "
 keys Escape
 wait_for "XYZTEST"
-ok "typed text lands in the editor"
+ok "typed text lands in the All files editor"
 
-# 3b. Mode-aware Tab: in insert mode, Tab must TYPE (not switch focus); after Esc it switches.
+# 3c. Mode-aware Tab: in insert mode, Tab must TYPE (not switch focus); after Esc it switches.
 keys i
 keys Tab
 keys -l "TABBED"
@@ -136,9 +145,11 @@ keys Escape
 wait_for "TABBED"
 ok "insert-mode Tab types instead of switching focus"
 
-# 4. Switching files AUTOSAVES the modified buffer (review-mode `autowriteall`): the edit is
-#    on disk by the time the next file shows.
+# 4. Reviewer-driven switches AUTOSAVE the modified buffer: the edit is on disk by the time
+#    the next view/file shows.
 keys Tab # back to the file list (normal mode now)
+sleep 0.5
+keys 1 # back to Changes: a reviewer-driven switch, so the edit must hit disk
 sleep 0.5
 keys j # select the second file
 wait_for "bravo line one"
@@ -146,8 +157,8 @@ for _ in $(seq 40); do
   grep -q "XYZTEST" "$REPO/src/hello.txt" 2>/dev/null && break
   sleep 0.25
 done
-grep -q "XYZTEST" "$REPO/src/hello.txt" || fail "switching files did not autosave the edit"
-ok "switching files autosaves the modified buffer to disk"
+grep -q "XYZTEST" "$REPO/src/hello.txt" || fail "switching views/files did not autosave the edit"
+ok "switching autosaves the modified buffer to disk"
 
 # 5. Switching back shows the (saved) edits, of course.
 keys k

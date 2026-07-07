@@ -248,10 +248,41 @@ local function restore_breakindent(win)
   end
 end
 
+-- The focused (Changes) view is a review surface, not an authoring one: the buffer is locked
+-- ('nomodifiable') so stray keys, undo, and paste cannot mutate what the agent wrote; insert
+-- intent flips to All files instead. Locking keys on the VIEW, not on hunk count — a
+-- hunk-less Changes file (e.g. right after its last hunk was reverted) is still review
+-- surface. Save/restore is nil-guarded like the breakindent pair and gated to real named
+-- file buffers: a cancelled `:confirm edit` runs focus() against whatever buffer stayed
+-- current — possibly the user's scratch — and must never lock it. Public because the rd
+-- split lifts the lock for its lifetime (dp/do write the working buffer).
+local function lockable(bufnr)
+  return vim.bo[bufnr].buftype == "" and vim.api.nvim_buf_get_name(bufnr) ~= ""
+end
+
+function M.lock(bufnr)
+  if not lockable(bufnr) then
+    return
+  end
+  if vim.b[bufnr].reviewr_saved_ma == nil then
+    vim.b[bufnr].reviewr_saved_ma = vim.bo[bufnr].modifiable
+  end
+  vim.bo[bufnr].modifiable = false
+end
+
+function M.unlock(bufnr)
+  local saved = vim.b[bufnr].reviewr_saved_ma
+  if saved ~= nil then
+    vim.bo[bufnr].modifiable = saved
+    vim.b[bufnr].reviewr_saved_ma = nil
+  end
+end
+
 function M.focus()
   local bufnr = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
   vim.b[bufnr].reviewr_plain = false
+  M.lock(bufnr) -- before the early return: hunk-less files are read-only too
   M.refresh(bufnr)
   local ranges = M._hunks[bufnr]
   if not ranges or #ranges == 0 then
@@ -271,6 +302,11 @@ function M.set_view(focused)
   local bufnr = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
   vim.b[bufnr].reviewr_plain = not focused
+  if focused then -- keyed on the view, never on the hunks branch below
+    M.lock(bufnr)
+  else
+    M.unlock(bufnr)
+  end
   M.refresh(bufnr) -- plain: clears every mark; focused: repaints vs the current base
   local ranges = M._hunks[bufnr]
   if focused and ranges and #ranges > 0 then
@@ -323,6 +359,7 @@ end
 function M.unfocus()
   local bufnr = vim.api.nvim_get_current_buf()
   vim.b[bufnr].reviewr_plain = true
+  M.unlock(bufnr) -- nil-guarded: show_deleted's own nomodifiable scratch is left alone
   M.refresh(bufnr) -- plain flag set: clears the buffer's marks
   local win = vim.api.nvim_get_current_win()
   drop_folds(win)

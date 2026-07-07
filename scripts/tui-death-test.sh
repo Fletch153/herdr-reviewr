@@ -54,6 +54,12 @@ wait_for "╭─ comment"
 card_is_themed || fail "card lost the reviewer theme after manual r restart"
 echo "ok 3 - manual restart restores file, card, and theme"
 
+# 3b. The respawned Changes view is locked again (read-only review surface). Focus is still
+#     on the editor pane — the dead panel r was pressed there.
+keys x; sleep 0.5
+frame | grep -q "E21" || fail "the respawned Changes buffer accepted an edit"
+echo "ok 3b - respawn re-applies the read-only lock"
+
 # 4. Quit; no orphaned embeds.
 keys Tab; sleep 0.3; keys q; sleep 0.3; keys y 2>/dev/null || true
 for _ in $(seq 40); do $TMUX has-session 2>/dev/null || break; sleep 0.25; done
