@@ -8,6 +8,9 @@ TUI_INIT_EXTRA="vim.o.number = true"
 source "$(dirname "$0")/tui-lib.sh"
 
 printf 'line a\nline b\nline c\nline d\nline e\nline f\nline g\nline h\nline i\nline j\nline k\nline l\n' > "$REPO/src/one.txt"
+# A top-level file that sorts first: in the collapsed All-files tree the cursor must NOT be
+# left on it after a flip (the poll opens whatever file row the cursor rests on).
+printf 'decoy content\n' > "$REPO/AAA-decoy.txt"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm A
 printf 'TAIL CHANGE\n' >> "$REPO/src/one.txt"
 
@@ -33,6 +36,13 @@ wait_for "FLIPPED"
 for _ in $(seq 20); do grep -q "FLIPPED" "$REPO/src/one.txt" 2>/dev/null && break; sleep 0.25; done
 grep -q "FLIPPED" "$REPO/src/one.txt" || fail "the flipped insert did not autosave"
 echo "ok 2 - i flips to All files and the insert lands"
+
+# 2b. The flip revealed and selected the file in the tree: several polls later the editor
+#     still shows it (an unselected cursor on the decoy row would re-open the decoy).
+sleep 2
+frame | grep -q "FLIPPED" || fail "the view drifted off the flipped file after a poll"
+frame | grep -q "decoy content" && fail "the poll re-opened the file under the stale cursor"
+echo "ok 2b - the flip selects the file in the tree (view is poll-stable)"
 
 # 3. o flips too, opening a line below the cursor.
 keys Tab; sleep 0.3

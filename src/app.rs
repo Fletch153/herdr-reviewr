@@ -1673,6 +1673,32 @@ impl App {
         self.default_expanded() ^ self.toggled_dirs.contains(path)
     }
 
+    /// Make `path`'s row visible — expanding collapsed ancestors — and put the file-list
+    /// cursor on it. Without this, a flip/jump into the collapsed All-files tree leaves the
+    /// cursor on whatever row it last held; the next poll opens the file under the cursor,
+    /// yanking the view off the file that was just opened.
+    fn reveal_path(&mut self, path: &str) {
+        let mut changed = false;
+        let mut ancestor = String::new();
+        let mut parts = path.split('/').peekable();
+        while let Some(seg) = parts.next() {
+            if parts.peek().is_none() {
+                break; // the file itself
+            }
+            if !ancestor.is_empty() {
+                ancestor.push('/');
+            }
+            ancestor.push_str(seg);
+            changed |= self.set_dir_expanded(&ancestor, true);
+        }
+        if changed {
+            self.rebuild_file_rows();
+        }
+        if let Some(fi) = self.file_row_of_path(path) {
+            self.file_cursor = fi;
+        }
+    }
+
     /// Force directory `path` to `want` (expanded or collapsed); returns whether it changed.
     fn set_dir_expanded(&mut self, path: &str, want: bool) -> bool {
         if self.dir_expanded(path) == want {
@@ -2668,9 +2694,7 @@ impl App {
         {
             self.reset_diff_view();
             self.open_path_in_tab(e.path, e.previous_path);
-            if let Some(fi) = self.file_row_of_path(&file) {
-                self.file_cursor = fi;
-            }
+            self.reveal_path(&file);
         }
         // Only move the cursor when the open diff is actually the comment's file, so a stale
         // comment never jumps onto a same-numbered line in a different file.
@@ -2710,15 +2734,10 @@ impl App {
         if self.tab != Tab::AllFiles {
             let _ = self.set_tab(Tab::AllFiles);
         }
-        let previous = self
-            .entries
-            .iter()
-            .find(|e| e.path == file)
-            .and_then(|e| e.previous_path.clone());
+        let previous =
+            self.entries.iter().find(|e| e.path == file).and_then(|e| e.previous_path.clone());
         self.open_path_in_tab(file.to_string(), previous);
-        if let Some(fi) = self.file_row_of_path(file) {
-            self.file_cursor = fi;
-        }
+        self.reveal_path(file);
         self.focus = Focus::Diff;
         self.reveal_diff = true;
         self.diff_path.as_deref() == Some(file)
