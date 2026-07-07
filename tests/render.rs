@@ -546,16 +546,25 @@ fn header_clicks_map_to_scope_and_send() {
     let scope: Vec<u16> = (0..AREA.width)
         .filter(|&c| ui::hit_header(AREA, &app, c, 0) == Some(HeaderHit::Scope))
         .collect();
+    let next: Vec<u16> = (0..AREA.width)
+        .filter(|&c| ui::hit_header(AREA, &app, c, 0) == Some(HeaderHit::NextComment))
+        .collect();
     let send: Vec<u16> = (0..AREA.width)
         .filter(|&c| ui::hit_header(AREA, &app, c, 0) == Some(HeaderHit::Send))
         .collect();
 
     assert!(!scope.is_empty(), "scope chip is clickable");
+    assert!(!next.is_empty(), "next-comment button is clickable");
     assert!(!send.is_empty(), "send button is clickable");
-    assert!(scope.iter().max() < send.iter().min(), "scope is left of the button, no overlap");
+    assert!(scope.iter().max() < next.iter().min(), "scope is left of the next-comment button");
+    assert!(
+        next.iter().max() < send.iter().min(),
+        "next-comment button is left of send, no overlap"
+    );
     assert!(*send.iter().max().unwrap() < AREA.width);
 
-    let gap = scope.iter().max().unwrap() + 1;
+    // The suffix/pad between the left controls and the right-aligned button is inert.
+    let gap = send.iter().min().unwrap() - 1;
     assert_eq!(ui::hit_header(AREA, &app, gap, 0), None, "the space between controls is inert");
     assert_eq!(ui::hit_header(AREA, &app, scope[0], 5), None, "only row 0 is the header");
 }

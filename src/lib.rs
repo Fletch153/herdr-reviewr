@@ -1366,8 +1366,9 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
         (Char('d'), false) if app.focus == Focus::Diff => app.delete_comment(),
         (Char('s' | 'S'), _) => app.export(&Agent),
         (Char('y' | 'Y'), _) => app.export(&Clipboard),
-        (Char('n'), _) => app.jump_comment(1),
-        (Char('N'), _) => app.jump_comment(-1),
+        // The built-in pane walks comments across files too (nvim owns n/N in the editor).
+        (Char('n'), _) => app.walk_comment(1),
+        (Char('N'), _) => app.walk_comment(-1),
         (Char('l'), _) => app.open_list(),
         (Char('p'), false) => app.open_preview(),
         (Char('+'), _) => app.send_path_to_agent(),
@@ -1525,6 +1526,8 @@ fn handle_mouse(
                         ui::HeaderHit::Base => app.open_branch_picker(),
                         ui::HeaderHit::Commit => app.open_commit_picker(),
                         ui::HeaderHit::MdView => app.toggle_md_view(),
+                        // The editor owns n/N, so the button is the cross-file comment walk here.
+                        ui::HeaderHit::NextComment => app.walk_comment(1),
                         // One send path, one store: the host's, same as the built-in pane.
                         ui::HeaderHit::Send => app.export(&Agent),
                     }
@@ -1607,6 +1610,7 @@ fn handle_mouse(
                     ui::HeaderHit::Base => app.open_branch_picker(),
                     ui::HeaderHit::Commit => app.open_commit_picker(),
                     ui::HeaderHit::MdView => app.toggle_md_view(),
+                    ui::HeaderHit::NextComment => app.walk_comment(1),
                     ui::HeaderHit::Send => app.export(&Agent),
                 }
             } else if let Some(i) = ui::hit_file(

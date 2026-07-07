@@ -1338,6 +1338,52 @@ fn jump_moves_the_cursor_onto_a_commented_line() {
 }
 
 #[test]
+fn walk_comment_crosses_files_in_list_order_and_wraps() {
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\n");
+    r.write("b.rs", "gamma\ndelta\n");
+    r.commit_all("init");
+    r.write("a.rs", "alpha\nAONE\nbeta\n");
+    r.write("b.rs", "gamma\nBONE\ndelta\n");
+    let mut app = app_on(&r);
+
+    app.select_file(file_row(&app, "a.rs")).unwrap();
+    comment_on(&mut app, '+', "anote");
+    app.select_file(file_row(&app, "b.rs")).unwrap();
+    comment_on(&mut app, '+', "bnote");
+
+    // Start on a.rs above its comment: the first walk lands within-file on a.rs's comment.
+    app.select_file(file_row(&app, "a.rs")).unwrap();
+    app.focus = Focus::Diff;
+    app.diff_cursor = 0;
+    app.walk_comment(1);
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "the within-file step stays on a.rs");
+    assert!(app.commented_lines().contains(&app.diff_cursor), "landed on a.rs's comment");
+
+    // Past a.rs's only comment, forward crosses to b.rs and lands on its comment.
+    app.walk_comment(1);
+    assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "walk advances to the next file");
+    assert!(app.commented_lines().contains(&app.diff_cursor), "landed on b.rs's comment");
+
+    // Forward from the last file wraps back to a.rs.
+    app.walk_comment(1);
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "walk wraps back to the first file");
+
+    // Backward mirrors: from a.rs's comment it retreats (wrapping) to b.rs's comment.
+    app.walk_comment(-1);
+    assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "backward wraps to the previous file");
+    assert!(app.commented_lines().contains(&app.diff_cursor), "landed on b.rs's comment");
+}
+
+#[test]
+fn walk_comment_reports_when_there_are_none() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.walk_comment(1);
+    assert!(app.status.contains("no comments"), "walk with no comments reports it: {}", app.status);
+}
+
+#[test]
 fn last_turn_is_empty_until_a_turn_is_observed() {
     let r = Repo::init();
     r.write("a.rs", "a\n");

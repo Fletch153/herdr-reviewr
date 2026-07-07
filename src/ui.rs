@@ -410,6 +410,7 @@ pub enum HeaderHit {
     Base,
     Commit,
     MdView,
+    NextComment,
     Send,
 }
 
@@ -429,6 +430,7 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
     let base_end = scope_end + base_chip(app).len() as u16;
     let commit_end = base_end + commit_chip(app).len() as u16;
     let md_end = commit_end + md_chip(app).len() as u16;
+    let comment_end = md_end + comment_chip(app).len() as u16;
     let button_start = send_button_col(app, area.width as usize) as u16;
     if (scope_start..scope_end).contains(&col) {
         Some(HeaderHit::Scope)
@@ -438,6 +440,8 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
         Some(HeaderHit::Commit)
     } else if (commit_end..md_end).contains(&col) {
         Some(HeaderHit::MdView)
+    } else if (md_end..comment_end).contains(&col) {
+        Some(HeaderHit::NextComment)
     } else if col >= button_start && col < area.width {
         Some(HeaderHit::Send)
     } else {
@@ -519,6 +523,14 @@ fn md_chip(app: &App) -> String {
     if app.md_view { " [md view]".to_string() } else { " [raw]".to_string() }
 }
 
+/// The header's cross-file "next comment" button — walks the review's comments across files
+/// (the editor owns `n`/`N`, so the mouse is the surface in nvim mode). All-ASCII so its byte
+/// length equals its display width, keeping the header column math exact. Always shown, so the
+/// action is discoverable whether or not comments exist yet.
+fn comment_chip(_app: &App) -> String {
+    " [ next comment ]".to_string()
+}
+
 fn send_button(app: &App) -> String {
     format!("[ Send ({}) ]", app.unsent_count())
 }
@@ -544,6 +556,7 @@ fn send_button_col(app: &App, width: usize) -> usize {
         + base_chip(app).len()
         + commit_chip(app).len()
         + md_chip(app).len()
+        + comment_chip(app).len()
         + header_suffix(app).len();
     before + width.saturating_sub(before + send_button(app).len())
 }
@@ -575,6 +588,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let base = base_chip(app);
     let commit = commit_chip(app);
     let md = md_chip(app);
+    let comment = comment_chip(app);
     let suffix = header_suffix(app);
     let button = send_button(app);
     let used = header_prefix_len()
@@ -582,6 +596,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         + base.len()
         + commit.len()
         + md.len()
+        + comment.len()
         + suffix.len()
         + button.len();
     let pad = (area.width as usize).saturating_sub(used);
@@ -589,11 +604,13 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     // A quiet surface bar: the active tab in bright lavender, the inactive one dimmed, the
     let p = app.palette();
     let bar = Style::default().bg(p.surface0);
+    let comment_fg = if app.store.is_empty() { p.overlay0 } else { p.peach };
     let mut spans = tab_bar_spans(app);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(base, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(commit, bar.fg(p.lavender).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(md, bar.fg(p.blue).add_modifier(Modifier::BOLD)));
+    spans.push(Span::styled(comment, bar.fg(comment_fg).add_modifier(Modifier::BOLD)));
     spans.push(Span::styled(suffix, bar.fg(p.overlay0)));
 
     let send_fg = if app.store.is_empty() { p.overlay0 } else { p.green };
@@ -1897,6 +1914,7 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("space rc", "comment on the line / visual selection"),
                     ("space re / rx / rr", "edit / delete / resolve the comment under the cursor"),
                     ("space rl / rs / ry", "comments list · send to the agent · copy all"),
+                    ("[ next comment ]", "header button: walk comments across every file"),
                     (
                         "s / l / +",
                         "send un-sent · comments list · send the file's path to the agent",
@@ -1959,7 +1977,7 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
             vec![
                 ("Space", "diff: next change block, then mark file → next file"),
                 ("Space", "file list: mark the whole file reviewed → next"),
-                ("n / N", "next / previous comment"),
+                ("n / N", "next / previous comment (across files · header button too)"),
             ],
         ),
         (
