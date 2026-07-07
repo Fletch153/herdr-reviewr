@@ -1924,7 +1924,7 @@ impl App {
             // The card renders as virt_lines under `end`, and a mouse click ON the card puts
             // the cursor on the NEXT buffer line — treat that row as the comment's too, so a
             // card click followed by rr/rx/re works. Exact anchors take precedence above.
-            .or_else(|| self.store.iter().position(|c| base(c) && c.end + 1 == line))
+            .or_else(|| self.store.iter().position(|c| base(c) && c.end.saturating_add(1) == line))
     }
 
     /// nvim mode: edit the comment covering the editor's cursor (sent ones stay resolve-only,

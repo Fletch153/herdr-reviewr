@@ -122,7 +122,9 @@ function M.refresh(bufnr)
     if count_b == 0 then
       -- Pure deletion: no buffer line to color, so flag the surviving boundary line.
       local l = math.min(math.max(start_b, 1), last)
-      ranges[#ranges + 1] = { lo = l, hi = l }
+      -- del: the boundary line itself is context (red sign only, no line paint) — folds and
+      -- stepping treat it as a hunk, the gutter must not paint it green.
+      ranges[#ranges + 1] = { lo = l, hi = l, del = true }
       vim.api.nvim_buf_set_extmark(bufnr, ns, l - 1, 0, {
         sign_text = "_",
         sign_hl_group = "DiffDelete",
@@ -267,7 +269,7 @@ local function gutter_group(bufnr, lnum)
     return "ReviewrGutterDel"
   end
   for _, r in ipairs(M._hunks[bufnr] or {}) do
-    if r.lo <= lnum and lnum <= r.hi then
+    if r.lo <= lnum and lnum <= r.hi and not r.del then
       return "ReviewrGutterAdd"
     end
   end
@@ -275,19 +277,29 @@ local function gutter_group(bufnr, lnum)
 end
 M._gutter_group = gutter_group -- exposed for the headless checks
 
+-- The template per screen row (pure; virtnum: 0 = the line's first row, > 0 = wrapped
+-- continuation, < 0 = virt_lines rows — comment cards and red removed lines render there
+-- and must keep the stock, unpainted gutter).
+function M._gutter_template(bufnr, lnum, virtnum, num)
+  if virtnum < 0 then
+    return "%s" .. num
+  end
+  local grp = gutter_group(bufnr, lnum)
+  if not grp then
+    return "%s" .. num
+  end
+  if virtnum > 0 then
+    return "%#" .. grp .. "#"
+  end
+  return "%s%#" .. grp .. "#" .. num
+end
+
 function M.statuscolumn()
   local ok, out = pcall(function()
     local win = vim.g.statusline_winid
     -- Mirror the stock gutter: a number segment only where the user shows numbers.
     local num = (vim.wo[win].number or vim.wo[win].relativenumber) and "%=%l " or ""
-    local grp = gutter_group(vim.api.nvim_win_get_buf(win), vim.v.lnum)
-    if not grp then
-      return "%s" .. num
-    end
-    if vim.v.virtnum > 0 then
-      return "%#" .. grp .. "#"
-    end
-    return "%s%#" .. grp .. "#" .. num
+    return M._gutter_template(vim.api.nvim_win_get_buf(win), vim.v.lnum, vim.v.virtnum, num)
   end)
   return ok and out or "%s%=%l "
 end
@@ -309,8 +321,8 @@ local function lockable(bufnr)
 end
 
 function M.lock(bufnr)
-  if not lockable(bufnr) then
-    return
+  if not lockable(bufnr) or vim.b[bufnr].reviewr_split_active then
+    return -- the rd split is an editing surface: re-syncs while it is open must not re-lock
   end
   if vim.b[bufnr].reviewr_saved_ma == nil then
     vim.b[bufnr].reviewr_saved_ma = vim.bo[bufnr].modifiable
@@ -361,6 +373,10 @@ function M.set_view(focused)
     apply_folds(win)
     drop_breakindent(win)
     vim.cmd("silent! normal! zx")
+  elseif vim.api.nvim_buf_get_name(bufnr):find("reviewr://deleted/", 1, true) then
+    -- The deleted scratch stays all-red in either view (its marks never clear): the
+    -- breakindent gap must stay closed too.
+    drop_breakindent(win)
   else
     drop_folds(win)
     restore_breakindent(win)

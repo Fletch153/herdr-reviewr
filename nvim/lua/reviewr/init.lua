@@ -34,6 +34,7 @@ function M.diff()
   -- The split is an editing surface: dp/do pull base lines into the working buffer, so the
   -- focused view's lock is lifted for the split's lifetime and re-asserted at teardown.
   require("reviewr.diff").unlock(working)
+  vim.b[working].reviewr_split_active = true -- re-syncs while the split is open must not re-lock
   vim.cmd("diffthis")
   vim.cmd("leftabove vnew")
   local scratch = vim.api.nvim_get_current_buf()
@@ -70,8 +71,11 @@ function M.diff()
         vim.cmd("silent! diffoff!")
         -- Both teardown paths funnel through this wipe: restore the review lock if the
         -- working buffer is still presented focused (explicit false — nil means unpresented).
-        if vim.api.nvim_buf_is_valid(working) and vim.b[working].reviewr_plain == false then
-          require("reviewr.diff").lock(working)
+        if vim.api.nvim_buf_is_valid(working) then
+          vim.b[working].reviewr_split_active = nil
+          if vim.b[working].reviewr_plain == false then
+            require("reviewr.diff").lock(working)
+          end
         end
       end)
     end,

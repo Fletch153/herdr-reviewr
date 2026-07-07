@@ -289,6 +289,48 @@ check("the plain view clears its hunks (stock gutter everywhere)", diff._gutter_
 diff.show_deleted("old.txt")
 local gbuf = vim.api.nvim_get_current_buf()
 check("the deleted view paints its gutter red", diff._gutter_group(gbuf, 1) == "ReviewrGutterDel")
+check(
+  "the deleted view keeps the breakindent drop in the plain presentation too",
+  (function()
+    diff.set_view(false)
+    local plain = vim.wo.breakindent == false
+    diff.set_view(true)
+    return plain and vim.wo.breakindent == false
+  end)()
+)
+diff.unfocus()
+
+-- Gutter template branches: virt_lines rows (cards, red removed lines) keep the stock
+-- unpainted gutter; deletion-boundary lines are context, not green; wrapped hot rows paint
+-- edge to edge. Re-focus first: the plain flip above cleared rbuf's hunks.
+vim.api.nvim_set_current_buf(rbuf)
+diff.focus()
+local g2 = diff._hunks[rbuf][1]
+check("a virt_lines row keeps the stock gutter", diff._gutter_template(rbuf, g2.lo, -1, "%=%l ") == "%s%=%l ")
+check("a hot wrapped row paints edge to edge", diff._gutter_template(rbuf, g2.lo, 1, "%=%l ") == "%#ReviewrGutterAdd#")
+check("a hot first row keeps %s and paints the fill", diff._gutter_template(rbuf, g2.lo, 0, "%=%l ") == "%s%#ReviewrGutterAdd#%=%l ")
+diff._hunks[rbuf] = { { lo = 3, hi = 3, del = true } }
+check("a deletion boundary line keeps the stock gutter", diff._gutter_group(rbuf, 3) == nil)
+diff.refresh(rbuf) -- recompute real hunks (the fixture edit is a whole-file insertion here)
+
+-- The rd split survives focused re-syncs without re-locking (scope changes, view flips).
+vim.cmd("edit clean.txt")
+local spbuf = vim.api.nvim_get_current_buf()
+diff.focus()
+init.diff()
+check("the open split lifts the lock", vim.bo[spbuf].modifiable == true)
+diff.set_view(true)
+check("a focused re-sync does not re-lock the open split", vim.bo[spbuf].modifiable == true)
+for _, w in ipairs(vim.api.nvim_list_wins()) do
+  if vim.api.nvim_win_get_buf(w) == spbuf then
+    vim.api.nvim_set_current_win(w)
+  end
+end
+vim.cmd("only")
+vim.wait(500, function()
+  return vim.bo[spbuf].modifiable == false
+end)
+check("split teardown still re-locks", vim.bo[spbuf].modifiable == false)
 diff.unfocus()
 
 -- Live sync (reviewr.live): the host sweeps `checktime` on its poll; the FileChangedShell
@@ -316,7 +358,7 @@ end)
 check("the conflict resolves to the user's version on disk", vim.fn.readfile(lpath)[1] == "USERLINE")
 vim.fn.delete(lpath)
 vim.cmd("silent! checktime")
-check("deletion underneath keeps the buffer", vim.api.nvim_buf_line_count(lbuf) >= 1)
+check("deletion underneath keeps the buffer content", vim.fn.getline(1) == "USERLINE")
 vim.cmd("silent! bwipeout!")
 
 vim.cmd("cd " .. vim.fn.fnameescape(root))
