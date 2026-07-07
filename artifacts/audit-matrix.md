@@ -28,9 +28,9 @@ empty, huge, vanishing).
 | 8 | Comments (rc/re/rx/rr/rl/rs/ry, cards, composer, jump) | covered: tui-scope (pin to scope+base) | covered: tui-mouse (card click) | covered: tui-edit (compose/edit/sent guard) | open (comment→flip→revert sequences; anchors surviving revert/edit) | covered: tui-unicode (composer) |
 | 9 | Live sync (autosave, checktime, FileChangedShell policy, conflict) | covered: tui-live | n/a | covered: tui-live | covered: run.lua (conflict, user wins); probed: c1.p3 (same-wall-clock-second write SAFE — nvim compares mtime nanoseconds; BUG found+fixed — nvim never compares size, so an mtime-preserving write (cp -p/rsync -t) was invisible forever → live.poll size check, gates tui-live 4a/4b; quit mid-insert flushes to disk, gate tui-live step 5) | open (agent deletes open file mid-edit) |
 | 10 | Comment persistence (comments ref, seed, empty delete, rev-guarded) | covered: tui-persist | n/a | n/a | open (quit racing pending write; two panes one repo) | n/a |
-| 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | open (md_view held across tab switches) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
+| 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | probed: c2.p6 (sticky-preference contract holds: non-md file in All files shows no chip, returning to the md file re-renders; no bug; gate tui-stash step b) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
 | 12 | Clipboard (provider→OSC52, cache pastes, host export fallback) | n/a | n/a | n/a | open (OSC52 mid-frame interleave; rapid yank storm) | covered: tui-clip; run.lua (linewise trailing \n) |
-| 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | open (stash swap mid-action; tab switch mid-highlight/mid-compose) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
+| 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | probed: c2.p6 (BUG found+fixed — the `/` filter query was app-global while every other left-pane field was stashed, so a Changes filter silently filtered All files' list (and vice versa); filter now lives in TabStash + set_tab confirms an in-flight filter box before the swap. Also probed clean: ctrl+i mid-filter ignored, `2` mid-compose lands in the draft with no switch. Gate tui-stash. Still open: tab switch mid-highlight) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
 | 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename; probed: c1.p5 (zero-commit repo: untracked file diffs against the empty tree, both tabs render; detached HEAD: clean tree shows the empty state, live edit re-lists — both pass, no bug) |
 | 15 | EOL (nofixendofline, note+sign, eol revert, byte-exact base) | covered: tui-eol | n/a | covered: tui-eol | n/a | covered: tui-eol, run.lua; open (CRLF content) |
 | 16 | Host UI interop (mouse routing, divider, resize, filter, help, chips) | covered: tui-mouse, tui-md (chip) | covered: tui-mouse | covered: tui-split (divider), tui-picker (filter/resize) | open (drag during repaint; click storm; narrow terminal) | covered: tui-trio (backspace delete) |
@@ -48,10 +48,10 @@ clusters that share a fixture.
 1. ~~**6×timing**~~ — DONE c1.p1 (gate tui-storm): Enter/BS storms at boundaries, walk+revert interleave, walk across poll entries-rebuild.
 2. ~~**5×timing**~~ — DONE c1.p3 (gate tui-death step 3c): dead-editor paste now honestly dropped with a status; pending-input-across-restart proven frame-local by code walk (no live window survives c1.p2's dedup reset — only a failed respawn strands it, and it then fires into the manually-restarted plain view, judged acceptable).
 3. ~~**9×timing**~~ — DONE c1.p3 (gates tui-live 4a/4b/5): natural same-second writes are safe (nvim compares mtime nsec); the REAL shadow was mtime-exact writes — nvim never compares size, fixed with live.poll's size check. Residual (documented, unfixed): mtime-exact + byte-identical-length content swap stays invisible (needs per-tick hashing, not warranted). Quit mid-insert flushes via the forced wall!.
-4. **13×timing** — per-tab stash swap mid-action (compose, filter, md_view); tab switch mid-anything.
+4. ~~**13×timing**~~ — DONE c2.p6 (gate tui-stash): filter-leak bug fixed; compose/md_view/ctrl+i honest. Residual: tab switch mid-highlight unprobed (select_anchor is stashed).
 5. **10×timing** — quit racing the rev-guarded persist write; two panes on one repo.
 6. **8×timing** — comment → flip → revert sequences; anchors surviving revert and agent edits.
-7. **11×tab / 11×timing** — md_view held across tab switches, restart, death.
+7. **11×timing** — md_view during restart, death (11×tab DONE c2.p6, gate tui-stash step b).
 8. **4×timing** — lock/paint after jumplist, Ctrl-o, `:e`, tags entry paths.
 9. ~~**1×timing** (death with pending work)~~ — DONE c1.p2 (gate tui-death step 4: external kill + comment jump); still open: restart racing first open.
 10. **7×timing** — revert racing agent write / poll refresh.
@@ -65,6 +65,18 @@ clusters that share a fixture.
 
 ## Log
 
+- 2026-07-07 c2.p6 (scenario-matrix d3, ranked 4 — per-tab stash swap mid-action): BUG found+fixed.
+  The `/` filter query (app.filter) was the ONE piece of left-pane state not in TabStash — set_tab's
+  reload rebuilds file_rows through the shared query, so filtering Changes to "fa" hid every
+  non-matching row in All files too (probe failed on its first cross-tab assertion: the
+  committed-clean telltale file never appeared). Fix: filter joins TabStash + swap_active_with_stash,
+  and set_tab confirms an in-flight filter box before swapping so a mouse tab click mid-typing
+  cannot leave the box editing the other tab's query (src/app.rs). Probed clean alongside:
+  ctrl+i (CSI-u) mid-filter ignored (no half-switch), md_view sticky round trip with an honest
+  chip on non-md files, `2` mid-compose lands in the draft and cannot switch tabs (composing
+  guard) — draft never silently lost. Probe promoted whole as gate scripts/tui-stash-test.sh
+  (steps a/d/b/c) wired into tui-all.sh; green twice (pre-promotion + post-fmt), focus-correct
+  quit, zero embed leaks. 361 cargo tests + lua suite green; fmt/clippy clean.
 - 2026-07-07 c1.p5 (edge-hardening, class 1 + USER REPORT): the live user report (empty
   changeset: Changes → All files opens a file → back to Changes keeps that file up) reproduced
   live on first try. Root cause: nvim_sync's no-selection branch only did a plain re-present

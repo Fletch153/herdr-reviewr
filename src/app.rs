@@ -96,6 +96,7 @@ struct TabStash {
     diff_scroll: usize,
     h_scroll: usize,
     select_anchor: Option<usize>,
+    filter: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1496,6 +1497,10 @@ impl App {
         if self.tab == tab || self.composing() {
             return Ok(());
         }
+        // The filter query is per-tab (it shapes the left pane, swapped below); a mouse tab
+        // click can arrive mid-typing, and the box must not stay open editing the other
+        // tab's query.
+        self.confirm_filter();
         self.tab = tab;
         // Entering the PR tab leaves the file tabs frozen in place and fetches the PR. A
         // `loading` frame draws before the blocking fetch the event loop services, and a
@@ -1630,6 +1635,7 @@ impl App {
         std::mem::swap(&mut self.diff_scroll, &mut self.stash.diff_scroll);
         std::mem::swap(&mut self.h_scroll, &mut self.stash.h_scroll);
         std::mem::swap(&mut self.select_anchor, &mut self.stash.select_anchor);
+        std::mem::swap(&mut self.filter, &mut self.stash.filter);
     }
 
     pub fn toggle_focus(&mut self) {
