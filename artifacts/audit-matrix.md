@@ -22,11 +22,11 @@ empty, huge, vanishing).
 | 2 | Diff paint (signs, line paint, virt_lines, statuscolumn, breakindent) | covered: tui-test | n/a | covered: tui-wrap (wrap gap), tui-test (folds+signs) | open (paint after rapid file switches) | covered: tui-unicode, tui-eol; open (huge diff, very long lines) |
 | 3 | Context folds (foldexpr/foldtext, zx on scope change) | covered: tui-test | n/a | covered: tui-test | covered: tui-scope (re-diff recompute) | open (folds on huge diff) |
 | 4 | View model (plain stamping, BufEnter re-derive, deleted scratch, rename map) | covered: tui-rename | covered: tui-test | covered: tui-test (deleted scratch) | open (unusual entry paths: jumplist/Ctrl-o, `:e other`, tags) | covered: tui-rename; open (rename onto deleted, case-only rename) |
-| 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | probed: c1.p1 (double-tap flip — guard added, gate tui-storm step 4); open (paste mid-restart; pending input surviving restart) | open (flip on deleted/renamed file) |
+| 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | probed: c1.p1 (double-tap flip — guard added, gate tui-storm step 4); c1.p3 (BUG found+fixed — dead-editor paste silently swallowed, now honest status; gate tui-death step 3c. Pending input cannot outlive its frame: set only while alive, fired same-frame or delivered via the respawn branch c1.p2 resets — code-walked, no live window) | open (flip on deleted/renamed file) |
 | 6 | Review walk + reviewed ticks (Enter/BS, files-pane Enter, wrap, persistence) | covered: tui-nav (All-files walk, cross-tab ticks) | covered: tui-nav (files-pane Enter) | covered: tui-nav | probed: c1.p1 (BUG found+fixed — stale nav; gate tui-storm covers Enter/BS storms, walk+revert interleave, walk across rebuild); c1.p2 (BUG found+fixed — insert-flip vs boundary nav; navs now carry their view, gate tui-storm step 6) | covered: tui-persist (content change clears tick); open (tick on renamed file) |
 | 7 | Hunk revert (`space rh`, shapes, EOL flip, last-hunk advance) | covered: tui-revert (last-hunk advance) | n/a | covered: tui-revert (through lock) | open (revert racing agent write / poll refresh) | covered: run.lua (all shapes, added-file refusal), tui-eol; open (revert on rename) |
 | 8 | Comments (rc/re/rx/rr/rl/rs/ry, cards, composer, jump) | covered: tui-scope (pin to scope+base) | covered: tui-mouse (card click) | covered: tui-edit (compose/edit/sent guard) | open (comment→flip→revert sequences; anchors surviving revert/edit) | covered: tui-unicode (composer) |
-| 9 | Live sync (autosave, checktime, FileChangedShell policy, conflict) | covered: tui-live | n/a | covered: tui-live | covered: run.lua (conflict, user wins); open (same-second agent write → poll — known nvim quirk; quit during pending writes) | open (agent deletes open file mid-edit) |
+| 9 | Live sync (autosave, checktime, FileChangedShell policy, conflict) | covered: tui-live | n/a | covered: tui-live | covered: run.lua (conflict, user wins); probed: c1.p3 (same-wall-clock-second write SAFE — nvim compares mtime nanoseconds; BUG found+fixed — nvim never compares size, so an mtime-preserving write (cp -p/rsync -t) was invisible forever → live.poll size check, gates tui-live 4a/4b; quit mid-insert flushes to disk, gate tui-live step 5) | open (agent deletes open file mid-edit) |
 | 10 | Comment persistence (comments ref, seed, empty delete, rev-guarded) | covered: tui-persist | n/a | n/a | open (quit racing pending write; two panes one repo) | n/a |
 | 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | open (md_view held across tab switches) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
 | 12 | Clipboard (provider→OSC52, cache pastes, host export fallback) | n/a | n/a | n/a | open (OSC52 mid-frame interleave; rapid yank storm) | covered: tui-clip; run.lua (linewise trailing \n) |
@@ -46,8 +46,8 @@ lived). The scenario-matrix lens works top-down, 3–5 cells per pass, preferrin
 clusters that share a fixture.
 
 1. ~~**6×timing**~~ — DONE c1.p1 (gate tui-storm): Enter/BS storms at boundaries, walk+revert interleave, walk across poll entries-rebuild.
-2. **5×timing** — pending input surviving restart; paste mid-restart. (double-fire + flip-vs-sync DONE c1.p1, gate tui-storm step 4; c1.p2's respawn fix makes a surviving pending fire after the re-open instead of into the empty scratch — the paste-mid-restart window itself is still unprobed live.)
-3. **9×timing** — same-second agent write missed by checktime (known nvim quirk — confirm product exposure); quit during pending writes.
+2. ~~**5×timing**~~ — DONE c1.p3 (gate tui-death step 3c): dead-editor paste now honestly dropped with a status; pending-input-across-restart proven frame-local by code walk (no live window survives c1.p2's dedup reset — only a failed respawn strands it, and it then fires into the manually-restarted plain view, judged acceptable).
+3. ~~**9×timing**~~ — DONE c1.p3 (gates tui-live 4a/4b/5): natural same-second writes are safe (nvim compares mtime nsec); the REAL shadow was mtime-exact writes — nvim never compares size, fixed with live.poll's size check. Residual (documented, unfixed): mtime-exact + byte-identical-length content swap stays invisible (needs per-tick hashing, not warranted). Quit mid-insert flushes via the forced wall!.
 4. **13×timing** — per-tab stash swap mid-action (compose, filter, md_view); tab switch mid-anything.
 5. **10×timing** — quit racing the rev-guarded persist write; two panes on one repo.
 6. **8×timing** — comment → flip → revert sequences; anchors surviving revert and agent edits.
@@ -64,6 +64,23 @@ clusters that share a fixture.
 ## Log
 
 - 2026-07-07 build: matrix seeded; 20 gates + run.lua mapped; 24 open cells across 15 ranked entries.
+- 2026-07-07 c1.p3 (scenario-matrix d2): probed ranked 2 remainder + ranked 3 (ranked 4 untouched —
+  budget went to two product bugs). (a) 9×timing: pinned-mtime probes proved nvim's checktime
+  compares mtime sec+nsec+mode but NEVER size — natural same-second writes reload fine (nsec
+  drift), refining the run_notes quirk to exact-(sec,nsec) aliasing (utime-pinned fixtures collide
+  at nsec=0; wall-clock writes don't); the real exposure was mtime-preserving writes (cp -p /
+  rsync -t restores) which stayed invisible forever, size change included. Fix: live.lua stamps
+  each buffer's disk stat at nvim's sync points (BufReadPost/BufWritePost/FileChangedShellPost)
+  and a new live.poll() (host poll now calls it instead of raw checktime) reloads on
+  same-mtime/different-size using the existing FileChangedShell policy; mtime-exact same-size
+  content swaps remain invisible by design (hashing not warranted). Gates tui-live 4a/4b.
+  (b) 5×timing: a paste aimed at a dead editor fell through to input_paste and vanished silently
+  (no status, no dead-panel hint it was consumed) — now answers "editor is not running — paste
+  dropped (r restarts)" (src/lib.rs paste arm); gate tui-death step 3c (kill, paste, status,
+  nothing on disk, nothing resurfacing after r). Pending-input-across-restart: code-walked as
+  frame-local (see ranked 2). (c) quit-during-pending-writes: PASS live — quit's forced wall!
+  lands a mid-insert-mode edit on disk before the pane closes; gate tui-live step 5. 360 cargo
+  tests + lua suite green; fmt/clippy clean; tui-live and tui-death green individually.
 - 2026-07-07 c1.p2 (race-audit, subsystem 1: notification pipeline): enumerated intent-vs-sync
   interleavings; TWO races reproduced deterministically and fixed. (a) insert+Enter in one
   editor batch: the boundary nav emitted by the still-locked buffer landed after the flip put

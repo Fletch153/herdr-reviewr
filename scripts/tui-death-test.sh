@@ -67,6 +67,22 @@ keys x; sleep 0.5
 frame | grep -q "E21" || fail "the respawned Changes buffer accepted an edit"
 echo "ok 3b - respawn re-applies the read-only lock"
 
+# 3c. A paste aimed at the dead editor: honest status, nothing written, nothing resurfacing
+#     after the manual restart (input_paste would otherwise swallow it silently).
+PANE_PID=$($TMUX list-panes -t0 -F '#{pane_pid}')
+NVPID=$(pgrep -P "$PANE_PID" nvim || true)
+[ -n "$NVPID" ] || fail "no embedded nvim child to kill for the paste step"
+kill -9 "$NVPID"
+wait_for "the editor (nvim) exited"
+keys -l "$(printf '\033[200~PASTEDEADX\033[201~')"
+wait_for "paste dropped"
+grep -rq "PASTEDEADX" "$REPO" && fail "the dead-editor paste reached the disk"
+keys r
+wait_gone "the editor (nvim) exited"
+wait_for "CHANGE ONE"
+frame | grep -qF "PASTEDEADX" && fail "the dropped paste resurfaced after restart"
+echo "ok 3c - a paste at a dead editor is dropped with a status, never silently"
+
 # 4. A comment jump racing a respawn: kill the editor from OUTSIDE (agent crash flavor) with
 #    the comments list open, then jump to a comment deep in a taller-than-screen file. The
 #    respawn must re-publish the open BEFORE delivering the jump — the goto lands on the

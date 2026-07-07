@@ -825,9 +825,13 @@ fn event_loop(
                         && app.tab.is_file_tab()
                         && app.focus == Focus::Diff
                         && app.mode == Mode::Normal
-                        && session.alive()
                     {
-                        if app.tab == crate::app::Tab::Changes
+                        if !session.alive() {
+                            // Aimed at the editor but the editor is gone (input_paste would
+                            // no-op outside composing): say so instead of losing it silently.
+                            app.status =
+                                "editor is not running — paste dropped (r restarts)".to_string();
+                        } else if app.tab == crate::app::Tab::Changes
                             && let Some(rel) = app.diff_path.clone()
                             && app.edit_here(&rel)
                         {
@@ -857,9 +861,10 @@ fn event_loop(
             }
             // Live view: agent writes to open files must appear without any interaction, so
             // the poll also sweeps buffer timestamps (reviewr.live's FileChangedShell policy
-            // reloads clean buffers silently and never prompts).
+            // reloads clean buffers silently and never prompts). live.poll wraps checktime
+            // plus a size check for mtime-preserving writes nvim's timestamp compare misses.
             if let Some(e) = session.engine_alive() {
-                let _ = e.command_fire("silent! checktime");
+                let _ = e.exec_lua_fire("require('reviewr.live').poll()", vec![]);
             }
             logln!(
                 "poll files={} composing={} diff_cursor={} scroll={}",
