@@ -1,6 +1,6 @@
 //! Embedded-nvim engine: spawns `nvim --embed` as a child process, attaches as a linegrid UI
 //! host over msgpack-RPC (stdin/stdout — no second pane, no socket), and exposes the cell grid
-//! plus input/command primitives to the reviewer's event loop. See `specs/herdr-host.md`.
+//! plus input/command primitives to the reviewer's event loop.
 //!
 //! Threading: one reader thread decodes nvim's stream and applies redraw events to a private
 //! working grid, copying it into the shared `front` grid on every `flush` (so a paint never
@@ -9,7 +9,7 @@
 //! (mirroring the PR-fetch in-flight cap in `lib.rs`).
 //!
 //! Invariants: this module never panics (no unwraps on protocol data or locks); anything that
-//! can prompt inside nvim (`:confirm edit`, `ReviewrSend`) is sent fire-and-forget — a blocking
+//! can prompt inside nvim (`:confirm edit` and friends) is sent fire-and-forget — a blocking
 //! request would deadlock on a prompt that only our forwarded keys can answer; a request
 //! `Timeout` means "nvim is busy", never death; only the reader marks the engine dead.
 
