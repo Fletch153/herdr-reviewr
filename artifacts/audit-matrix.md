@@ -25,7 +25,7 @@ empty, huge, vanishing).
 | 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | probed: c1.p1 (double-tap flip — guard added, gate tui-storm step 4); c1.p3 (BUG found+fixed — dead-editor paste silently swallowed, now honest status; gate tui-death step 3c. Pending input cannot outlive its frame: set only while alive, fired same-frame or delivered via the respawn branch c1.p2 resets — code-walked, no live window) | open (flip on deleted/renamed file) |
 | 6 | Review walk + reviewed ticks (Enter/BS, files-pane Enter, wrap, persistence) | covered: tui-nav (All-files walk, cross-tab ticks) | covered: tui-nav (files-pane Enter) | covered: tui-nav | probed: c1.p1 (BUG found+fixed — stale nav; gate tui-storm covers Enter/BS storms, walk+revert interleave, walk across rebuild); c1.p2 (BUG found+fixed — insert-flip vs boundary nav; navs now carry their view, gate tui-storm step 6) | covered: tui-persist (content change clears tick); open (tick on renamed file) |
 | 7 | Hunk revert (`space rh`, shapes, EOL flip, last-hunk advance) | covered: tui-revert (last-hunk advance) | n/a | covered: tui-revert (through lock) | open (revert racing agent write / poll refresh) | covered: run.lua (all shapes, added-file refusal), tui-eol; open (revert on rename) |
-| 8 | Comments (rc/re/rx/rr/rl/rs/ry, cards, composer, jump) | covered: tui-scope (pin to scope+base) | covered: tui-mouse (card click) | covered: tui-edit (compose/edit/sent guard) | probed: c2.p7 (BUG found+fixed — reload froze the open diff for composing/List/CommitPick but NOT for a live range-selection; a poll mid-selection rebuilt `visible` under the anchor, so an agent write shifting lines re-targeted the marked range and the captured snippet no longer matched what the reader selected. Freeze guard now includes select_anchor, mirroring the composing contract; cargo gate app_flow::a_poll_never_rebuilds_the_diff_under_a_live_selection). Still open: comment→flip→revert sequences; anchors surviving revert/edit | covered: tui-unicode (composer) |
+| 8 | Comments (rc/re/rx/rr/rl/rs/ry, cards, composer, jump) | covered: tui-scope (pin to scope+base) | covered: tui-mouse (card click) | covered: tui-edit (compose/edit/sent guard) | probed: c2.p7 (BUG found+fixed — reload froze the open diff for composing/List/CommitPick but NOT for a live range-selection; a poll mid-selection rebuilt `visible` under the anchor, so an agent write shifting lines re-targeted the marked range and the captured snippet no longer matched what the reader selected. Freeze guard now includes select_anchor, mirroring the composing contract; cargo gate app_flow::a_poll_never_rebuilds_the_diff_under_a_live_selection); probed: r2.p3 (fixed — resolve/edit/delete fired from two cursor rows (the anchored line AND the end+1 card-row fallback); dropped the end+1 branch in comment_at so they trigger only from the anchored line; see Log). Still open: comment→flip→revert sequences; anchors surviving revert/edit | covered: tui-unicode (composer) |
 | 9 | Live sync (autosave, checktime, FileChangedShell policy, conflict) | covered: tui-live | n/a | covered: tui-live | covered: run.lua (conflict, user wins); probed: c1.p3 (same-wall-clock-second write SAFE — nvim compares mtime nanoseconds; BUG found+fixed — nvim never compares size, so an mtime-preserving write (cp -p/rsync -t) was invisible forever → live.poll size check, gates tui-live 4a/4b; quit mid-insert flushes to disk, gate tui-live step 5) | open (agent deletes open file mid-edit) |
 | 10 | Comment persistence (comments ref, seed, empty delete, rev-guarded) | covered: tui-persist | n/a | n/a | open (quit racing pending write; two panes one repo) | n/a |
 | 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | probed: c2.p6 (sticky-preference contract holds: non-md file in All files shows no chip, returning to the md file re-renders; no bug; gate tui-stash step b) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
@@ -64,6 +64,25 @@ clusters that share a fixture.
 15. **12×timing** — OSC52 interleaving; yank storm.
 
 ## Log
+
+- 2026-07-07 r2.p3 (scenario-matrix, USER REPORT 3 — resolve-consistency): fixed. The user found it
+  inconsistent that comment resolve/edit/delete (rr/re/rx) fired from TWO cursor rows. `comment_at`
+  (src/app.rs) matched a comment when the cursor sat on its anchored line(s) `start..=end` OR on
+  `end+1` — a mouse-click fallback, because the card renders as virt_lines BELOW the anchored line so
+  a click on the card lands the cursor on the next real line. Fix: dropped the `.or_else(end+1)`
+  branch so rr/re/rx (all three route through `comment_at`) trigger only from the anchored line — the
+  line that carries the number highlight, the comment's actual location. Checked the built-in
+  (non-nvim) pane's matcher `comment_under_cursor`→`line_in` (src/app.rs): it already matches only
+  `start..=end` with NO end+1 fallback, and its card renders as its own non-content diff rows (no line
+  number, so `line_in` skips them) — already consistent, no change needed. Both panes now act only on
+  the anchored line range. Cargo tests updated to the new rule (not weakened): app_flow
+  comment_at_targets_by_buffer_line_and_side now asserts end+1 → None; the old exact-anchor-vs-card-row
+  precedence test is repurposed to comment_at_disambiguates_adjacent_comments_by_anchored_line. Gate:
+  extended scripts/tui-trio-test.sh (nvim-mode rr) — step 1b asserts rr from end+1 is INERT ("no
+  comment under the cursor", comment survives, Send count holds) and step 1c asserts rr resolves from
+  the anchored line; the survival check reads the store (Send count), not card pixels, since card
+  repaint has its own separate timing race. 141 cargo + lua suites green; fmt/clippy clean; trio gate
+  green 5/5, edit/jump gates green (edit/delete still fire from the anchored line).
 
 - 2026-07-07 r2.p1 (scenario-matrix, ranked 4 residual — tab switch mid-highlight): BUG found+fixed.
   A nvim visual selection is host-invisible state that only makes sense while the editor is the

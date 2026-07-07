@@ -26,18 +26,33 @@ wait_for "Send (0)"
 wait_for "resolved (0 left)"
 echo "ok 1 - rr resolves the comment under the cursor"
 
-# 1b. Clicking the CARD lands the cursor on the line below the anchor (virt_lines behavior);
-#     rr must still find the comment from there.
+# 1b. resolve/edit/delete fire from ONE place: the comment's anchored (commented) line only.
+#     Anchor a comment on line 1, then step DOWN one real line to end+1 — the row just below the
+#     virt_lines card, where a mouse click on the card also lands (motion is by real lines, so
+#     `j` skips the virtual card). Expected: from end+1, `space rr` is INERT — it reports "no
+#     comment under the cursor" and the comment SURVIVES (Send count holds at 1); `rr` resolves
+#     only from the anchored line. This is the consistency fix (was: rr fired from end+1 too).
+#     The survival check reads the Send count (the store), not the card pixels: card repaint has
+#     its own separate timing and would make a pixel assertion flaky; the store is authoritative.
+keys -l "1G"; sleep 0.2
 keys Space r c; sleep 0.3
-keys -l "card click"; keys Enter
-wait_for "card click"
-loc=$(locate "card click")
-click "$(echo $loc | cut -d' ' -f1)" "$(echo $loc | cut -d' ' -f2)"
-sleep 0.5
+keys -l "card row"; keys Enter
+wait_for "╭─ comment"
+wait_for "card row"
+wait_for "Send (1)"
+keys j; sleep 0.3                                                     # cursor -> end+1 (below card)
 keys Space r r
+wait_for "no comment under the cursor"                               # INERT: reported no-op
+frame | grep -qF "Send (1)" || fail "1b: rr on the row below the card (end+1) resolved the comment"
+echo "ok 1b - rr on the row below the card (end+1) is inert and the comment survives"
+
+# 1c. Back on the anchored line, rr resolves (card + count clear) — the single valid trigger.
+keys k; sleep 0.3
+keys Space r r
+wait_for "resolved (0 left)"
 wait_gone "╭─ comment"
 wait_for "Send (0)"
-echo "ok 1b - rr resolves after a click on the card itself"
+echo "ok 1c - rr resolves from the comment's anchored line"
 
 # 2. space ry yank: with no clipboard tool it must surface the error, not wedge; with one it
 #    reports the copy. Either way the reviewer stays interactive.

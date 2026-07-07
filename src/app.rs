@@ -2004,17 +2004,17 @@ impl App {
 
     /// The store index of a view-matching comment covering `line` on `side` of `file` — the
     /// nvim-mode counterpart of [`Self::comment_under_cursor`], keyed by buffer coordinates
-    /// instead of diff rows.
+    /// instead of diff rows. Matches only the comment's anchored line range (`start..=end`),
+    /// the line that carries the number highlight — resolve/edit/delete fire from that one
+    /// predictable location, never from the card row below it.
     pub fn comment_at(&self, file: &str, side: Side, line: u32) -> Option<usize> {
-        let base =
-            |c: &Comment| c.file == file && c.side == side && self.comment_matches_current(c);
-        self.store
-            .iter()
-            .position(|c| base(c) && c.start <= line && line <= c.end)
-            // The card renders as virt_lines under `end`, and a mouse click ON the card puts
-            // the cursor on the NEXT buffer line — treat that row as the comment's too, so a
-            // card click followed by rr/rx/re works. Exact anchors take precedence above.
-            .or_else(|| self.store.iter().position(|c| base(c) && c.end.saturating_add(1) == line))
+        self.store.iter().position(|c| {
+            c.file == file
+                && c.side == side
+                && self.comment_matches_current(c)
+                && c.start <= line
+                && line <= c.end
+        })
     }
 
     /// nvim mode: edit the comment covering the editor's cursor (sent ones stay resolve-only,
@@ -2469,10 +2469,12 @@ impl App {
     }
 
     /// nvim mode: the embedded editor navigated to `file` on its own (a native jump). When the
-    /// file is part of the changeset, adopt it as the open selection — the tree highlight and
-    /// the host diff model follow the editor — without re-opening it (it is already there; the
+    /// file is part of the changeset, adopt it as the open selection — the host diff model and
+    /// the file-list cursor follow the editor — without re-opening it (it is already there; the
     /// caller marks it as the published view so the per-frame sync issues no redundant `:edit`).
-    /// A no-op when it is already the selection or is outside the changeset.
+    /// Uses the same reveal machinery as `jump_to_comment`/`edit_here`, so a collapsed parent
+    /// directory is expanded to surface the row. A no-op when it is already the selection or is
+    /// outside the changeset.
     pub fn adopt_editor_file(&mut self, file: &str) {
         if self.diff_path.as_deref() == Some(file) {
             return;
@@ -2480,12 +2482,9 @@ impl App {
         let Some(entry) = self.entries.iter().find(|e| e.path == file).cloned() else {
             return;
         };
-        self.reset_diff_view();
         self.open_path_in_tab(entry.path, entry.previous_path);
-        if let Some(fi) = self.file_row_of_path(file) {
-            self.file_cursor = fi;
-            self.reveal_files = true;
-        }
+        self.reveal_path(file);
+        self.reveal_files = true;
     }
 
     /// The store index to act on: the comment under the diff cursor, or — in the list overlay —
