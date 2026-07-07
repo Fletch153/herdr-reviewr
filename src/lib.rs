@@ -837,7 +837,13 @@ fn event_loop(
             );
             last_poll = Instant::now();
         }
+        // Durable comments: any store mutation this tick lands on disk before the next input
+        // can close the pane (rev-guarded no-op otherwise).
+        app.persist_comments();
     }
+    // The quit-triggering tick breaks the loop before the in-loop call runs again: persist a
+    // final-frame mutation (e.g. a delete immediately followed by q).
+    app.persist_comments();
     Ok(())
 }
 

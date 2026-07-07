@@ -332,6 +332,9 @@ pub struct App {
     pub resizing: bool,
     pub select_anchor: Option<usize>,
     pub store: CommentStore,
+    /// The store revision last persisted to the repo's comments ref — the event loop calls
+    /// `persist_comments` every tick and this guard makes it a no-op between mutations.
+    comments_saved_rev: u64,
     pub list_cursor: usize,
     /// Store indices checked in the comments list for a batch resolve; cleared on any change.
     pub list_selected: HashSet<usize>,
@@ -378,6 +381,14 @@ impl App {
         // anchor across a sidebar restart (specs/herdr-host.md).
         let turn_key = git::worktree_key(&repo);
         let turn = TurnTracker::with_baseline(git::read_baseline_ref(&repo, &turn_key));
+        // Resume persisted comments the same way: an accidentally closed pane keeps its review.
+        let mut store = CommentStore::new();
+        if let Some(json) = git::read_comments_blob(&repo, &turn_key)
+            && let Some(comments) = CommentStore::deserialize(&json)
+        {
+            store.seed(comments);
+        }
+        let comments_saved_rev = store.rev();
         let theme = theme::resolve(None);
         // Commit scope defaults to the tip (HEAD) — the uncommitted view — so building straight
         // into it shows a diff without a later `set_scope` call.
@@ -428,7 +439,8 @@ impl App {
             nvim_place_last: false,
             resizing: false,
             select_anchor: None,
-            store: CommentStore::new(),
+            store,
+            comments_saved_rev,
             list_cursor: 0,
             list_selected: HashSet::new(),
             selected_commit,
@@ -2646,6 +2658,25 @@ impl App {
             .filter(|&(i, r)| is_change(r) && (i == 0 || !is_change(&self.visible[i - 1])))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// Write the comment store to the repo's private comments ref when it changed since the
+    /// last write — called once per event-loop tick (and once after it ends), so every
+    /// mutation is durable before the pane can be closed. An empty store drops the ref.
+    /// Failures (non-repo, read-only object store) are logged and the comments stay
+    /// session-local; the next mutation retries.
+    pub fn persist_comments(&mut self) {
+        if self.store.rev() == self.comments_saved_rev {
+            return;
+        }
+        self.comments_saved_rev = self.store.rev();
+        if self.store.is_empty() {
+            git::delete_comments_blob(&self.repo, &self.turn_key);
+        } else if let Err(e) =
+            git::write_comments_blob(&self.repo, &self.turn_key, &self.store.serialize())
+        {
+            logln!("persist_comments: {e}");
+        }
     }
 
     /// Advance the review one step. On the Changes tab with the diff focused, step to the next

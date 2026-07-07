@@ -208,6 +208,82 @@ impl CommentStore {
         self.rev += 1;
         std::mem::take(&mut self.items)
     }
+
+    /// The store's on-disk form (versioned JSON) — what the host writes after every mutation
+    /// so an accidentally closed pane never loses comments.
+    pub fn serialize(&self) -> String {
+        use serde_json::{Value, json};
+        let comments: Vec<Value> = self
+            .items
+            .iter()
+            .map(|c| {
+                json!({
+                    "file": c.file,
+                    "side": match c.side { Side::New => "new", Side::Old => "old" },
+                    "start": c.start,
+                    "end": c.end,
+                    "lines": c.lines,
+                    "text": c.text,
+                    "diff_anchored": c.diff_anchored,
+                    "scope": match c.scope {
+                        Scope::Branch => "branch",
+                        Scope::LastTurn => "last-turn",
+                        Scope::Commit => "commit",
+                    },
+                    "base": c.base,
+                    "sent": c.sent,
+                })
+            })
+            .collect();
+        json!({ "version": 1, "comments": comments }).to_string()
+    }
+
+    /// Parse `serialize`'s output. `None` on any malformed or unknown-version input — the
+    /// caller starts empty rather than guessing at half-readable state.
+    pub fn deserialize(s: &str) -> Option<Vec<Comment>> {
+        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        if v.get("version")?.as_u64()? != 1 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for c in v.get("comments")?.as_array()? {
+            out.push(Comment {
+                file: c.get("file")?.as_str()?.to_string(),
+                side: match c.get("side")?.as_str()? {
+                    "new" => Side::New,
+                    "old" => Side::Old,
+                    _ => return None,
+                },
+                start: u32::try_from(c.get("start")?.as_u64()?).ok()?,
+                end: u32::try_from(c.get("end")?.as_u64()?).ok()?,
+                lines: c.get("lines")?.as_str()?.to_string(),
+                text: c.get("text")?.as_str()?.to_string(),
+                diff_anchored: c.get("diff_anchored")?.as_bool()?,
+                scope: match c.get("scope")?.as_str()? {
+                    "branch" => Scope::Branch,
+                    "last-turn" => Scope::LastTurn,
+                    "commit" => Scope::Commit,
+                    _ => return None,
+                },
+                base: match c.get("base")? {
+                    serde_json::Value::Null => None,
+                    b => Some(b.as_str()?.to_string()),
+                },
+                sent: c.get("sent")?.as_bool()?,
+            });
+        }
+        Some(out)
+    }
+
+    /// Adopt a restored comment list (session start). A mutation like any other, so the
+    /// editor's card watcher re-pushes.
+    pub fn seed(&mut self, comments: Vec<Comment>) {
+        if comments.is_empty() {
+            return;
+        }
+        self.rev += 1;
+        self.items = comments;
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +303,44 @@ mod tests {
             base: None,
             sent: false,
         }
+    }
+
+    #[test]
+    fn store_serialization_round_trips() {
+        let mut s = CommentStore::new();
+        s.add(comment("a.rs", 1, 3, "first — with unicode ✓ and\nnewlines"));
+        let mut old = comment("dir/b.rs", 40, 40, "removed side");
+        old.side = Side::Old;
+        old.scope = Scope::Branch;
+        old.base = Some("origin/main".into());
+        old.sent = true;
+        old.diff_anchored = false;
+        s.add(old);
+        let restored = CommentStore::deserialize(&s.serialize()).expect("parses");
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].text, "first — with unicode ✓ and\nnewlines");
+        assert_eq!(restored[1].side, Side::Old);
+        assert_eq!(restored[1].scope, Scope::Branch);
+        assert_eq!(restored[1].base.as_deref(), Some("origin/main"));
+        assert!(restored[1].sent && !restored[1].diff_anchored);
+        let mut seeded = CommentStore::new();
+        let r0 = seeded.rev();
+        seeded.seed(restored);
+        assert_eq!(seeded.len(), 2);
+        assert!(seeded.rev() > r0, "seeding is a visible mutation (cards re-push)");
+    }
+
+    #[test]
+    fn store_deserialize_rejects_junk() {
+        assert!(CommentStore::deserialize("not json").is_none());
+        assert!(CommentStore::deserialize("{\"version\":2,\"comments\":[]}").is_none());
+        assert!(
+            CommentStore::deserialize("{\"version\":1,\"comments\":[{\"file\":\"a\"}]}").is_none()
+        );
+        assert_eq!(
+            CommentStore::deserialize("{\"version\":1,\"comments\":[]}").map(|v| v.len()),
+            Some(0)
+        );
     }
 
     #[test]

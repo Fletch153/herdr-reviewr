@@ -360,6 +360,53 @@ pub fn write_baseline_ref(repo: &Path, key: &str, sha: &str) -> Result<()> {
     Ok(())
 }
 
+/// The private ref holding a worktree's persisted comment store (a JSON blob), so an
+/// accidentally closed pane never loses comments. Same store shape as the turn baseline:
+/// repo-local, worktree-keyed, atomic via `update-ref`, gone with the repo.
+fn comments_ref(key: &str) -> String {
+    format!("refs/reviewr/comments/{key}")
+}
+
+/// The persisted comment-store JSON for this worktree, if any.
+pub fn read_comments_blob(repo: &Path, key: &str) -> Option<String> {
+    git(repo, &["cat-file", "blob", &comments_ref(key)]).ok()
+}
+
+/// Persist the comment-store JSON under the worktree's private ref (hash the blob, then an
+/// atomic ref update). Non-repos and read-only object stores surface as an error the caller
+/// may log and ignore — comments then simply stay session-local.
+pub fn write_comments_blob(repo: &Path, key: &str, json: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawning git hash-object")?;
+    child
+        .stdin
+        .take()
+        .context("git hash-object stdin")?
+        .write_all(json.as_bytes())
+        .context("writing comment blob")?;
+    let out = child.wait_with_output().context("running git hash-object")?;
+    if !out.status.success() {
+        bail!("git hash-object failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    git(repo, &["update-ref", &comments_ref(key), &sha])?;
+    Ok(())
+}
+
+/// Drop the worktree's persisted comment store (the last comment was deleted or exported).
+pub fn delete_comments_blob(repo: &Path, key: &str) {
+    let _ = git(repo, &["update-ref", "-d", &comments_ref(key)]);
+}
+
 /// git's well-known empty-tree object, used as the diff base when a repo has no commits.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
