@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use anyhow::{Result, bail};
 use common::Repo;
 use herdr_reviewr::app::{App, BranchRow, Focus, FooterAction, Mode, NvimAnchor, Tab};
+use herdr_reviewr::diff::Row;
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::model::{Scope, Side};
 
@@ -430,6 +431,32 @@ fn esc_clears_a_live_selection() {
     assert!(app.select_anchor.is_some(), "v starts a selection");
     app.clear_selection();
     assert!(app.select_anchor.is_none(), "esc clears the selection");
+}
+
+#[test]
+fn a_poll_never_rebuilds_the_diff_under_a_live_selection() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+');
+    app.toggle_select();
+    let (lo, hi) = app.selection_range();
+    let marked: Vec<String> = app.visible[lo..=hi].iter().map(Row::text).collect();
+
+    // The agent rewrites the file above the marked lines between polls.
+    r.write("a.rs", "zero\nalpha\nBETA\ngamma\ndelta\nepsilon\n");
+    app.reload().unwrap();
+    assert_eq!(app.selection_range(), (lo, hi), "the selection keeps its rows across the poll");
+    let held: Vec<String> = app.visible[lo..=hi].iter().map(Row::text).collect();
+    assert_eq!(marked, held, "the marked snippet is exactly what the reader selected");
+
+    // Dropping the anchor lets the next poll land the deferred write.
+    app.clear_selection();
+    app.reload().unwrap();
+    assert!(
+        app.visible.iter().any(|row| row.text().contains("zero")),
+        "the frozen diff refreshes once the selection is cleared"
+    );
 }
 
 #[test]

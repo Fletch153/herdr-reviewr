@@ -992,8 +992,15 @@ impl App {
         // Explicit actions (navigation, a scope switch) request their own reveal.
         // While a modal is open — composing a comment, or the comments-list overlay — the
         // open diff is frozen, so a poll can't shift the anchor beneath the writer or reset
-        // the scroll/selection under the overlay. The file list still updates above.
-        if !self.composing() && self.mode != Mode::List && self.mode != Mode::CommitPick {
+        // the scroll/selection under the overlay. An active range-selection freezes it for
+        // the same reason: the anchor and cursor are `visible` indices, and a rebuild under
+        // them would re-target the selection so the captured snippet no longer matches what
+        // the reader marked. The file list still updates above.
+        if !self.composing()
+            && self.select_anchor.is_none()
+            && self.mode != Mode::List
+            && self.mode != Mode::CommitPick
+        {
             // A poll keeps the reader on the same file; only a different shown file resets
             // the diff view to the top.
             if self.shown_entry().map(|e| e.path) != self.diff_path {
