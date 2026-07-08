@@ -2140,13 +2140,25 @@ fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     let width = inner.width as usize;
     let height = inner.height as usize;
+    // Row 0 is the synthetic "Uncommitted" base; the real commits follow, one-indexed.
+    let total = app.commit_choices.len() + 1;
     let scroll = commit_scroll(app.commit_cursor, height);
-    let end = (scroll + height).min(app.commit_choices.len());
-    let items: Vec<ListItem> = app.commit_choices[scroll..end]
-        .iter()
-        .enumerate()
-        .map(|(row, c)| {
-            let i = scroll + row;
+    let end = (scroll + height).min(total);
+    let items: Vec<ListItem> = (scroll..end)
+        .map(|i| {
+            let selected = (i == app.commit_cursor).then_some(p.surface2);
+            if i == 0 {
+                let label = Span::styled(
+                    "uncommitted  ".to_string(),
+                    Style::default().fg(p.peach).add_modifier(Modifier::BOLD),
+                );
+                let hint = Span::styled(
+                    "working tree vs the latest commit — follows new commits".to_string(),
+                    Style::default().fg(p.overlay1),
+                );
+                return selectable_row(vec![label, hint], width, selected);
+            }
+            let c = &app.commit_choices[i - 1];
             let date = Span::styled(format!("{}  ", c.date), Style::default().fg(p.overlay1));
             let hash = Span::styled(
                 format!("{}  ", c.short),
@@ -2182,7 +2194,8 @@ pub fn hit_commit_pick(area: Rect, app: &App, col: u16, row: u16) -> Option<usiz
     }
     let scroll = commit_scroll(app.commit_cursor, inner.height as usize);
     let idx = scroll + (row - inner.y) as usize;
-    (idx < app.commit_choices.len()).then_some(idx)
+    // +1 for the synthetic "Uncommitted" row at index 0.
+    (idx < app.commit_choices.len() + 1).then_some(idx)
 }
 
 fn render_branch_picker(frame: &mut Frame, app: &App, area: Rect) {

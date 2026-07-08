@@ -410,9 +410,10 @@ impl App {
             .map(|json| parse_reviewed(&json))
             .unwrap_or_default();
         let theme = theme::resolve(None);
-        // Commit scope defaults to the tip (HEAD) — the uncommitted view — so building straight
-        // into it shows a diff without a later `set_scope` call.
-        let selected_commit = (scope == Scope::Commit).then(|| git::head_commit(&repo)).flatten();
+        // Commit scope defaults to `None` — the "uncommitted" base: the working tree diffed
+        // against the current HEAD, re-resolved on every reload, so it follows new commits (a
+        // commit drops its files out of the view) instead of pinning to the startup HEAD.
+        let selected_commit = None;
         Self {
             repo,
             branch_choices: Vec::new(),
@@ -1167,11 +1168,11 @@ impl App {
                 (old, worktree_content(&self.repo, new_path))
             }
             Scope::Commit => {
-                let old = self
-                    .resolved_base
-                    .as_deref()
-                    .map(|c| git::file_content(&self.repo, c, old_path))
-                    .unwrap_or_default();
+                // No pinned commit is the "uncommitted" base: diff against the current HEAD (or
+                // the empty tree on an unborn repo). Same fallback as `changed_files` and
+                // `nvim_base_ref`, so the file list, the built-in diff, and the editor agree.
+                let base = self.resolved_base.clone().unwrap_or_else(|| git::diff_base(&self.repo));
+                let old = git::file_content(&self.repo, &base, old_path);
                 (old, worktree_content(&self.repo, new_path))
             }
         }
@@ -1328,12 +1329,9 @@ impl App {
     pub fn set_scope(&mut self, scope: Scope) -> Result<()> {
         if self.scope != scope && !self.composing() {
             self.scope = scope;
-            // Entering the commit comparator with nothing chosen defaults the base to the newest
-            // commit (HEAD), so cycling in shows a diff rather than the picker; the picker opens
-            // only from the commit chip. Set before the reload so the diff uses it at once.
-            if scope == Scope::Commit && self.selected_commit.is_none() {
-                self.selected_commit = git::head_commit(&self.repo);
-            }
+            // Entering the commit comparator keeps whatever base is already chosen — `None` is the
+            // "uncommitted" base (working tree vs the current HEAD, dynamic), so cycling in shows
+            // that diff rather than the picker; the picker opens only from the commit chip.
             // A scope switch changes the Changes changeset (and each file's old side), so the
             // Changes tab snaps to the top of the new scope: reset its cursor, folds, and diff
             // scroll, and drop cached diffs. The `All files` listing and File view are
@@ -1367,10 +1365,10 @@ impl App {
         }
     }
 
+    /// True on the "uncommitted" base: Commit scope with no pinned commit, so the diff is the
+    /// working tree against the current HEAD (dynamic — it follows new commits).
     pub fn comparing_tip(&self) -> bool {
-        self.scope == Scope::Commit
-            && self.selected_commit.as_deref()
-                == self.commit_choices.first().map(|c| c.sha.as_str())
+        self.scope == Scope::Commit && self.selected_commit.is_none()
     }
 
     pub fn open_commit_picker(&mut self) {
@@ -1382,24 +1380,32 @@ impl App {
             self.status = "no commits in history".to_string();
             return;
         }
+        // Row 0 is the synthetic "Uncommitted" entry, so a pinned commit sits one row lower.
         self.commit_cursor = self
             .selected_commit
             .as_deref()
             .and_then(|sha| self.commit_choices.iter().position(|c| c.sha == sha))
-            .unwrap_or(0);
+            .map_or(0, |pos| pos + 1);
         self.mode = Mode::CommitPick;
     }
 
     pub fn commit_move(&mut self, delta: isize) {
         if self.mode == Mode::CommitPick {
-            self.commit_cursor = step(self.commit_cursor, delta, self.commit_choices.len());
+            // +1 for the synthetic "Uncommitted" row at the top of the picker.
+            self.commit_cursor = step(self.commit_cursor, delta, self.commit_choices.len() + 1);
         }
     }
 
+    /// Pick a row in the commit picker: row 0 is the "Uncommitted" base (working tree vs the
+    /// current HEAD, dynamic), and each later row pins against a commit (one-indexed, so the
+    /// Uncommitted row sits above them all).
     pub fn pick_commit(&mut self, idx: usize) -> Result<()> {
-        let Some(commit) = self.commit_choices.get(idx) else { return Ok(()) };
-        let sha = commit.sha.clone();
         self.mode = Mode::Normal;
+        if idx == 0 {
+            return self.set_uncommitted();
+        }
+        let Some(commit) = self.commit_choices.get(idx - 1) else { return Ok(()) };
+        let sha = commit.sha.clone();
         self.set_commit(sha)
     }
 
@@ -1407,6 +1413,17 @@ impl App {
     /// comment's authoring commit when it's clicked in the list.
     pub fn set_commit(&mut self, sha: String) -> Result<()> {
         self.selected_commit = Some(sha);
+        self.scope = Scope::Commit;
+        self.reset_changes_view();
+        self.reload()?;
+        self.reveal_files = true;
+        Ok(())
+    }
+
+    /// Repoint the Commit-scope diff at the "uncommitted" base — the working tree against the
+    /// current HEAD, re-resolved on every reload so a new commit drops its files from the view.
+    pub fn set_uncommitted(&mut self) -> Result<()> {
+        self.selected_commit = None;
         self.scope = Scope::Commit;
         self.reset_changes_view();
         self.reload()?;
@@ -2641,7 +2658,12 @@ impl App {
         }
         if diff_anchored {
             let _ = match scope {
-                Scope::Commit => self.set_commit(base.unwrap_or_default()),
+                // A `None` base under Commit scope is the "uncommitted" base (working tree vs the
+                // current HEAD) — restore that, not an empty-string commit.
+                Scope::Commit => match base {
+                    Some(sha) => self.set_commit(sha),
+                    None => self.set_uncommitted(),
+                },
                 Scope::Branch => self.set_branch(base.unwrap_or_default()),
                 Scope::LastTurn => self.set_scope(Scope::LastTurn),
             };

@@ -39,7 +39,7 @@ read -r CP RP <<< "$(locate "[uncommitted]")"
 [ -n "${CP:-}" ] || fail "no commit chip in the header"
 click "$CP" "$RP"
 wait_for "Compare with commit"
-keys j   # HEAD (C) -> B
+keys j; sleep 0.2; keys j   # row 0 is Uncommitted, so: Uncommitted -> C -> B (the older commit)
 keys Enter
 wait_gone "Compare with commit"
 wait_gone "[uncommitted]"

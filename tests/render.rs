@@ -801,7 +801,7 @@ fn the_commit_picker_lists_hashes_and_titles() {
 fn the_commit_chip_shows_the_selected_commit() {
     let (_r, mut app) = commit_render_app();
     app.open_commit_picker();
-    app.pick_commit(1).unwrap();
+    app.pick_commit(2).unwrap(); // row 0 is Uncommitted, so commit_choices[1] is picker row 2
     let out = render(&app);
     assert!(
         out.contains(&format!("[>{}", app.commit_choices[1].short)),

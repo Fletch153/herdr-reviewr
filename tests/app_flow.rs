@@ -1681,6 +1681,7 @@ fn a_changes_comment_matches_only_its_authoring_base() {
     r.commit_all("c2");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
+    app.set_commit(app.commit_choices[0].sha.clone()).unwrap(); // pin to the tip for this test
     let head = app.selected_commit.clone().expect("commit scope has a base");
     assert!(app.commit_choices.len() >= 2, "two commits to switch between");
     let older = app.commit_choices[1].sha.clone();
@@ -1880,6 +1881,7 @@ fn open_comment_restores_scope_and_base_then_jumps() {
     r.write("a.rs", "l1\nl2\nl3\n");
     let mut app = App::new(r.path_buf(), Scope::Commit, None);
     app.reload().unwrap();
+    app.set_commit(app.commit_choices[0].sha.clone()).unwrap(); // pin to the tip for this test
     let head = app.selected_commit.clone().unwrap();
     let older = app.commit_choices[1].sha.clone();
 
@@ -2383,25 +2385,52 @@ fn picking_a_commit_diffs_the_worktree_against_it() {
     assert_eq!(app.changed_count(), 1, "vs HEAD: just the uncommitted work.rs");
 
     app.open_commit_picker();
-    app.pick_commit(2).unwrap();
+    app.pick_commit(3).unwrap(); // row 0 is Uncommitted, so "add a" (choices[2]) is picker row 3
     assert_eq!(app.changed_count(), 3, "vs add a: b.rs, c.rs, and work.rs");
 }
 
 #[test]
-fn entering_commit_scope_defaults_to_the_latest_commit() {
+fn entering_commit_scope_defaults_to_uncommitted() {
     let r = commit_repo();
-    let head = r.git(&["rev-parse", "HEAD"]).trim().to_string();
     let mut app = App::new(r.path_buf(), Scope::Commit, Some("main".to_string()));
     app.reload().unwrap();
 
     app.enter_commit_scope().unwrap();
     assert_eq!(app.scope, Scope::Commit);
     assert_eq!(app.mode, Mode::Normal, "cycling in shows the diff, not the picker");
-    assert_eq!(
-        app.selected_commit.as_deref(),
-        Some(head.as_str()),
-        "the base defaults to the newest commit (HEAD)"
+    assert!(
+        app.selected_commit.is_none(),
+        "the base defaults to uncommitted (working tree vs the current HEAD, dynamic)"
     );
+    assert!(app.comparing_tip(), "and the chip reads uncommitted");
+}
+
+#[test]
+fn uncommitted_base_follows_new_commits() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.commit_all("init");
+    r.write("a.rs", "2\n"); // an uncommitted edit
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    assert!(app.selected_commit.is_none(), "the default base is uncommitted");
+    assert_eq!(app.changed_count(), 1, "the uncommitted edit shows");
+
+    // Commit it: the uncommitted base tracks HEAD, so the now-committed file drops from the view
+    // (this is the bug — before, a pinned startup HEAD kept showing it after a commit/push).
+    r.commit_all("edit a");
+    app.reload().unwrap();
+    assert_eq!(app.changed_count(), 0, "after committing, nothing is uncommitted");
+
+    // A fresh edit reappears, and the picker's row-0 "Uncommitted" returns to the dynamic base.
+    r.write("a.rs", "3\n");
+    app.reload().unwrap();
+    assert_eq!(app.changed_count(), 1, "a new edit is uncommitted again");
+    app.set_commit(app.commit_choices[0].sha.clone()).unwrap();
+    app.open_commit_picker();
+    app.pick_commit(0).unwrap();
+    assert!(app.selected_commit.is_none(), "picker row 0 selects the Uncommitted base");
+    assert_eq!(app.changed_count(), 1, "still showing the uncommitted edit");
 }
 
 #[test]
@@ -2417,7 +2446,11 @@ fn the_commit_picker_cursor_moves_and_clamps() {
     app.commit_move(-5);
     assert_eq!(app.commit_cursor, 0, "clamps at the top");
     app.commit_move(100);
-    assert_eq!(app.commit_cursor, app.commit_choices.len() - 1, "clamps at the bottom");
+    assert_eq!(
+        app.commit_cursor,
+        app.commit_choices.len(),
+        "clamps at the bottom (the Uncommitted row makes len+1 rows)"
+    );
 }
 
 #[test]
