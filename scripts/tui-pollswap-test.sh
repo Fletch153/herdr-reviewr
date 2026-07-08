@@ -20,6 +20,19 @@ SOCK="rvps$$"
 export TUI_INIT_EXTRA="vim.o.number = true"
 source "$(dirname "$0")/tui-lib.sh"
 
+# On failure, quit the reviewer through its OWN path first so the shared cleanup sees the session
+# end gracefully — no SIGHUP-wedge, no loud orphan-embed reap. Dump the frame BEFORE quitting so
+# the failure stays diagnosable. Best-effort (focus may be anywhere on a mid-gate fail); if the
+# quit doesn't take, tui_cleanup still reaps the fixture embed. Overrides tui-lib fail() here only.
+fail() {
+  echo "FAIL - $*"
+  frame
+  if $TMUX has-session 2>/dev/null; then
+    keys Escape 2>/dev/null; sleep 0.2; keys q 2>/dev/null; sleep 0.4; keys y 2>/dev/null || true
+  fi
+  exit 1
+}
+
 tui_start() {
   $TMUX new-session -d -x 200 -y 50 \
     "cd '$REPO' && exec '$BIN' --editor nvim --poll 100" \
@@ -54,9 +67,12 @@ churn_in AAACHURN1
 keys 2; sleep 0.15                 # -> All files (mid-churn)
 churn_in AAACHURN2
 keys 1; sleep 0.15                 # -> back to Changes (mid-churn)
-sleep 0.5                          # let a poll rebuild settle on the shifted list
-row_selected anchor.txt || fail "I1/I2: the index-shifting churn dragged the selection off anchor.txt"
-frame | grep -qF "ANCHORBODY" || fail "I1: the diff pane is not showing anchor.txt after churn+swap"
+# Event-wait (not a fixed sleep) for the poll rebuild to re-anchor the cursor by PATH: under
+# full-suite load the rebuild+repaint can lag well past a bare 0.5s. This does NOT weaken I1/I2 —
+# a real raw-index race would re-anchor onto aaa.txt and NEVER re-select anchor.txt, so the wait
+# would time out and fail; and the aaa.txt guard below still fires on the wrong-file bug.
+wait_row_selected anchor.txt       # I1/I2: selection settles back on anchor.txt after the shift
+wait_for "ANCHORBODY"              # I1: diff pane repaints anchor.txt (a separate pane, can lag the list)
 row_selected aaa.txt && fail "I2: the selection jumped onto the earlier-sorting new entry (raw-index bug)"
 echo "ok R1 - anchor selection survives an index-shifting churn across a 2->1 round trip"
 
@@ -65,9 +81,14 @@ echo "ok R1 - anchor selection survives an index-shifting churn across a 2->1 ro
 # the cursor on a vanished row.
 keys 2; sleep 0.2
 churn_out
-keys 1; sleep 0.5
-row_selected anchor.txt || fail "R2: removing an entry while stashed stranded the Changes cursor"
-frame | grep -qF "ANCHORBODY" || fail "R2: the diff pane lost anchor.txt after an entry left while stashed"
+keys 1
+# Two event-waits, not a fixed sleep: first the rebuild must drop the reconciled entry, THEN the
+# selection must settle back on anchor.txt (its highlight can repaint a frame after aaa's row text
+# clears). A real strand-on-vanished-row bug leaves anchor unselected, so wait_row_selected times
+# out and fails — the invariant keeps its teeth.
+wait_gone "aaa.txt"          # poll rebuild reconciles the removed entry off Changes
+wait_row_selected anchor.txt # R2: the cursor is not stranded — it settles on anchor.txt
+wait_for "ANCHORBODY"        # R2: diff pane repaints anchor.txt after the reconcile (pane can lag)
 frame | grep -qF "aaa.txt" && fail "R2: the removed entry still lists on Changes after a poll rebuild"
 echo "ok R2 - a stash-time entry removed while away reconciles cleanly on return"
 
@@ -78,15 +99,20 @@ keys -l "an"; sleep 0.3
 wait_for "/an"
 frame | grep -qF "zzzonly.txt" && fail "I3: the committed-clean AllFiles-only file leaked into Changes"
 keys Enter; sleep 0.3          # confirm filter (Normal mode, query kept)
-churn_in AAACHURN3            # a poll rebuild under the active filter must respect it
-sleep 0.5
+churn_in AAACHURN3            # a poll rebuild under the active filter must respect it (aaa stays hidden)
+# Event-wait with teeth (not a fixed sleep): append a fresh line to the SELECTED file so the next
+# poll re-renders its diff. When ANCHORMARK3 appears, a rebuild has run AFTER the churn — and the
+# same rebuild recomputed the changeset, so if the /an filter were bleeding aaa.txt would already
+# list. A bare sleep could pass before the rebuild even picked up the churn, masking a bleed.
+printf 'ANCHORMARK3\n' >> "$REPO/src/anchor.txt"
+wait_for "ANCHORMARK3"
 frame | grep -qF "aaa.txt" && fail "I4-pre: the /an filter did not hide the churned-in aaa.txt on Changes"
 keys 2; sleep 0.4
 wait_for "zzzonly.txt"        # All files lists the clean file (its own, unfiltered view)
 frame | grep -qF "/an" && fail "I4: the Changes /an filter text leaked into the All files pane"
 keys 1; sleep 0.4
 wait_for "/an"                # filter restored on return
-frame | grep -qF "ANCHORBODY" || fail "I1: anchor.txt not shown after the filtered round trip"
+wait_for "ANCHORBODY"        # I1: anchor.txt diff repaints after the filtered round trip (pane can lag)
 echo "ok R3 - per-tab filter holds under churn, no clean-file bleed, restored on return"
 
 keys Escape; sleep 0.3        # clear filter
