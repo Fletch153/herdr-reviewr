@@ -31,7 +31,7 @@ empty, huge, vanishing).
 | 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | probed: c2.p6 (sticky-preference contract holds: non-md file in All files shows no chip, returning to the md file re-renders; no bug; gate tui-stash step b) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
 | 12 | Clipboard (provider→OSC52, cache pastes, host export fallback) | n/a | n/a | n/a | open (OSC52 mid-frame interleave; rapid yank storm) | covered: tui-clip; run.lua (linewise trailing \n) |
 | 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | probed: c2.p6 (BUG found+fixed — the `/` filter query was app-global while every other left-pane field was stashed, so a Changes filter silently filtered All files' list (and vice versa); filter now lives in TabStash + set_tab confirms an in-flight filter box before the swap. Also probed clean: ctrl+i mid-filter ignored, `2` mid-compose lands in the draft with no switch. Gate tui-stash. Tab switch mid-highlight probed r2.p1 (BUG found+fixed — a visual selection survived Tab-out to the files pane: the editor stayed in visual mode behind the host's back, so a same-file tab switch (in-place sync_view never leaves visual) and the Tab back landed in a stale selection where j/k extended instead of navigating; focus handoff now feeds `<C-\><C-N>` to drop transient modes, gate tui-vishl)). probed: c1.p1 (1/2/3 tab switch × a live comment card — BUG found+fixed: switching to a never-visited All files tab leaked the Changes comment card onto the empty All-files buffer because nvim_sync's no-selection early-return skipped comments.apply; the early-return now clears cards. Gate tui-cardflip step 1) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
-| 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename; probed: c1.p5 (zero-commit repo: untracked file diffs against the empty tree, both tabs render; detached HEAD: clean tree shows the empty state, live edit re-lists — both pass, no bug) |
+| 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename; probed: c1.p5 (zero-commit repo: untracked file diffs against the empty tree, both tabs render — host side; detached HEAD: clean tree shows the empty state, live edit re-lists); probed: c1.p5 re-run 2026-07-08 (BUG found+fixed the deleted throwaway missed — the **nvim editor** showed an unborn-repo added file UNDECORATED: nvim_base_ref published an unresolvable `HEAD`, so diff.lua's refresh bailed on `HEAD:path`; now falls back to git::diff_base → the empty tree on a commitless repo, so the added file paints fully green like the built-in pane. Permanent gate tui-degenerate (unborn green paint + detached-HEAD greeter/re-list); teeth-verified red pre-fix) |
 | 15 | EOL (nofixendofline, note+sign, eol revert, byte-exact base) | covered: tui-eol | n/a | covered: tui-eol | n/a | covered: tui-eol, run.lua; open (CRLF content) |
 | 16 | Host UI interop (mouse routing, divider, resize, filter, help, chips) | covered: tui-mouse, tui-md (chip) | covered: tui-mouse | covered: tui-split (divider), tui-picker (filter/resize) | open (drag during repaint; click storm; narrow terminal) | covered: tui-trio (backspace delete) |
 
@@ -60,7 +60,7 @@ clusters that share a fixture.
 10. **7×timing** — revert racing agent write / poll refresh.
 11. **file-state batch A** — rename onto deleted, case-only rename, tick/revert/flip on renamed files (4, 6, 7 × file-state).
 12. **file-state batch B** — huge diff (5k lines), very long lines, huge md (2, 3, 11 × file-state).
-13. **file-state batch C** — ~~empty repo / zero commits / detached HEAD~~ DONE c1.p5 (both pass live, no bug; the adjacent USER-REPORT empty-changeset bug fixed + gate tui-empty); still open: agent deletes open file; CRLF (9, 15 × file-state).
+13. **file-state batch C** — ~~empty repo / zero commits / detached HEAD~~ DONE c1.p5 + re-run 2026-07-08 (unborn-repo nvim paint BUG found+fixed — see Log — that c1.p5's now-deleted throwaway missed; permanent gate tui-degenerate replaces the throwaway; detached HEAD graceful); still open: agent deletes open file; CRLF (9, 15 × file-state).
 14. **16×timing** — drag during repaint; narrow terminal (120×30) sweep (c1.p4 ran the full
     tui-test flow at 120×30: all 19 assertions pass, no layout bug — drag-during-repaint and
     the other gates at narrow size still open).
@@ -68,6 +68,23 @@ clusters that share a fixture.
 
 ## Log
 
+- 2026-07-08 c1.p5 (edge-hardening, class 1 re-run — empty/degenerate git state): BUG found+fixed
+  that c1.p5's earlier throwaway (deleted, ungated) missed. On an UNBORN repo (git init, no HEAD)
+  the Changes tab lists an untracked file correctly (host-side changed_files/content_sides use the
+  empty-tree fallback), but the **nvim editor** opened it UNDECORATED — no `+` add signs, no green.
+  Root cause: App::nvim_base_ref() falls back to `"HEAD"` when no base resolves; on an unborn repo
+  `HEAD` is unresolvable, so diff.lua's refresh (base_lines → `git show HEAD:path` fails, then
+  `rev-parse HEAD^{tree}` fails → nil) bails and paints nothing — while the built-in diff pane
+  (via git::diff_base) shows the same file green. Fix (strictly tightening, reuses host semantics):
+  nvim_base_ref's fallback now calls git::diff_base (made pub) → still `HEAD` on a normal repo,
+  the empty tree on a commitless one, so the editor diffs the added file against the empty tree and
+  paints it green like everywhere else (src/app.rs, src/git.rs; one-line behavior change + pub).
+  Detached HEAD was already graceful (HEAD resolves → clean tree parks on the empty greeter, a live
+  edit re-lists). Permanent gate scripts/tui-degenerate-test.sh (Phase A unborn green paint —
+  teeth-verified RED pre-fix with the exact FAIL message; Phase B detached greeter + re-list) wired
+  into tui-all.sh; replaces the deleted throwaway so both degenerate states now have a regression
+  lock. 368 cargo tests + lua suite green; fmt/clippy clean; gate green twice (focus-correct quit,
+  zero embed leaks); tui-empty neighbor green.
 - 2026-07-07 r2.p3 (scenario-matrix, USER REPORT 3 — resolve-consistency): fixed. The user found it
   inconsistent that comment resolve/edit/delete (rr/re/rx) fired from TWO cursor rows. `comment_at`
   (src/app.rs) matched a comment when the cursor sat on its anchored line(s) `start..=end` OR on

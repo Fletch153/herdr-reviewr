@@ -3035,8 +3035,9 @@ impl App {
     /// with its visual tier. Pure — a context → action mapping, unit-tested without a terminal.
     /// The ref the embedded editor's inline diff compares against — the same old side
     /// [`Self::content_sides`] gives the built-in diff pane: the merge-base on the branch
-    /// scope, the turn-baseline tree on last-turn, the selected commit (else `HEAD`) on the
-    /// commit scope. Always `git show <ref>:<path>`-resolvable.
+    /// scope, the turn-baseline tree on last-turn, the selected commit on the commit scope,
+    /// falling back to `HEAD` (or the empty tree on an unborn repo). Always
+    /// `git show <ref>:<path>`-resolvable.
     #[must_use]
     pub fn nvim_base_ref(&self) -> String {
         match self.scope {
@@ -3044,7 +3045,11 @@ impl App {
             Scope::LastTurn => self.turn.baseline().map(str::to_owned),
             Scope::Commit => self.resolved_base.clone(),
         }
-        .unwrap_or_else(|| "HEAD".to_string())
+        // No base resolves only when there is nothing to anchor to: an unborn repo (no HEAD),
+        // or a scope whose baseline is absent. `diff_base` keeps this `HEAD` on a normal repo
+        // but yields the empty tree on a commitless one, so the editor paints an added file
+        // green (its `refresh` bails on an unresolvable `HEAD:path`) rather than undecorated.
+        .unwrap_or_else(|| git::diff_base(&self.repo))
     }
 
     /// The renderer maps each to a key+label, styles it by tier, and drops the least relevant

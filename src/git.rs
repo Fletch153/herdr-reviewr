@@ -433,7 +433,10 @@ pub fn delete_reviewed_blob(repo: &Path, key: &str) {
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// `HEAD` when the repo has a commit, else the empty tree (a commitless repo has no HEAD).
-fn diff_base(repo: &Path) -> String {
+/// The shared "no explicit base" fallback: both `changed_files` (the built-in pane) and the
+/// nvim editor's `g:reviewr_base` resolve through it, so an unborn repo diffs against the
+/// empty tree everywhere instead of publishing an unresolvable `HEAD`.
+pub fn diff_base(repo: &Path) -> String {
     if git(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok() {
         "HEAD".to_string()
     } else {
