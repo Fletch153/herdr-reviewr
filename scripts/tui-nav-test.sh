@@ -75,11 +75,12 @@ frame | grep -q "TWOHUNK1" || fail "Space navigated in All files (the leader is 
 esc
 echo "ok 6 - Space stays the leader in All files"
 
-# 7. Ticks are per-FILE, not per-view: both files were reviewed by the walk in the Changes
-#    tab — their ✓ must show in the All files tree too.
+# 7. Ticks are per-TAB: the two files reviewed by the Changes walk (steps 1-4) do NOT carry
+#    into All files. (The All files editor walk in step 5 only navigates — it marks nothing,
+#    so All files has its own, empty, tick set.)
 keys Tab; sleep 0.4
-frame | grep -q "✓" || fail "no reviewed ticks in the All files tree"
-echo "ok 7 - ticks show across tabs"
+frame | grep -qaE '[0-9]+ reviewed' && fail "Changes ticks leaked into the All files tab"
+echo "ok 7 - reviewed ticks are per-tab: Changes ticks stay out of All files"
 
 # 8. Enter on a file row in the files pane toggles its tick directly.
 keys 1; sleep 0.8

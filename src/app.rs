@@ -63,7 +63,7 @@ enum Anchor {
 
 /// Which top-level tab is active: the changes reviewer, the whole-repo browser, or the
 /// read-only PR mirror.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Tab {
     Changes,
     AllFiles,
@@ -276,9 +276,11 @@ pub struct App {
     /// second `x` restores the tree to exactly its pre-expand state. `None` when `x` is not
     /// holding an expansion open. Per-tab (stashed on a tab switch); survives a poll.
     expand_snapshot: Option<HashSet<String>>,
-    /// Changed files marked reviewed → the worktree-content hash at review time, so the mark
-    /// clears when the agent edits the file again. Keyed by path; survives a poll.
-    reviewed: HashMap<String, u64>,
+    /// Reviewed marks, split per tab so `Changes` (happy-with-the-diff) and `All files`
+    /// (audited-the-whole-file) tick independently — the same file can be ticked in one and not
+    /// the other. Inner map: path → worktree-content hash at review time, so the mark clears when
+    /// the file's content moves. Keyed by tab then path; survives a poll.
+    reviewed: HashMap<Tab, HashMap<String, u64>>,
     /// The inactive tab's saved state, swapped in on a tab switch.
     stash: TabStash,
     /// The active scope's changed files, keyed by repo-relative path and recomputed every
@@ -1640,8 +1642,9 @@ impl App {
         std::mem::swap(&mut self.file_scroll, &mut self.stash.file_scroll);
         std::mem::swap(&mut self.toggled_dirs, &mut self.stash.toggled_dirs);
         std::mem::swap(&mut self.expand_snapshot, &mut self.stash.expand_snapshot);
-        // `reviewed` is deliberately NOT stashed: a viewed file carries its tick in every
-        // tab and scope — the mark is a property of the file's content, not of a view.
+        // `reviewed` is deliberately NOT stashed: it is one global map keyed by tab, so switching
+        // tabs already resolves to the right tick set on read — there is nothing to swap. Changes
+        // and All files hold independent ticks, but the map that carries both is not per-tab state.
         std::mem::swap(&mut self.diff, &mut self.stash.diff);
         std::mem::swap(&mut self.visible, &mut self.stash.visible);
         std::mem::swap(&mut self.expanded_folds, &mut self.stash.expanded_folds);
@@ -2924,8 +2927,8 @@ impl App {
         match self.tab {
             Tab::Changes => self.advance_reviewed_file(),
             Tab::AllFiles => {
-                // The forward walk marks what it leaves behind here too — a viewed file
-                // carries its tick in every view.
+                // The forward walk marks what it leaves behind here too, ticking it in the
+                // current (All files) tab — the Changes tab keeps its own separate tick.
                 if let Some(path) = self.diff_path.clone() {
                     self.mark_reviewed(path);
                     self.status = format!(
@@ -3323,15 +3326,17 @@ impl App {
         self.store.iter().filter(|c| !c.sent).count()
     }
 
+    /// Whether `path` is ticked in the CURRENT tab. Changes and All files carry separate ticks,
+    /// so the same file can be reviewed in one view and not the other.
     pub fn is_reviewed(&self, path: &str) -> bool {
-        self.reviewed.contains_key(path)
+        self.reviewed.get(&self.tab).is_some_and(|m| m.contains_key(path))
     }
 
-    /// Reviewed files within the CURRENT changeset — the header's "M reviewed". The map
-    /// itself is global (ticks persist across scopes and restarts), so its raw length can
-    /// exceed the changeset; only the intersection is meaningful next to "N changed".
+    /// Reviewed entries in the CURRENT tab — the header's "M reviewed". Ticks are per tab, so
+    /// this counts only the marks for the tab in view, intersected with its listed entries.
     pub fn reviewed_count(&self) -> usize {
-        self.entries.iter().filter(|e| self.reviewed.contains_key(&e.path)).count()
+        let marks = self.reviewed.get(&self.tab);
+        self.entries.iter().filter(|e| marks.is_some_and(|m| m.contains_key(&e.path))).count()
     }
 
     /// Toggle the reviewed mark on the cursor's file. When marking (not un-marking), advance to
@@ -3341,7 +3346,7 @@ impl App {
             self.status = "highlight a file to mark reviewed".to_string();
             return;
         };
-        if self.reviewed.remove(&path).is_some() {
+        if self.reviewed.get_mut(&self.tab).and_then(|m| m.remove(&path)).is_some() {
             self.reviewed_rev += 1;
             return;
         }
@@ -3361,29 +3366,36 @@ impl App {
         (1..=n).map(|d| (self.file_cursor + d) % n).find(|&i| {
             self.file_rows[i].file_index().is_some_and(|idx| {
                 let p = &self.entries[idx].path;
-                self.changed.contains_key(p) && !self.reviewed.contains_key(p)
+                let ticked = self.reviewed.get(&self.tab).is_some_and(|m| m.contains_key(p));
+                self.changed.contains_key(p) && !ticked
             })
         })
     }
 
     /// Drop reviewed marks whose file was deleted or whose content changed since review — so an
     /// agent edit to a reviewed file re-surfaces it. Keyed on the file's own content, not the
-    /// changeset, so a mark on an unchanged file (the `All files` tab) survives a poll.
+    /// changeset, so a mark on an unchanged file (the `All files` tab) survives a poll. A content
+    /// change clears the mark in BOTH tabs, since both stored the same pre-change hash.
     fn prune_reviewed(&mut self) {
-        let before = self.reviewed.len();
         let repo = &self.repo;
-        self.reviewed
-            .retain(|path, hash| repo.join(path).exists() && content_hash(repo, path) == *hash);
-        if self.reviewed.len() != before {
+        let mut dropped = false;
+        for marks in self.reviewed.values_mut() {
+            let before = marks.len();
+            marks
+                .retain(|path, hash| repo.join(path).exists() && content_hash(repo, path) == *hash);
+            dropped |= marks.len() != before;
+        }
+        if dropped {
             self.reviewed_rev += 1;
         }
     }
 
-    /// Tick the file as reviewed, keyed to its current content — the mark survives every
-    /// tab, scope and restart, and `prune_reviewed` drops it the moment the content moves.
+    /// Tick the file as reviewed in the CURRENT tab, keyed to its current content — the mark
+    /// survives scope changes and restarts within that tab, and `prune_reviewed` drops it the
+    /// moment the content moves. Changes and All files tick independently.
     fn mark_reviewed(&mut self, path: String) {
         let hash = content_hash(&self.repo, &path);
-        self.reviewed.insert(path, hash);
+        self.reviewed.entry(self.tab).or_default().insert(path, hash);
         self.reviewed_rev += 1;
     }
 
@@ -3394,7 +3406,7 @@ impl App {
             return;
         }
         self.reviewed_saved_rev = self.reviewed_rev;
-        if self.reviewed.is_empty() {
+        if self.reviewed.values().all(HashMap::is_empty) {
             git::delete_reviewed_blob(&self.repo, &self.turn_key);
         } else if let Err(e) = git::write_reviewed_blob(
             &self.repo,
@@ -3510,27 +3522,65 @@ fn content_hash(repo: &std::path::Path, path: &str) -> u64 {
     h.finish()
 }
 
-/// The reviewed map's on-disk form. The hashes come from `content_hash` (`DefaultHasher` —
-/// deterministic per std version, not across toolchains), so the worst staleness case is
-/// every tick pruning once after a toolchain bump: marks drop, never false-positive.
-fn serialize_reviewed(map: &HashMap<String, u64>) -> String {
-    let entries: serde_json::Map<String, serde_json::Value> =
-        map.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(*v))).collect();
-    serde_json::json!({ "version": 1, "reviewed": entries }).to_string()
+/// The reviewed map's on-disk form (version 2): marks nested per tab, so Changes and All files
+/// persist independently. The hashes come from `content_hash` (`DefaultHasher` — deterministic
+/// per std version, not across toolchains), so the worst staleness case is every tick pruning
+/// once after a toolchain bump: marks drop, never false-positive.
+fn serialize_reviewed(map: &HashMap<Tab, HashMap<String, u64>>) -> String {
+    let by_tab: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .filter(|(_, marks)| !marks.is_empty())
+        .map(|(tab, marks)| {
+            let entries: serde_json::Map<String, serde_json::Value> =
+                marks.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(*v))).collect();
+            (reviewed_tab_key(*tab).to_string(), serde_json::Value::Object(entries))
+        })
+        .collect();
+    serde_json::json!({ "version": 2, "reviewed": by_tab }).to_string()
 }
 
-/// Parse `serialize_reviewed`'s output; empty on anything malformed or unknown-version.
-fn parse_reviewed(s: &str) -> HashMap<String, u64> {
+/// A stable on-disk key for each tab's reviewed set, and its inverse.
+fn reviewed_tab_key(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Changes => "changes",
+        Tab::AllFiles => "allfiles",
+        Tab::Pr => "pr",
+    }
+}
+fn reviewed_tab_from_key(key: &str) -> Option<Tab> {
+    match key {
+        "changes" => Some(Tab::Changes),
+        "allfiles" => Some(Tab::AllFiles),
+        "pr" => Some(Tab::Pr),
+        _ => None,
+    }
+}
+
+/// Parse `serialize_reviewed`'s output; empty on anything malformed or unknown-version. A
+/// version-1 blob (pre-split, tab-agnostic) is deliberately dropped — those ticks were content-
+/// hashed and ephemeral, so a clean slate on the per-tab upgrade costs nothing.
+fn parse_reviewed(s: &str) -> HashMap<Tab, HashMap<String, u64>> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
         return HashMap::new();
     };
-    if v.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+    if v.get("version").and_then(serde_json::Value::as_u64) != Some(2) {
         return HashMap::new();
     }
-    v.get("reviewed")
-        .and_then(|r| r.as_object())
-        .map(|o| o.iter().filter_map(|(k, v)| v.as_u64().map(|h| (k.clone(), h))).collect())
-        .unwrap_or_default()
+    let Some(by_tab) = v.get("reviewed").and_then(|r| r.as_object()) else {
+        return HashMap::new();
+    };
+    let mut out: HashMap<Tab, HashMap<String, u64>> = HashMap::new();
+    for (tab_key, marks) in by_tab {
+        let (Some(tab), Some(obj)) = (reviewed_tab_from_key(tab_key), marks.as_object()) else {
+            continue;
+        };
+        let inner: HashMap<String, u64> =
+            obj.iter().filter_map(|(k, v)| v.as_u64().map(|h| (k.clone(), h))).collect();
+        if !inner.is_empty() {
+            out.insert(tab, inner);
+        }
+    }
+    out
 }
 
 fn is_markdown_path(path: &str) -> bool {
@@ -3571,16 +3621,24 @@ fn anchor_range(selected: &[&Row]) -> Option<(Side, u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_reviewed, serialize_reviewed};
+    use super::{Tab, parse_reviewed, serialize_reviewed};
     use std::collections::HashMap;
 
     #[test]
-    fn reviewed_map_round_trips() {
-        let mut m = HashMap::new();
-        m.insert("src/α β.rs".to_string(), u64::MAX);
-        m.insert("plain.txt".to_string(), 0u64);
+    fn reviewed_map_round_trips_per_tab() {
+        let mut m: HashMap<Tab, HashMap<String, u64>> = HashMap::new();
+        m.entry(Tab::Changes).or_default().insert("src/α β.rs".to_string(), u64::MAX);
+        m.entry(Tab::Changes).or_default().insert("plain.txt".to_string(), 0u64);
+        // the same path ticked in All files with a different hash — the two tabs are independent
+        m.entry(Tab::AllFiles).or_default().insert("plain.txt".to_string(), 42u64);
         assert_eq!(parse_reviewed(&serialize_reviewed(&m)), m);
+    }
+
+    #[test]
+    fn reviewed_parse_rejects_junk_and_pre_split_versions() {
         assert!(parse_reviewed("junk").is_empty());
         assert!(parse_reviewed("{\"version\":9,\"reviewed\":{}}").is_empty());
+        // a version-1 (pre-split, tab-agnostic) blob is dropped for the clean-slate upgrade
+        assert!(parse_reviewed("{\"version\":1,\"reviewed\":{\"a.rs\":5}}").is_empty());
     }
 }

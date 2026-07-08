@@ -2824,6 +2824,40 @@ fn a_reviewed_mark_survives_a_poll_for_an_unchanged_file() {
 }
 
 #[test]
+fn reviewed_ticks_are_independent_between_changes_and_all_files() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.write("b.rs", "1\n");
+    r.commit_all("init");
+    r.write("a.rs", "2\n"); // a.rs is changed, so it lists in both Changes and All files
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    // Tick a.rs in Changes.
+    goto_file(&mut app, "a.rs");
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("a.rs"), "ticked in Changes");
+
+    // The Changes tick does NOT appear in All files — the tabs are independent.
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert!(!app.is_reviewed("a.rs"), "the Changes tick must not show in All files");
+    goto_file(&mut app, "a.rs");
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("a.rs"), "ticked separately in All files");
+
+    // Back in Changes, its own tick is untouched by the All files tick.
+    app.set_tab(Tab::Changes).unwrap();
+    assert!(app.is_reviewed("a.rs"), "the Changes tick is still set");
+
+    // A content change clears the tick in BOTH tabs (each stored the pre-change hash).
+    r.write("a.rs", "3\n");
+    app.reload().unwrap();
+    assert!(!app.is_reviewed("a.rs"), "a content change unticks it in Changes");
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert!(!app.is_reviewed("a.rs"), "a content change unticks it in All files too");
+}
+
+#[test]
 fn stage_toggle_stages_then_unstages_via_git_status() {
     let r = Repo::init();
     r.write("a.rs", "one\n");
