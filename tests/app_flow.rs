@@ -3300,3 +3300,47 @@ fn nvim_jump_from_the_list_sets_the_editor_goto() {
     );
     assert_eq!(app.mode, Mode::Normal, "the list closed on jump");
 }
+
+#[test]
+fn all_files_walk_visits_every_file_and_skips_directory_placeholders() {
+    // In the All files tab, the Enter walk (walk_changeset) steps through EVERY real file —
+    // changed or not — and must never wedge on an ignored-directory placeholder entry (is_dir),
+    // which cannot be opened as a diff. Regression guard for the walk stalling at the first
+    // directory placeholder in `entries`.
+    use std::collections::BTreeSet;
+    let r = Repo::init();
+    r.write("docs/ddd.txt", "ddd\n");
+    r.write("src/aaa.txt", "aaa\n");
+    r.write("src/bbb.txt", "bbb\n");
+    r.write(".gitignore", "target/\n");
+    r.commit_all("init");
+    r.write("src/aaa.txt", "aaa\nCHANGED\n"); // only aaa is a changed file
+    r.write("target/junk.txt", "junk\n"); // present but ignored -> a dir placeholder in `entries`
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::AllFiles).unwrap();
+
+    // Every tracked/untracked-non-ignored file the walk should reach (unchanged files included);
+    // the ignored `target/` collapses to one placeholder whose children are not in `entries`.
+    let want: BTreeSet<String> = [".gitignore", "docs/ddd.txt", "src/aaa.txt", "src/bbb.txt"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    let mut visited = BTreeSet::new();
+    let mut last = app.diff_path.clone();
+    // Two full cycles: enough to cover every file and to prove the walk wraps rather than wedges.
+    for step in 0..(want.len() * 2) {
+        app.walk_changeset(1);
+        let cur = app.diff_path.clone();
+        assert_ne!(
+            cur, last,
+            "the All files walk wedged at step {step}: diff_path did not advance ({cur:?})"
+        );
+        let cur = cur.expect("the walk always leaves a file open");
+        assert_ne!(cur, "target", "the walk landed on a directory placeholder");
+        visited.insert(cur.clone());
+        last = Some(cur);
+    }
+    assert_eq!(visited, want, "the All files walk did not cover every file");
+}

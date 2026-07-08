@@ -2805,9 +2805,12 @@ impl App {
         }
     }
 
-    /// Step the open file to its neighbor in the changeset (wrapping at the ends) — the review
+    /// Step the open file to its neighbor in the file list (wrapping at the ends) — the review
     /// walk's file granularity where hunk stepping doesn't apply: backward on Changes, and both
-    /// directions on All files (its plain buffers carry no hunks). Pure navigation: unlike
+    /// directions on All files (its plain buffers carry no hunks). On All files this steps through
+    /// every file, changed or not, since `entries` is the whole worktree there. Directory
+    /// placeholders (wholly-ignored dirs collapsed in `entries`) are skipped: they cannot open as
+    /// a diff, so landing on one would wedge the walk. Pure navigation: unlike
     /// `advance_reviewed_file` it never touches the reviewed set. Returns whether a file opened.
     pub fn walk_changeset(&mut self, dir: i32) -> bool {
         if self.entries.is_empty() {
@@ -2817,13 +2820,29 @@ impl App {
         let cur =
             self.diff_path.as_deref().and_then(|p| self.entries.iter().position(|e| e.path == p));
         let n = self.entries.len();
-        let idx = match (cur, dir > 0) {
+        let start = match (cur, dir > 0) {
             (Some(i), true) => (i + 1) % n,
             (Some(i), false) => (i + n - 1) % n,
-            // The open file isn't a changed file (or nothing is open): enter the set at the end
-            // the walk is heading toward.
+            // The open file isn't in the list (or nothing is open): enter the set at the end the
+            // walk is heading toward.
             (None, true) => 0,
             (None, false) => n - 1,
+        };
+        // Scan in the walk's direction for the next openable file, hopping over directory
+        // placeholders (Changes carries no directories, so this lands on `start` immediately).
+        let step = if dir > 0 { 1 } else { n - 1 };
+        let mut idx = start;
+        let mut found = None;
+        for _ in 0..n {
+            if !self.entries[idx].is_dir {
+                found = Some(idx);
+                break;
+            }
+            idx = (idx + step) % n;
+        }
+        let Some(idx) = found else {
+            self.status = "no files".to_string();
+            return false;
         };
         let e = self.entries[idx].clone();
         self.reset_diff_view();
