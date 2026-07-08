@@ -103,11 +103,26 @@ pub fn run() -> Result<()> {
 /// Input captured in the locked Changes view, delivered after the flip to All files publishes
 /// its plain (unlocked) sync — notifications are processed in order, so the editor sees the
 /// unlock first.
+/// Authoring input captured from the locked Changes view, held until the flip's plain sync has
+/// published so it lands in the unlocked buffer. Each variant carries `file`: the changeset file
+/// the intent was aimed at (the flip that captured it had that file selected). `fire_pending_input`
+/// replays only into that same file — a `buf` adopt or a revert that moves the published selection
+/// off it between capture and replay makes the intent stale, and it is dropped rather than typed
+/// into the wrong buffer.
 enum PendingInput {
     /// An insert-entry key (allowlisted at dispatch), replayed via `feedkeys(key, 'n')`.
-    Key(String),
+    Key { key: String, file: String },
     /// A terminal paste, delivered via `nvim_paste`.
-    Paste(String),
+    Paste { text: String, file: String },
+}
+
+impl PendingInput {
+    /// The changeset file this intent was aimed at when the flip captured it.
+    fn file(&self) -> &str {
+        match self {
+            PendingInput::Key { file, .. } | PendingInput::Paste { file, .. } => file,
+        }
+    }
 }
 
 /// The embedded editor's lifecycle state, owned by the event loop so [`App`] stays engine-free
@@ -305,7 +320,8 @@ fn handle_nvim_notifications(app: &mut App, session: &mut NvimSession) {
                         && session.last_focus == Some(false)
                         && session.last_sent.as_deref() == Some(file.as_str());
                     if !already_fired {
-                        session.pending_input = Some(PendingInput::Key(key.to_string()));
+                        session.pending_input =
+                            Some(PendingInput::Key { key: key.to_string(), file: file.clone() });
                     }
                 }
             }
@@ -445,21 +461,33 @@ fn push_editor_theme(app: &App, session: &NvimSession) {
 /// respawn a dead editor once per death. `:confirm edit`'s unsaved prompt renders inside the
 /// grid; `last_sent` is set optimistically so the watcher never re-sends against a showing
 /// prompt — a cancel is the user's call, and re-clicking the file retries via `nvim_reopen`.
+/// Whether a captured authoring intent aimed at `target` may still be replayed this frame. Two
+/// ways it goes stale between capture and now, both dropping it: the view flipped back to a
+/// focused (locked) presentation (`focus`) — the tab moved again; or the editor's last-published
+/// file (`last_sent`) is no longer `target` — a `buf` adopt of a native jump, or a revert/poll
+/// that pulled `target` out of the changeset, moved the open selection off it, and replaying `i`
+/// or a paste now would type into whatever unrelated buffer took its place. Mirrors the `nav`
+/// handler's `stale_view`/`stale_file` guards: an intent computed against a presentation the host
+/// has moved past is never acted on.
+fn pending_input_lands(focus: bool, target: &str, last_sent: Option<&str>) -> bool {
+    !focus && last_sent == Some(target)
+}
+
 /// Deliver input captured by the flip once the plain sync for `focus == false` has been
-/// published this frame — as ordered notifications, it lands after the editor unlocks. A
-/// pending input on a still-focused view is stale (the tab moved again): dropped, never
-/// misfired into a locked or unrelated buffer.
+/// published this frame — as ordered notifications, it lands after the editor unlocks. A pending
+/// input whose target view or file the host has moved past is stale (see [`pending_input_lands`]):
+/// dropped, never misfired into a locked or unrelated buffer.
 fn fire_pending_input(session: &mut NvimSession, focus: bool) {
     let Some(pending) = session.pending_input.take() else { return };
-    if focus {
+    if !pending_input_lands(focus, pending.file(), session.last_sent.as_deref()) {
         return;
     }
     let Some(engine) = session.engine_alive() else { return };
     match pending {
-        PendingInput::Key(key) => {
+        PendingInput::Key { key, .. } => {
             let _ = engine.command_fire(&format!("call feedkeys('{key}', 'n')"));
         }
-        PendingInput::Paste(text) => {
+        PendingInput::Paste { text, .. } => {
             let _ = engine.paste(&text);
         }
     }
@@ -543,8 +571,18 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             let base = app.nvim_base_ref();
             logln!("nvim_sync: no selection on {:?} - plain sync", app.tab);
             let _ = engine.sync_view(&base, false);
+            // No file is selected, so no diff is on screen and nothing should carry a card.
+            // apply() is the only writer of ns=reviewr_comments and the unified card push
+            // further down is short-circuited by this early return; without an explicit clear
+            // here, the diff-anchored cards painted for the Changes selection leak onto this
+            // plain, unselected All-files buffer (they outlive the presentation they belong to).
+            let _ = engine.exec_lua_fire(
+                "require('reviewr.comments').apply(...)",
+                vec![Value::Array(vec![])],
+            );
             session.last_base = Some(base);
             session.last_focus = Some(false);
+            session.last_cards = None;
         }
         fire_pending_input(session, false);
         return;
@@ -932,7 +970,8 @@ fn event_loop(
                             && let Some(rel) = app.diff_path.clone()
                             && app.edit_here(&rel)
                         {
-                            session.pending_input = Some(PendingInput::Paste(text.clone()));
+                            session.pending_input =
+                                Some(PendingInput::Paste { text: text.clone(), file: rel.clone() });
                         } else {
                             session.feed_paste(&text);
                         }
@@ -1661,4 +1700,37 @@ fn handle_mouse(
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pending_input_tests {
+    use super::pending_input_lands;
+
+    // The flip that captured the intent published its file, so `last_sent` matches the target and
+    // the plain (unlocked) view is up: the held `i`/paste lands.
+    #[test]
+    fn lands_on_matching_plain_view() {
+        assert!(pending_input_lands(false, "src/a.txt", Some("src/a.txt")));
+    }
+
+    // The tab flipped back to a focused (locked) presentation before the intent could replay —
+    // dropped, never typed into the read-only Changes buffer.
+    #[test]
+    fn dropped_when_view_refocused() {
+        assert!(!pending_input_lands(true, "src/a.txt", Some("src/a.txt")));
+    }
+
+    // A `buf` adopt of a native jump (or a revert/poll pulling the file out of the changeset)
+    // moved the published selection onto a different file between capture and replay: firing now
+    // would type into the wrong buffer, so the intent is dropped.
+    #[test]
+    fn dropped_when_published_file_moved() {
+        assert!(!pending_input_lands(false, "src/a.txt", Some("src/b.txt")));
+    }
+
+    // Nothing published yet (fresh respawn, parked empty state): no buffer to trust, drop.
+    #[test]
+    fn dropped_when_nothing_published() {
+        assert!(!pending_input_lands(false, "src/a.txt", None));
+    }
 }
