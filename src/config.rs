@@ -24,11 +24,11 @@ pub struct Config {
 impl Config {
     /// Parse `args` (the process arguments *after* argv\[0\]).
     ///
-    /// Recognises `--poll <ms>` (min 200, default 2000), `--base <ref>`,
+    /// Recognises `--poll <ms>` (min 200, default 500), `--base <ref>`,
     /// `--theme <name>`, and `--wrap on|off`; the first non-flag token is the repo path.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Self {
         let mut repo: Option<PathBuf> = None;
-        let mut poll_ms: u64 = 2000;
+        let mut poll_ms: u64 = 500;
         let mut base: Option<String> = None;
         let mut theme: Option<String> = None;
         let mut wrap: Option<bool> = None;
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn defaults_when_no_args() {
         let c = parse(&[]);
-        assert_eq!(c.poll, Duration::from_secs(2));
+        assert_eq!(c.poll, Duration::from_millis(500));
         assert_eq!(c.base, None);
     }
 
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn poll_has_a_floor() {
         assert_eq!(parse(&["--poll", "10"]).poll, Duration::from_millis(200));
-        assert_eq!(parse(&["--poll", "garbage"]).poll, Duration::from_secs(2));
+        assert_eq!(parse(&["--poll", "garbage"]).poll, Duration::from_millis(500));
     }
 
     #[test]
