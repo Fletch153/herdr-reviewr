@@ -543,8 +543,18 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
             let base = app.nvim_base_ref();
             logln!("nvim_sync: no selection on {:?} - plain sync", app.tab);
             let _ = engine.sync_view(&base, false);
+            // No file is selected, so no diff is on screen and nothing should carry a card.
+            // apply() is the only writer of ns=reviewr_comments and the unified card push
+            // further down is short-circuited by this early return; without an explicit clear
+            // here, the diff-anchored cards painted for the Changes selection leak onto this
+            // plain, unselected All-files buffer (they outlive the presentation they belong to).
+            let _ = engine.exec_lua_fire(
+                "require('reviewr.comments').apply(...)",
+                vec![Value::Array(vec![])],
+            );
             session.last_base = Some(base);
             session.last_focus = Some(false);
+            session.last_cards = None;
         }
         fire_pending_input(session, false);
         return;
