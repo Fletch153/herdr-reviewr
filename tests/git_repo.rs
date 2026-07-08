@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use common::Repo;
 use herdr_reviewr::git::{
     all_files, base_ref, changed_against_tree, changed_files, file_content, merge_base,
-    read_baseline_ref, recent_commits, snapshot_worktree, worktree_key, write_baseline_ref,
+    read_baseline_ref, read_comments_blob, recent_commits, snapshot_worktree, worktree_key,
+    write_baseline_ref, write_comments_blob,
 };
 use herdr_reviewr::model::{ChangeKind, ChangedFile, Scope};
 
@@ -502,4 +503,58 @@ fn working_status_reports_staged_unstaged_and_untracked() {
     let st = herdr_reviewr::git::working_status(r.path()).unwrap();
     assert_eq!(st.get("new.rs").map(|s| (s.marker, s.staged)), Some(('A', true)));
     assert_eq!(st.get("a.rs").map(|s| (s.marker, s.staged)), Some(('M', true)));
+}
+
+// --- row-10: two reviewer panes on ONE repo, comment-persistence concurrency -------------
+// A user running two reviewer panes on the same repo shares a SINGLE comments ref:
+// `worktree_key` is a pure function of the repo's top-level path (see
+// `worktree_key_is_stable_and_path_specific`), so both panes key to
+// `refs/reviewr/comments/<same-key>`. The write path (`git::write_state_blob`) is an
+// UNCONDITIONAL `git update-ref` — no old-value CAS — and each write is a FULL snapshot of one
+// pane's in-memory store. The per-tick guard in `App::persist_comments` compares the IN-PROCESS
+// `store.rev()` only, so it cannot see another process's write. Net: last-writer-wins clobber.
+// See `.loop-build/LOG.md` (run 5, c2.p1) for the confirmed bug + the recommended CAS-merge fix.
+
+/// Characterization gate (RUNS, green today): pins the current last-writer-wins behavior of the
+/// shared comments ref. It asserts pane A's comment is LOST after pane B's stale-snapshot write,
+/// so the moment a real CAS/merge fix lands this test turns RED — forcing the fixer to also
+/// un-ignore `two_panes_on_one_repo_keep_both_comments`. That coupling is the gate's teeth.
+#[test]
+fn comments_ref_write_is_last_writer_wins_with_no_cas() {
+    let r = Repo::init();
+    r.write("a.rs", "a\n");
+    r.commit_all("init");
+    let key = worktree_key(r.path());
+
+    // Pane A persists its store (contains AONE). Pane B was seeded before AONE existed, so its
+    // full-snapshot write does not carry AONE — it overwrites the ref unconditionally.
+    write_comments_blob(r.path(), &key, "[pane-A: AONE]").unwrap();
+    write_comments_blob(r.path(), &key, "[pane-B: BONE]").unwrap();
+
+    let persisted = read_comments_blob(r.path(), &key).expect("ref exists after the writes");
+    assert!(persisted.contains("BONE"), "the last writer's comment survives");
+    assert!(
+        !persisted.contains("AONE"),
+        "clobber: pane A's comment is gone — the shared ref has no CAS/merge (see LOG row-10)"
+    );
+}
+
+/// Expected-fail reproduction (IGNORED so the suite stays green): the invariant a correct fix
+/// must restore — both panes' comments survive a concurrent persist. Run with
+/// `cargo test -- --ignored` to watch it fail today; un-ignore once the CAS-merge lands.
+#[test]
+#[ignore = "row-10 clobber bug: two panes on one repo lose each other's comments; \
+            un-ignore when a CAS-merge (or per-instance key) lands. See .loop-build/LOG.md"]
+fn two_panes_on_one_repo_keep_both_comments() {
+    let r = Repo::init();
+    r.write("a.rs", "a\n");
+    r.commit_all("init");
+    let key = worktree_key(r.path());
+
+    write_comments_blob(r.path(), &key, "[pane-A: AONE]").unwrap(); // pane A
+    write_comments_blob(r.path(), &key, "[pane-B: BONE]").unwrap(); // pane B, stale seed
+
+    let persisted = read_comments_blob(r.path(), &key).expect("ref exists after the writes");
+    assert!(persisted.contains("AONE"), "pane A's comment must survive pane B's write");
+    assert!(persisted.contains("BONE"), "pane B's comment must survive pane A's write");
 }
