@@ -3270,7 +3270,8 @@ impl App {
     }
 
     /// Toggle the reviewed mark on the cursor's file. When marking (not un-marking), advance to
-    /// the next unreviewed changed file, so a run of `Space` walks the changeset.
+    /// the next unreviewed file in the tab's list, so a run of `Space` walks the whole list —
+    /// the changeset on Changes, every file on All files.
     pub fn toggle_reviewed(&mut self) {
         let Some(path) = self.current_entry().map(|e| e.path.clone()) else {
             self.status = "highlight a file to mark reviewed".to_string();
@@ -3288,6 +3289,11 @@ impl App {
         }
     }
 
+    /// The next list row (after the cursor, wrapping) holding an unreviewed file. Walks whatever
+    /// the current tab lists — the changeset on Changes, every file on All files — since
+    /// `entries`/`file_rows` are already tab-scoped; directory placeholders have no `file_index`
+    /// so they are skipped. Not restricted to `self.changed`: on All files that would skip
+    /// unchanged files, stalling the Space walk.
     fn next_unreviewed_row(&self) -> Option<usize> {
         let n = self.file_rows.len();
         if n == 0 {
@@ -3297,7 +3303,7 @@ impl App {
             self.file_rows[i].file_index().is_some_and(|idx| {
                 let p = &self.entries[idx].path;
                 let ticked = self.reviewed.get(&self.tab).is_some_and(|m| m.contains_key(p));
-                self.changed.contains_key(p) && !ticked
+                !ticked
             })
         })
     }

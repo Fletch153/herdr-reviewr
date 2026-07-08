@@ -23,7 +23,18 @@ tui_start
 wait_for "aaa.txt"
 keys 2; sleep 0.8   # All files tab
 
-# Open the changed file and focus the editor so Enter drives the walk.
+# 1. File-list pane (NOT the editor): Enter on a file row marks it and advances to the next
+#    unreviewed file. On All files that next file must be an UNCHANGED one, not "nothing left in
+#    the changeset". Clicking the row in the right pane both selects it and focuses the list.
+read -r CP RP <<< "$(locate_right 'aaa.txt')"
+[ -n "${CP:-}" ] || fail "aaa.txt row not visible in the All files list"
+click "$CP" "$RP"
+wait_for "AAA-CHANGED"
+keys Enter   # mark aaa.txt reviewed, advance to the next unreviewed file
+wait_for "BBBMARK"
+echo "ok 1 - All files Enter in the file pane advances onto an unchanged file"
+
+# 2. Editor pane: open the changed file and focus the editor so Enter drives the hunkless walk.
 read -r CP RP <<< "$(locate_right 'aaa.txt')"
 [ -n "${CP:-}" ] || fail "aaa.txt row not visible in the All files list"
 click "$CP" "$RP"
@@ -46,7 +57,7 @@ done
 [ "$saw_bbb" = 1 ] || fail "the walk never visited the unchanged file bbb.txt"
 [ "$saw_ccc" = 1 ] || fail "the walk never visited the unchanged file ccc.txt"
 [ "$wrapped" = 1 ] || fail "the walk wedged: never wrapped back past the ignored target/ placeholder"
-echo "ok 1 - All files Enter walks every file and skips the ignored directory placeholder"
+echo "ok 2 - All files Enter in the editor walks every file and skips the ignored placeholder"
 
 keys q; sleep 0.3; keys y 2>/dev/null || true
 echo "# all all-files-walk assertions passed"

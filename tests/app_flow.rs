@@ -3344,3 +3344,31 @@ fn all_files_walk_visits_every_file_and_skips_directory_placeholders() {
     }
     assert_eq!(visited, want, "the All files walk did not cover every file");
 }
+
+#[test]
+fn all_files_space_walk_advances_onto_unchanged_files() {
+    // From the file-list pane, Space (review_advance -> toggle_reviewed) marks the cursor file
+    // and advances to the next unreviewed file. On All files that walk must step onto UNCHANGED
+    // files too, not only the changeset. Regression guard for the changed-only filter in
+    // next_unreviewed_row.
+    let r = Repo::init();
+    r.write("a.txt", "a\n");
+    r.write("b.txt", "b\n");
+    r.commit_all("init");
+    r.write("a.txt", "a\nCHANGED\n"); // a.txt changes; b.txt stays unchanged
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::AllFiles).unwrap();
+
+    // Land the cursor on the changed file a.txt (root-level, sorts before b.txt -> row 0).
+    app.file_cursor = 0;
+    assert_eq!(app.current_entry().map(|e| e.path.as_str()), Some("a.txt"));
+
+    // Marking a.txt should advance onto the UNCHANGED b.txt (not skip it as "not in changeset").
+    app.toggle_reviewed();
+    assert_eq!(
+        app.current_entry().map(|e| e.path.as_str()),
+        Some("b.txt"),
+        "the All files Space walk skipped the unchanged file instead of advancing onto it"
+    );
+}
