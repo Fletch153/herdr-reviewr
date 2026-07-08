@@ -5,12 +5,12 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 rc=0
 for gate in tui-test.sh tui-edit-test.sh tui-scope-test.sh tui-mouse-test.sh \
             tui-death-test.sh tui-rename-test.sh tui-split-test.sh tui-picker-test.sh tui-unicode-test.sh tui-trio-test.sh \
-            tui-wrap-test.sh tui-undo-test.sh tui-live-test.sh tui-lock-test.sh tui-eol-test.sh \
+            tui-wrap-test.sh tui-undo-test.sh tui-live-test.sh tui-lock-test.sh tui-eol-test.sh tui-crlf-test.sh \
             tui-nav-test.sh tui-persist-test.sh tui-md-test.sh tui-revert-test.sh \
             tui-clip-test.sh tui-storm-test.sh tui-empty-test.sh tui-stash-test.sh \
             tui-cbracket-test.sh tui-vishl-test.sh tui-jump-test.sh tui-livejump-test.sh \
             tui-nextcomment-test.sh tui-cardflip-test.sh tui-entrypath-test.sh \
-            tui-degenerate-test.sh; do
+            tui-degenerate-test.sh tui-pollswap-test.sh tui-anchor-test.sh tui-conflict-test.sh; do
   echo "== $gate"
   if ! bash "$DIR/$gate"; then
     echo "== $gate FAILED"

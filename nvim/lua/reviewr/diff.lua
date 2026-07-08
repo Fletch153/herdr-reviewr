@@ -104,6 +104,17 @@ function M.refresh(bufnr)
   if not base then
     return
   end
+  -- A dos (CRLF) buffer stores each line with the trailing \r stripped — it is the fileformat
+  -- marker, not content — but the base blob is split on \n and keeps every line's \r. Left
+  -- unmatched, that \r makes every line differ and the whole file ghost-diffs (the built-in
+  -- pane, which keeps \r on both sides, correctly shows just the real edit). Normalize the base
+  -- to the buffer's presentation. base_text feeds the revert virtual lines and revert_hunk; a
+  -- dos buffer re-adds the \r on save, so the stripped form is exactly what revert writes back.
+  if vim.bo[bufnr].fileformat == "dos" then
+    for i = 1, #base do
+      base[i] = base[i]:gsub("\r$", "")
+    end
+  end
   -- Join with a trailing newline on each non-empty side: a plain concat makes the last base
   -- line look modified whenever lines are appended at EOF, painting an unchanged line green
   -- (and mis-anchoring the first-change jump). An empty side stays "" so an added file still

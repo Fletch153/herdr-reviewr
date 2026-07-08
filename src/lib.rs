@@ -100,9 +100,6 @@ pub fn run() -> Result<()> {
     result
 }
 
-/// Input captured in the locked Changes view, delivered after the flip to All files publishes
-/// its plain (unlocked) sync — notifications are processed in order, so the editor sees the
-/// unlock first.
 /// Authoring input captured from the locked Changes view, held until the flip's plain sync has
 /// published so it lands in the unlocked buffer. Each variant carries `file`: the changeset file
 /// the intent was aimed at (the flip that captured it had that file selected). `fire_pending_input`
