@@ -931,6 +931,27 @@ impl App {
             }
             i += 1;
         }
+        // `git::all_files` lists what is present now (`git ls-files` + untracked), so a deletion
+        // whose removal has been staged has left the index and would drop off the list. Union in
+        // any changeset path the worktree listing missed — the staged/unstaged deletions — so
+        // "All files" holds every uncommitted change and a deleted file never vanishes just
+        // because it was staged. Re-sort so the re-added rows land in path order.
+        let present: HashSet<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        let missing: Vec<Entry> = self
+            .changed
+            .iter()
+            .filter(|(p, _)| !present.contains(p.as_str()))
+            .map(|(p, ann)| Entry {
+                annotation: Some(ann.clone()),
+                path: p.clone(),
+                previous_path: None,
+                ignored: false,
+                is_dir: false,
+            })
+            .collect();
+        drop(present);
+        entries.extend(missing);
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
     }
 
@@ -3317,8 +3338,10 @@ impl App {
         let mut dropped = false;
         for marks in self.reviewed.values_mut() {
             let before = marks.len();
-            marks
-                .retain(|path, hash| repo.join(path).exists() && content_hash(repo, path) == *hash);
+            // Retain purely by content hash — no existence check. A deleted file hashes to the
+            // empty string at both mark and prune, so its tick survives (the deletion is what was
+            // reviewed); an edit or a restore changes the hash and drops the tick, as intended.
+            marks.retain(|path, hash| content_hash(repo, path) == *hash);
             dropped |= marks.len() != before;
         }
         if dropped {

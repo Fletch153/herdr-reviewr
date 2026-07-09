@@ -3372,3 +3372,54 @@ fn all_files_space_walk_advances_onto_unchanged_files() {
         "the All files Space walk skipped the unchanged file instead of advancing onto it"
     );
 }
+
+#[test]
+fn a_deleted_file_stays_reviewed_across_a_rescan() {
+    // Ticking a deleted file must survive prune_reviewed. The file is gone from disk, but its
+    // deletion is exactly what the reviewer confirmed; its content hash (empty) still matches.
+    // Regression for prune dropping any path that no longer exists on disk.
+    let r = Repo::init();
+    r.write("del.txt", "gone\n");
+    r.commit_all("init");
+    r.remove("del.txt"); // unstaged deletion -> a "D" file in the changeset
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    // Tick the deleted file (it is the sole changed entry, row 0 in Changes).
+    app.file_cursor = 0;
+    assert_eq!(app.current_entry().map(|e| e.path.as_str()), Some("del.txt"));
+    app.toggle_reviewed();
+    assert!(app.is_reviewed("del.txt"), "the deleted file did not tick");
+
+    // A rescan (reload runs prune_reviewed) must keep the tick.
+    app.reload().unwrap();
+    assert!(
+        app.is_reviewed("del.txt"),
+        "prune dropped the deleted file's tick, so a deleted file can never stay reviewed"
+    );
+}
+
+#[test]
+fn all_files_keeps_a_staged_deletion_visible() {
+    // All files lists the whole worktree UNION the uncommitted changeset, so a deleted file stays
+    // visible with its 'D' whether or not the deletion is staged. Regression for a staged deletion
+    // leaving the index (git ls-files) and vanishing from the All files list.
+    let r = Repo::init();
+    r.write("del.txt", "gone\n");
+    r.write("keep.txt", "keep\n");
+    r.commit_all("init");
+    r.remove("del.txt");
+    r.git(&["add", "--", "del.txt"]); // stage the deletion -> it leaves the index
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::AllFiles).unwrap();
+
+    let listed: Vec<&str> = app.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        listed.contains(&"del.txt"),
+        "a staged deletion vanished from All files; listed = {listed:?}"
+    );
+    // and it still carries its deletion annotation, not shown as clean/untracked
+    let del = app.entries.iter().find(|e| e.path == "del.txt").unwrap();
+    assert!(del.annotation.is_some(), "the deleted file lost its change marker in All files");
+}
