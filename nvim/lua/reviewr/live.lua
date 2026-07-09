@@ -20,6 +20,25 @@ local function stamp(bufnr)
   end
 end
 
+-- The reviewer's view-switch autosave (replaces a blanket `:update!` in the switch payloads):
+-- write the leaving buffer's pending edits, but NEVER resurrect a file that was deleted
+-- underneath us. nvim marks a buffer modified when its file vanishes on disk, so a plain
+-- `:update!` on a view switch would write the orphaned content straight back and undo the
+-- user's deletion. Skip the write when the buffer's file is gone AND we had stamped it on disk
+-- before (a real deletion, not a brand-new unsaved file, which has no stamp and must save). A
+-- genuine fresh edit to a deleted buffer still recreates the file — the instant TextChanged
+-- autosave writes it the moment the edit exists, before any switch.
+function M.save_live()
+  local buf = vim.api.nvim_get_current_buf()
+  if not (file_buf(buf) and vim.bo[buf].modified) then
+    return
+  end
+  if vim.uv.fs_stat(vim.api.nvim_buf_get_name(buf)) == nil and vim.b[buf].reviewr_disk then
+    return
+  end
+  vim.cmd("silent! update!")
+end
+
 function M.enable()
   local grp = vim.api.nvim_create_augroup("ReviewrLive", { clear = true })
 
