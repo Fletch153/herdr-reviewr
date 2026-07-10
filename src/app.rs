@@ -868,7 +868,23 @@ impl App {
 
     pub fn preview_markdown(&self) -> Option<String> {
         let path = self.diff_path.as_deref()?;
-        self.is_markdown_open().then(|| worktree_content(&self.repo, path))
+        if !self.is_markdown_open() {
+            return None;
+        }
+        // A markdown file deleted underneath the reviewer reads back empty from the worktree,
+        // which would blank the preview while the `[md view]` chip stays lit — indistinguishable
+        // from a render bug. Mirror the raw editor's `show_deleted()`: preview the base content
+        // (what is being removed). Existing files are unaffected.
+        if self.repo.join(path).exists() {
+            Some(worktree_content(&self.repo, path))
+        } else {
+            let prev = self
+                .entries
+                .iter()
+                .find(|e| e.path == path)
+                .and_then(|e| e.previous_path.as_deref());
+            Some(self.content_sides(path, prev).0)
+        }
     }
 
     fn apply_filter(&mut self) {
