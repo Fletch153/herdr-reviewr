@@ -556,6 +556,10 @@ function M.show_deleted(rel)
   vim.bo[buf].modifiable = false
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].swapfile = false
+  -- set_lines marks the scratch 'modified'; a nofile buffer can't be cleared by `wall!`, so a
+  -- quit while this presentation buffer is on screen would otherwise mis-prompt ConfirmQuit as
+  -- if there were unsaved work. It is read-only and disposable — never count it as modified.
+  vim.bo[buf].modified = false
   vim.api.nvim_set_current_buf(buf)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   for l = 0, #lines - 1 do
@@ -589,6 +593,7 @@ function M.show_empty()
   vim.bo[buf].modifiable = false
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].swapfile = false
+  vim.bo[buf].modified = false -- disposable presentation buffer, never counts as unsaved (see show_deleted)
   vim.api.nvim_set_current_buf(buf)
   M._hunks[buf] = {}
   M.unfocus() -- nothing to fold or paint
