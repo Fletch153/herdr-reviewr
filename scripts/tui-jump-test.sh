@@ -28,6 +28,11 @@ SELFILL='48;2;(69;71;90|88;91;112)'
 list_row() { framee | grep -aF "$1" | grep -avF "src/$1" | grep -avF ':e '; }
 row_selected() { list_row "$1" | grep -qaE "$SELFILL"; }
 wait_row_selected() { for _ in $(seq 40); do row_selected "$1" && return 0; sleep 0.2; done; fail "the file list never highlighted $1"; }
+# List-FOCUSED selected-row fill only (surface2, 88;91;112); the editor-focused row is a step
+# softer (surface1, 69;71;90). The teardown uses this to confirm focus actually reached the list
+# before quitting: `q` quits only from a focused list — forwarded to a focused editor it starts a
+# nvim macro recording and never quits.
+list_focused() { list_row "$1" | grep -qaE '48;2;88;91;112'; }
 
 tui_start
 wait_for "alpha.txt"
@@ -90,8 +95,14 @@ frame | grep -qF "BETANOTE_B" && fail "C2: the in-changeset comment card leaked 
 frame | grep -qF "GAMMANOTE" || fail "C: comment card on the out-of-changeset file did not paint"
 echo "ok C - an out-of-changeset jump keeps the selection put, paints its own cards without leaking the in-changeset comment, and is not yanked"
 
-keys Escape
-keys Tab; sleep 0.3
+esc
+# Hand focus to the file list before quitting. Tab toggles focus, but the host drops it back into
+# the editor when nvim's mode grid hasn't settled to normal yet — a fast Tab right after the
+# composer closes lands in that window, forwarding `q` into the editor as a macro-record and
+# wedging the quit (the "reviewer did not quit" flake). So send Tab only while the editor still
+# holds focus and confirm the list took it by its surface2 fill — an event-wait, not a blind sleep.
+for _ in $(seq 20); do list_focused beta.txt && break; keys Tab; sleep 0.25; done
+list_focused beta.txt || fail "could not hand focus to the file list for a clean quit"
 keys q; sleep 0.3; keys y 2>/dev/null || true
 wait_session_end
 echo "# all native-jump follow assertions passed"

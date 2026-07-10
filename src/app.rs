@@ -95,6 +95,11 @@ struct TabStash {
     diff_cursor: usize,
     diff_scroll: usize,
     h_scroll: usize,
+    // The rendered-markdown scroll offset is per-tab, exactly like `diff_scroll`: each file tab
+    // reads its own markdown at its own position, so a tall file scrolled in one tab must not
+    // drag its offset onto a different file shown in the other (the render clamps to the shown
+    // file's length, so a bled offset would land a short file at its bottom).
+    preview_scroll: usize,
     select_anchor: Option<usize>,
     filter: String,
 }
@@ -1474,6 +1479,7 @@ impl App {
             self.stash.diff_cursor = 0;
             self.stash.diff_scroll = 0;
             self.stash.h_scroll = 0;
+            self.stash.preview_scroll = 0;
             self.stash.select_anchor = None;
         }
     }
@@ -1690,6 +1696,7 @@ impl App {
         std::mem::swap(&mut self.diff_cursor, &mut self.stash.diff_cursor);
         std::mem::swap(&mut self.diff_scroll, &mut self.stash.diff_scroll);
         std::mem::swap(&mut self.h_scroll, &mut self.stash.h_scroll);
+        std::mem::swap(&mut self.preview_scroll, &mut self.stash.preview_scroll);
         std::mem::swap(&mut self.select_anchor, &mut self.stash.select_anchor);
         std::mem::swap(&mut self.filter, &mut self.stash.filter);
     }

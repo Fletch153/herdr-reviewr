@@ -137,6 +137,12 @@ struct NvimSession {
     last_base: Option<String>,
     /// Whether the last-published view was focused (Changes) or plain (All files).
     last_focus: Option<bool>,
+    /// Whether `rel` existed on disk at the last publish. A file deleted (or recreated)
+    /// underneath the current selection flips this without moving path/base/focus, so it must
+    /// invalidate the same-view dedup — otherwise the early return keeps the stale working-copy
+    /// buffer up while the file-list shows the deletion, and the `show_deleted` all-red base
+    /// view (the branch that answers this transition) never runs.
+    last_existed: Option<bool>,
     /// The comment-card set last pushed to the editor, keyed by store revision + the view it
     /// was computed for — cards re-push exactly when the store or the shown diff moved.
     last_cards: Option<(u64, String, String, bool)>,
@@ -165,6 +171,7 @@ impl NvimSession {
         self.engine = Some(engine);
         self.last_size = Some((cols, rows));
         self.last_sent = None;
+        self.last_existed = None;
         self.last_cards = None;
         self.parked_empty = false;
         Ok(())
@@ -550,6 +557,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
                 let _ = engine.show_empty();
                 session.parked_empty = true;
                 session.last_sent = None;
+                session.last_existed = None;
                 session.last_base = None;
                 session.last_focus = None;
                 session.last_cards = None;
@@ -588,11 +596,13 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
     let base = app.nvim_base_ref();
     let focus = app.tab == crate::app::Tab::Changes;
     let force = std::mem::take(&mut app.nvim_reopen);
+    let exists = app.repo.join(&rel).exists();
     let mut same_path = session.last_sent.as_deref() == Some(rel.as_str());
     let mut same_view = !force
         && same_path
         && session.last_base.as_deref() == Some(base.as_str())
-        && session.last_focus == Some(focus);
+        && session.last_focus == Some(focus)
+        && session.last_existed == Some(exists);
     // This frame opens `rel` when the view moved, so the editor's buffer becomes `rel`: adopt it
     // now (ahead of the editor's own `buf` report) so the cards computed below target the buffer
     // the open produces, not one a native jump left the editor on last frame.
@@ -650,7 +660,6 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         return;
     }
     if !same_view {
-        let exists = app.repo.join(&rel).exists();
         if let Some(engine) = session.engine_alive() {
             // The scope's rename map goes first (notifications run in order), so the diff
             // refresh triggered by the open below already knows a renamed file's old path —
@@ -667,9 +676,12 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
                 "require('reviewr.diff').set_renames(...)",
                 vec![Value::Map(renames)],
             );
-            if !force && same_path && exists {
-                // Only the scope/base or the tab's presentation moved: sync the open buffer in
-                // place, no :edit (which would prompt on a modified buffer for no reason).
+            if !force && same_path && exists && session.last_existed == Some(true) {
+                // Only the scope/base or the tab's presentation moved on a file that existed
+                // before and still does: sync the open buffer in place, no :edit (which would
+                // prompt on a modified buffer for no reason). An existence flip since the last
+                // publish (deleted-scratch → recreated) must NOT come here — sync_view can't
+                // load the real file over the scratch; it falls through to a full open below.
                 logln!("nvim_sync: sync_view base={base} focus={focus}");
                 let _ = engine.sync_view(&base, focus);
             } else if exists {
@@ -686,6 +698,7 @@ fn nvim_sync(app: &mut App, session: &mut NvimSession, grid: Rect) {
         session.last_sent = Some(rel.clone());
         session.last_base = Some(base);
         session.last_focus = Some(focus);
+        session.last_existed = Some(exists);
     }
     if !same_cards {
         // Notifications execute in order inside nvim, so the cards always land after the

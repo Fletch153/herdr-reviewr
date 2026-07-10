@@ -19,16 +19,16 @@ empty, huge, vanishing).
 | # | Feature | tab | focus | view-state | timing | file-state |
 |---|---------|-----|-------|------------|--------|------------|
 | 1 | Embed lifecycle (spawn, dead panel, respawn, `:q`, quit confirm, theme) | open (death on non-Changes tab) | covered: tui-death | covered: tui-death (theme, decorations) | probed: c1.p2 (BUG found+fixed — respawn consumed pending work against stale view memory; gate tui-death step 4); probed: c1.p4 (orphaned embeds — see Log; harness fixed, tui_cleanup reaps loudly; residual: host death by signal can strand a wedged nvim, in-process fix out of scope); open (restart racing first open) | n/a |
-| 2 | Diff paint (signs, line paint, virt_lines, statuscolumn, breakindent) | covered: tui-test | n/a | covered: tui-wrap (wrap gap), tui-test (folds+signs) | probed: c1.p3 (paint FOLLOWS the buffer across native tag/jumplist switches — focused fold+signs land on the jumped-to file, no stale paint bleeds back on Ctrl-o; gate tui-entrypath T/O/P); open (paint after rapid LIST j/k switches) | covered: tui-unicode, tui-eol; open (huge diff, very long lines) |
-| 3 | Context folds (foldexpr/foldtext, zx on scope change) | covered: tui-test | n/a | covered: tui-test | covered: tui-scope (re-diff recompute) | open (folds on huge diff) |
-| 4 | View model (plain stamping, BufEnter re-derive, deleted scratch, rename map) | covered: tui-rename | covered: tui-test | covered: tui-test (deleted scratch) | probed: c1.p3 (NATIVE entry paths — Ctrl-] tag jump, Ctrl-o jumplist back, out-of-changeset tag jump, and a jump under the All-files plain view: selection + focused/plain stamp + PAINT all follow the buffer nvim actually shows, with no stale paint from the prior buffer; `:e` was already covered by tui-jump. The "No tag file" report is nvim's own honest one-line error (E426/E433), reviewr-uninjected, leaving selection+buffer intact — see Log. Gate tui-entrypath T/O/G/N/P) | covered: tui-rename; open (rename onto deleted, case-only rename) |
-| 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | probed: c1.p1 (double-tap flip — guard added, gate tui-storm step 4); c1.p3 (BUG found+fixed — dead-editor paste silently swallowed, now honest status; gate tui-death step 3c. Pending input cannot outlive its frame: set only while alive, fired same-frame or delivered via the respawn branch c1.p2 resets — code-walked, no live window); c1.p2-race (notification-pipeline audit closed the same-BATCH window the frame-local walk didn't cover: a `buf` adopt in the same drain could move the published file under a captured insert/paste intent, replaying it into the wrong buffer. PendingInput now carries its target file; `pending_input_lands` guard drops any fire whose published file ≠ target. Unit-gated pending_input_tests; not keystroke-reproducible) | open (flip on deleted/renamed file) |
-| 6 | Review walk + reviewed ticks (Enter/BS, files-pane Enter, wrap, persistence) | covered: tui-nav (All-files walk, cross-tab ticks) | covered: tui-nav (files-pane Enter) | covered: tui-nav | probed: c1.p1 (BUG found+fixed — stale nav; gate tui-storm covers Enter/BS storms, walk+revert interleave, walk across rebuild); c1.p2 (BUG found+fixed — insert-flip vs boundary nav; navs now carry their view, gate tui-storm step 6) | covered: tui-persist (content change clears tick); open (tick on renamed file) |
-| 7 | Hunk revert (`space rh`, shapes, EOL flip, last-hunk advance) | covered: tui-revert (last-hunk advance) | n/a | covered: tui-revert (through lock) | open (revert racing agent write / poll refresh) | covered: run.lua (all shapes, added-file refusal), tui-eol; open (revert on rename) |
+| 2 | Diff paint (signs, line paint, virt_lines, statuscolumn, breakindent) | covered: tui-test | n/a | covered: tui-wrap (wrap gap), tui-test (folds+signs) | probed: c1.p3 (paint FOLLOWS the buffer across native tag/jumplist switches — focused fold+signs land on the jumped-to file, no stale paint bleeds back on Ctrl-o; gate tui-entrypath T/O/P); probed: c(this-run) (paint FOLLOWS rapid LIST j/k selection changes — settles on the final file with no stale intermediate/start paint; gate tui-revrace step 0) | covered: tui-unicode, tui-eol, tui-extremes (huge 5000-line modification paints its edits + folds the unchanged bulk without hanging; a 20000-char single-line file opens without crashing — CLEAN); covered: tui-symlink (three symlinks — an in-tree re-point, an outside-repo link to /etc/hostname, a broken link — all list, each opens in the editor, and the reviewer stays responsive across a tab switch with no wedge/crash/corruption; `:edit` follows the link so nvim shows the target's content rather than the blob-text the built-in pane shows, but this degrades gracefully — CLEAN) |
+| 3 | Context folds (foldexpr/foldtext, zx on scope change) | covered: tui-test | n/a | covered: tui-test | covered: tui-scope (re-diff recompute) | covered: tui-extremes (folds collapse ~4994 unchanged lines of a 5000-line buffer, foldtext renders, no O(n^2) hang) |
+| 4 | View model (plain stamping, BufEnter re-derive, deleted scratch, rename map) | covered: tui-rename | covered: tui-test | covered: tui-test (deleted scratch) | probed: c1.p3 (NATIVE entry paths — Ctrl-] tag jump, Ctrl-o jumplist back, out-of-changeset tag jump, and a jump under the All-files plain view: selection + focused/plain stamp + PAINT all follow the buffer nvim actually shows, with no stale paint from the prior buffer; `:e` was already covered by tui-jump. The "No tag file" report is nvim's own honest one-line error (E426/E433), reviewr-uninjected, leaving selection+buffer intact — see Log. Gate tui-entrypath T/O/G/N/P) | covered: tui-rename; probed: c(this-run) (BUG found+fixed — a selected Changes file deleted underneath kept its stale working-copy buffer up (still painted, still nvim-"modified") while the file-list marked it deleted: nvim_sync's same-view dedup keyed on path/base/focus but NOT on-disk existence, so the existence flip hit the early return and show_deleted never ran. Fixed by folding `last_existed` into same_view + gating the in-place sync_view path on unchanged-true existence so a recreate takes a full open_file, not a scratch-over-file sync. Gate tui-delflip, teeth-verified RED); probed: c(this-run) edge-hardening (symlinks — changeset derivation and the `:edit`-based open path both handle an in-tree/outside-repo/broken symlink without crashing or wedging; gate tui-symlink, CLEAN); probed: c(this-run) scenario-matrix (rename-onto-deleted + case-only rename — CLEAN, git-consistent: case-only `git mv Foo.txt foo.txt`+edit resolves the base against Foo.txt on the case-sensitive fs and paints only the edited line's old-side virt line; rename-onto-deleted `git rm a; git mv c a` is NOT mis-paired as a rename because a.txt existed in HEAD — git reports M a.txt (+10 −10)+D c.txt and the reviewer reflects it (a.txt paints as a full modification with `~` signs, c.txt stays a listed deletion). Gate tui-rename2, characterization. Observed pre-existing/generic nvim limitation, NOT a rename bug and out of scope: a removed base line whose new-side anchor is line 1 renders as `virt_lines_above` line 1, which neovim clips at scroll-top — affects any file modified at its first line, independent of renames) |
+| 5 | Read-only Changes (lock, insert/paste flip, pending input, rd lift) | covered: tui-lock (flip lands All files) | covered: tui-lock | covered: tui-undo (lock inert), tui-split (rd lift) | probed: c1.p1 (double-tap flip — guard added, gate tui-storm step 4); c1.p3 (BUG found+fixed — dead-editor paste silently swallowed, now honest status; gate tui-death step 3c. Pending input cannot outlive its frame: set only while alive, fired same-frame or delivered via the respawn branch c1.p2 resets — code-walked, no live window); c1.p2-race (notification-pipeline audit closed the same-BATCH window the frame-local walk didn't cover: a `buf` adopt in the same drain could move the published file under a captured insert/paste intent, replaying it into the wrong buffer. PendingInput now carries its target file; `pending_input_lands` guard drops any fire whose published file ≠ target. Unit-gated pending_input_tests; not keystroke-reproducible) | covered: tui-renamefile (a rename paints/edits/reverts through the read-only lock — no bug); covered: tui-delflip (c(this-run) — flip `i`/paste on a file DELETED underneath the locked Changes view is inert: the deleted scratch is nomodifiable with no edit-maps → E21, no flip, no resurrection on disk. Surfaced+fixed a real BUG en route — see Row 4×timing / Log: the deletion never reached the editor at all because the same-view dedup ignored on-disk existence) |
+| 6 | Review walk + reviewed ticks (Enter/BS, files-pane Enter, wrap, persistence) | covered: tui-nav (All-files walk, cross-tab ticks) | covered: tui-nav (files-pane Enter) | covered: tui-nav | probed: c1.p1 (BUG found+fixed — stale nav; gate tui-storm covers Enter/BS storms, walk+revert interleave, walk across rebuild); c1.p2 (BUG found+fixed — insert-flip vs boundary nav; navs now carry their view, gate tui-storm step 6) | covered: tui-persist (content change clears tick), tui-renamefile (reviewed tick lands on a renamed file, keyed by new-path content; a last-hunk revert marks the pure rename reviewed via the walk contract — CLEAN) |
+| 7 | Hunk revert (`space rh`, shapes, EOL flip, last-hunk advance) | covered: tui-revert (last-hunk advance) | n/a | covered: tui-revert (through lock) | probed: c(this-run) (revert racing agent write / poll refresh under --poll 100 — CLEAN, no product bug: reverting one.txt's hunk while an agent writes three.txt leaves both intact (revert's forced `update!` on its own buffer, agent write on a different file, poll re-derives entries by PATH anchor); a last-hunk revert fires `nav next` and the walk advances to a still-changed file cleanly while polls churn the changeset. Gate tui-revrace steps 1/2) | covered: run.lua (all shapes, added-file refusal), tui-eol, tui-renamefile (revert of a renamed file's hunk writes the base to the NEW path via the rename-aware base_lines and never resurrects the old path — CLEAN) |
 | 8 | Comments (rc/re/rx/rr/rl/rs/ry, cards, composer, jump) | covered: tui-scope (pin to scope+base) | covered: tui-mouse (card click) | covered: tui-edit (compose/edit/sent guard) | probed: c2.p7 (BUG found+fixed — reload froze the open diff for composing/List/CommitPick but NOT for a live range-selection; a poll mid-selection rebuilt `visible` under the anchor, so an agent write shifting lines re-targeted the marked range and the captured snippet no longer matched what the reader selected. Freeze guard now includes select_anchor, mirroring the composing contract; cargo gate app_flow::a_poll_never_rebuilds_the_diff_under_a_live_selection); probed: r2.p3 (fixed — resolve/edit/delete fired from two cursor rows (the anchored line AND the end+1 card-row fallback); dropped the end+1 branch in comment_at so they trigger only from the anchored line; see Log). probed: r2.p5 (out-of-changeset comment leak fixed — a comment authored on an in-changeset file leaked its card onto an out-of-changeset buffer the editor jumped to (:e/Ctrl-]/jumplist): cards keyed on diff_path, but apply paints on the editor's current buffer; a store bump re-fired apply and painted diff_path's comment set onto the jumped-to buffer. Fixed by keying nvim_comment_cards + the nvim_sync cards_key on nvim_card_file (the shown buffer) not diff_path — already landed; this pass adds the missing regression lock. Gate tui-jump-test.sh C1/C2: earlier comment card ABSENT on out-of-changeset gamma; teeth-verified red on diff_path keying). FEATURE (user request): cross-file "next comment" walk — a header button (clickable in both editor modes) and the built-in pane's n/N now step comments ACROSS files (past a file's last comment → next file with a comment, moving editor + sidebar together; wraps). `app.walk_comment(dir)` reuses jump_to_comment's buffer-follow machinery; gate tui-nextcomment (walk file1→file2, wrap last→first, cycle) + app_flow unit tests. probed: c1.p1 (comment→flip→revert cluster — BUG found+fixed: switching to a never-visited All files tab (empty stash → no selected file) took nvim_sync's "no selection" early-return, which re-presented the leftover buffer plain via sync_view but SKIPPED comments.apply — the only writer of ns=reviewr_comments — so the Changes comment card leaked onto the All-files buffer while the store was untouched (Send count intact); early-return now clears cards (apply []). Verified clean in the same pass: insert-flip Changes↔All files round-trip hides/restores the diff-anchored card, and reverting the hunk BELOW a comment keeps its card + Send count. Gate tui-cardflip (teeth-verified red on pre-fix). Note: an edit/revert ON the commented hunk in Changes always insert-flips to All files where the diff-anchored card correctly does not render, so "edit above the anchor while viewing the Changes card" is not a reachable sequence); covered: tui-anchor (SURVIVAL c1.p3 — store-gated on Send N, never card pixels: a comment survives insert-lines-ABOVE + edit-of-its-OWN-anchored-line in All files w/ instant autosave, revert of a hunk ABOVE and the hunk CONTAINING the anchor, and a poll refresh from a concurrent agent write; complements tui-cardflip's revert-BELOW; teeth-verified = reload auto-drop of a drifted New-side comment → RED at 3b) | covered: tui-unicode (composer) |
 | 9 | Live sync (autosave, checktime, FileChangedShell policy, conflict) | covered: tui-live | n/a | covered: tui-live | covered: run.lua (conflict, user wins); probed: c1.p3 (same-wall-clock-second write SAFE — nvim compares mtime nanoseconds; BUG found+fixed — nvim never compares size, so an mtime-preserving write (cp -p/rsync -t) was invisible forever → live.poll size check, gates tui-live 4a/4b; quit mid-insert flushes to disk, gate tui-live step 5); probed: race-audit r2 (buf-adopt × live-sync cross-term @ --poll 100 — a live agent-write to a natively-jumped-to (adopted) buffer composes cleanly: the reloaded line paints, the comment card keyed on the adopted `diff_path` survives, selection holds; a jump burst converges last-wins; BUG found+fixed — a file the editor already sits on that ENTERS the changeset via an agent write gets no `BufEnter` to re-adopt, so the sidebar stayed on the old file. `nvim_sync` now reconciles `nvim_buf`→`diff_path` via `adopt_editor_buffer`, guarded by `diff_path == last_sent` so host-driven selections (list j/k, click, scope flip) still win; gate tui-livejump RACE/RACE2/BOUNCE/CS-ENTRY); probed: race-audit c2.p2 (CONFLICT window end-to-end in the embedded editor — an agent overwrites the file underneath an UNSAVED insert-mode user edit: FileChangedShell modified branch KEEPS the buffer (no reload-clobber) and the scheduled forced update! clobbers the agent on disk = user wins, one autosave wide; contract CLEAN, previously covered only headless in run.lua; gate tui-conflict, teeth-verified RED when the modified branch is flipped to reload) | open (agent deletes open file mid-edit) |
 | 10 | Comment persistence (comments ref, seed, empty delete, rev-guarded) | covered: tui-persist | n/a | n/a | probed: c2.p1 (BUG CONFIRMED — two panes on one repo share one ref; write is unconditional update-ref, rev-guard is in-process only → last-writer-wins clobber. Documented + repro gate git_repo::two_panes_on_one_repo_keep_both_comments #[ignore]d expected-fail + characterization git_repo::comments_ref_write_is_last_writer_wins_with_no_cas. Fix = CAS-merge, too big for a safe patch) | n/a |
-| 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | probed: c2.p6 (sticky-preference contract holds: non-md file in All files shows no chip, returning to the md file re-renders; no bug; gate tui-stash step b) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough) | open (md_view during restart/death) | open (huge md, md with unicode) |
+| 11 | Markdown view (sticky md_view, chip, `p`, scroll routing) | probed: c2.p6 (sticky-preference contract holds: non-md file in All files shows no chip, returning to the md file re-renders; no bug; gate tui-stash step b); probed: c(this-run) (BUG found+fixed — the rendered-markdown scroll `preview_scroll` was a GLOBAL App field while all its siblings diff_scroll/h_scroll/diff_cursor are per-tab (TabStash), so a tall md scrolled down in Changes bled its offset across a tab swap onto a DIFFERENT md file selected in All files: the render clamps preview_scroll to the shown file's length, so the bled offset landed the shorter file at its BOTTOM (its top marker hidden) instead of its own top. Fixed by adding preview_scroll to TabStash + swap_active_with_stash + the inactive-stash reset, mirroring diff_scroll exactly. Gate tui-mdscroll Phase C, teeth-verified RED) | covered: tui-md (files focus stays live) | covered: tui-md (sticky, chip labels, non-md passthrough); covered: tui-mdscroll (SCROLL ROUTING — PageDown in the diff-pane focus scrolls the rendered markdown: top marker scrolls off, deep body appears; previously ungated) | open (md_view during restart/death) | probed: c(this-run) (huge/binary/zero content proven safe in the editor via tui-extremes — the nvim paint path has no binary/too-large guard [unlike the built-in pane's FileState::Binary/TooLarge notices] yet degrades gracefully: binary NUL content and a 20000-char line open without crashing; huge md not separately driven but shares the diff/paint path); open (md with unicode) |
 | 12 | Clipboard (provider→OSC52, cache pastes, host export fallback) | n/a | n/a | n/a | open (OSC52 mid-frame interleave; rapid yank storm) | covered: tui-clip; run.lua (linewise trailing \n) |
 | 13 | Ctrl+i return, Tab focus toggle, 1/2/3, per-tab stash | covered: tui-lock 2c (ctrl+i), tui-test (1/2/3) | covered: tui-test (Tab toggle) | n/a | probed: c2.p6 (BUG found+fixed — the `/` filter query was app-global while every other left-pane field was stashed, so a Changes filter silently filtered All files' list (and vice versa); filter now lives in TabStash + set_tab confirms an in-flight filter box before the swap. Also probed clean: ctrl+i mid-filter ignored, `2` mid-compose lands in the draft with no switch. Gate tui-stash. Tab switch mid-highlight probed r2.p1 (BUG found+fixed — a visual selection survived Tab-out to the files pane: the editor stayed in visual mode behind the host's back, so a same-file tab switch (in-place sync_view never leaves visual) and the Tab back landed in a stale selection where j/k extended instead of navigating; focus handoff now feeds `<C-\><C-N>` to drop transient modes, gate tui-vishl)). probed: c1.p1 (1/2/3 tab switch × a live comment card — BUG found+fixed: switching to a never-visited All files tab leaked the Changes comment card onto the empty All-files buffer because nvim_sync's no-selection early-return skipped comments.apply; the early-return now clears cards. Gate tui-cardflip step 1); probed: c1.p2 (race-audit subsystem 2 — poll rebuild vs tab switch, CLEAN. The event loop is single-threaded: input is drained then `reload()` runs in the same tick, so no torn state. A churning changeset (files entering/leaving, index-shifting the entries) round-tripped through 1↔2 at `--poll 100` never lands a selection on the wrong file — `reload` re-derives `file_cursor` by PATH anchor, not raw index — and never bleeds a filter or a committed-clean entry across tabs. `swap_active_with_stash` is total over `TabStash`'s 15 fields, and `active_file_tab` (not `tab`) is the swap pivot so a PR detour never double-swaps. Regression lock tui-pollswap; teeth-verified RED when reload's anchor re-derivation is swapped for a first_file_row snap) | probed: c1.p5 (USER-REPORT BUG found+fixed — returning to an empty Changes kept the All-files buffer up; editor now parks on the reviewr://empty scratch, gate tui-empty) |
 | 14 | Scope/base (b/t/C, pickers, re-diff in place, rename push) | covered: tui-scope | covered: tui-picker | covered: tui-scope | open (scope flip racing poll) | covered: tui-rename; probed: c1.p5 (zero-commit repo: untracked file diffs against the empty tree, both tabs render — host side; detached HEAD: clean tree shows the empty state, live edit re-lists); probed: c1.p5 re-run 2026-07-08 (BUG found+fixed the deleted throwaway missed — the **nvim editor** showed an unborn-repo added file UNDECORATED: nvim_base_ref published an unresolvable `HEAD`, so diff.lua's refresh bailed on `HEAD:path`; now falls back to git::diff_base → the empty tree on a commitless repo, so the added file paints fully green like the built-in pane. Permanent gate tui-degenerate (unborn green paint + detached-HEAD greeter/re-list); teeth-verified red pre-fix) |
@@ -38,6 +38,36 @@ empty, huge, vanishing).
 Gate scripts not cited above still count toward coverage of their primary rows:
 tui-edit (8), tui-trio (8, 16), tui-undo (5), tui-picker (14, 16), tui-death (1),
 tui-wrap (2), tui-test (2, 3, 4, 13).
+
+## Coverage delta — 2026-07-09 refresh (nvim-harden-quality loop)
+
+Gates added since the last matrix update, mapped to the cells they now cover:
+
+- **tui-reviewtick** → Row 6 (reviewed ticks): ticks are now **per-tab** (not
+  cross-tab). Changes and All files carry independent tick sets; a content change
+  unticks both. Supersedes the old "cross-tab ticks" note under tui-nav.
+- **tui-allwalk** → Row 6 (tab + focus): the All-files review walk steps through
+  **every** file (editor Enter *and* files-pane Enter/Space), skipping ignored-dir
+  placeholders — no longer restricted to the changeset. Closes the "walk targets"
+  gap in Row 6.
+- **tui-del** → Row 6 (file-state) + Row 14: a **deleted** file stays tickable
+  across rescans (prune retains by content-hash, not disk existence), and All files
+  lists the worktree ∪ changeset so a **staged deletion** stays visible instead of
+  vanishing from `git ls-files`.
+- **tui-resurrect** → Row 9 (file-state): opening a file, deleting it underneath,
+  then switching away no longer resurrects it — the view-switch autosave
+  (`reviewr.live.save_live()`) skips a buffer whose file was deleted underneath.
+  **Closes** the Row 9 open cell "agent deletes open file mid-edit" (the
+  delete-underneath direction).
+- **tui-cbracket** → Row 16: bracket-key pane resize path.
+
+Removed: **tui-nextcomment** gate + the cross-file "next comment" walk feature
+(Row 8) were deleted this session at the user's request — the header button and
+`n`/`N` cross-file walk are gone (`commented_lines`/`jump_to_comment` kept). Row 8's
+FEATURE note about that walk is historical.
+
+Newly closed open cells: Row 9 file-state (delete-underneath) via tui-resurrect;
+Row 6 walk-targets via tui-allwalk. Re-ranked worklist below reflects these.
 
 ## Open cells, ranked by risk
 
@@ -51,14 +81,22 @@ clusters that share a fixture.
 4. ~~**13×timing**~~ — DONE c2.p6 (gate tui-stash) + r2.p1 (gate tui-vishl): filter-leak bug fixed; compose/md_view/ctrl+i honest; tab switch mid-highlight fixed (visual mode survived Tab-out → focus handoff now normalizes the editor).
 5. **10×timing** — quit racing the rev-guarded persist write; two panes on one repo.
 6. **8×timing** — comment → flip → revert sequences; anchors surviving revert and agent edits.
-7. **11×timing** — md_view during restart, death (11×tab DONE c2.p6, gate tui-stash step b).
+7. **11×timing** — md_view during restart, death still open (11×tab DONE c2.p6, gate tui-stash
+   step b; cross-tab preview-scroll bleed DONE c(this-run), gate tui-mdscroll; scroll routing now
+   gated too — tui-mdscroll Phase B2).
 8. ~~**4×timing**~~ — DONE c1.p3 (gate tui-entrypath): lock/paint/selection after Ctrl-] tags,
    Ctrl-o jumplist, out-of-changeset jump, and a jump under the plain view all follow the shown
    buffer; no product bug — the entry-path view-model sync is solid. "No tag file" ruled reviewr-
    uninjected (nvim's own E426/E433). Still open: paint after rapid LIST j/k switches (Row 2).
 9. ~~**1×timing** (death with pending work)~~ — DONE c1.p2 (gate tui-death step 4: external kill + comment jump); still open: restart racing first open.
-10. **7×timing** — revert racing agent write / poll refresh.
-11. **file-state batch A** — rename onto deleted, case-only rename, tick/revert/flip on renamed files (4, 6, 7 × file-state).
+10. ~~**7×timing**~~ — DONE c(this-run) (gate tui-revrace): revert racing agent write / poll
+    refresh under --poll 100 — CLEAN, no product bug. Also closed Row 2×timing (paint follows
+    rapid LIST j/k, no stale intermediate paint; gate tui-revrace step 0). Still open on Row 2:
+    md_view × rapid switches.
+11. **file-state batch A** — ~~tick/revert/flip on renamed files (5, 6, 7 × file-state)~~ DONE
+    c(this-run) (gate tui-renamefile — paint against old base, tick, revert-to-new-path, last-hunk
+    revert-advance-marks-reviewed all CLEAN, no product bug); rename-onto-deleted + case-only
+    rename DONE c(this-run) (gate tui-rename2 — CLEAN, git-consistent; 4 × file-state closed).
 12. **file-state batch B** — huge diff (5k lines), very long lines, huge md (2, 3, 11 × file-state).
 13. **file-state batch C** — ~~empty repo / zero commits / detached HEAD~~ DONE c1.p5 + re-run 2026-07-08 (unborn-repo nvim paint BUG found+fixed — see Log — that c1.p5's now-deleted throwaway missed; permanent gate tui-degenerate replaces the throwaway; detached HEAD graceful); still open: agent deletes open file; CRLF (9, 15 × file-state).
 14. **16×timing** — drag during repaint; narrow terminal (120×30) sweep (c1.p4 ran the full
@@ -68,6 +106,142 @@ clusters that share a fixture.
 
 ## Log
 
+- 2026-07-10 scenario-matrix (rename edge cases, ranked 11 residual — Row 4 file-state): CLEAN,
+  no product bug (empty pass on the bug axis); new characterization gate. One fixture carrying
+  both open cells in the Changes changeset. (a) case-only rename `git mv Foo.txt foo.txt` + one
+  edited line: on the case-sensitive fs the old/new paths are distinct, the rename map resolves
+  the base against Foo.txt, and only the edited line diffs — its old base line renders as a red
+  virt line (grep telltale), exactly like a normal rename. (b) rename-onto-deleted
+  `git rm a.txt; git mv c.txt a.txt` (a.txt ends up holding c.txt's old content): because a.txt
+  already existed in HEAD, git's rename detection does NOT pair it with the c.txt deletion (only
+  additions are rename targets) — `git diff HEAD --name-status` reports `M a.txt` (+10 −10) +
+  `D c.txt`, and the reviewer reflects that faithfully (list shows a.txt modified with −10 and
+  c.txt deleted; the editor paints a.txt's new content with `~` modification signs, not the `+`
+  of an add nor the undecorated look of a pure rename). Two probe false-expectations corrected en
+  route, both confirming correct product behaviour: first assumed a.txt would be a big insertion
+  (wrong — it's a full modification); then asserted the alpha base virt lines would be visible on
+  screen (wrong — a.txt's change starts at line 1, and neovim clips `virt_lines_above` of the
+  first buffer line at scroll-top; this is a GENERIC pre-existing nvim rendering limitation for
+  any first-line modification, wholly independent of renames, so it is documented, not "fixed" —
+  a workaround would be a behaviour change and is a maintainer/nvim call, like the other
+  documented residuals). Promoted the passing probe whole to permanent gate
+  scripts/tui-rename2-test.sh (ok 0 list: a.txt M/−10 + c.txt D + foo.txt R, no false pairing /
+  ok 1 case-only base resolves against Foo.txt / ok 2 a.txt paints as a modification) wired into
+  tui-all.sh — characterization/regression lock (no teeth-RED since there is no fix, cf.
+  tui-symlink/tui-extremes/tui-revrace). cargo test + lua suite green; clean quit, zero orphan
+  embeds. Matrix Row 4 file-state updated; both remaining rename open cells closed.
+- 2026-07-10 edge-hardening (symlinks, class 5 — Rows 2/4 × file-state): CLEAN, no product bug
+  (empty pass on the bug axis). One fixture, three hostile-but-legal symlinks all in the Changes
+  changeset: an in-tree symlink re-pointed (staged content change), a NEW symlink to a file
+  outside the repo (/etc/hostname), and a NEW broken symlink. A git symlink is a mode-120000
+  blob whose content is the target-path text; the reviewer opens files with `confirm edit`, which
+  follows the link. Drove all three live: (0) all list without crashing the changeset derivation;
+  (1) each opens in the nvim editor with no wedge/hang — the file list keeps painting after every
+  open, so nvim did not deadlock following an outside/broken link; (2) a Changes↔All-files tab
+  round-trip works with a symlink open. Notable divergence (NOT a bug — graceful degradation):
+  `:edit` follows the symlink so the editor shows the *target's* content, whereas the built-in
+  diff pane shows the blob-text (`real.txt`→`other.txt`); reviewer stays responsive, quits
+  focus-correct, zero orphan embeds. No write path is reachable on a read-only Changes symlink, so
+  the outside link is never written back. Promoted the passing probe whole as permanent gate
+  scripts/tui-symlink-test.sh (ok 0/1/2) wired into tui-all.sh — characterization/regression lock
+  (no teeth-RED since no fix, cf. tui-extremes/tui-revrace/tui-renamefile). cargo tests + lua
+  suite green. Matrix Rows 2/4 file-state updated; symlink open cell closed (rename-onto-deleted +
+  case-only rename remain open).
+- 2026-07-10 scenario-matrix (md-view cluster — Row 11 view-state scroll routing + Row 11 timing
+  cross-tab carryover): BUG found+fixed. One markdown fixture, two changed .md files of very
+  different heights (a.md 200 bullets, b.md 80). Gave each file tab its own selection (Changes=a.md,
+  All files=b.md), rendered a.md with `p`, scrolled it deep with PageDown (SCROLL ROUTING — was
+  entirely ungated: tui-md never scrolled a render; here the top marker scrolls off and the deep
+  body appears, confirming diff-pane-focus j/PageDown route to preview_scroll_by), then switched to
+  All files. Root cause: `preview_scroll` (the rendered-markdown scroll offset) was a GLOBAL App
+  field, the lone scroll field NOT in TabStash — its siblings diff_scroll/h_scroll/diff_cursor are
+  all swapped per-tab. So the tab swap brought b.md's diff_path but LEFT a.md's preview_scroll in
+  place; reload's reset guard (`shown_entry.path != diff_path`) saw no file change (b.md == b.md)
+  so never reset it; and the render's `bound_preview_scroll` clamps to the shown file's length, so
+  a.md's large offset landed b.md at its BOTTOM (b070–b078 shown, BTOPMARKER hidden) — a different
+  file in a different tab wearing another file's scroll. Fix (src/app.rs, strictly model-consistent,
+  behaviour-preserving in spirit): `preview_scroll` joins TabStash (struct field), the swap in
+  swap_active_with_stash, and the inactive-stash reset block alongside `stash.diff_scroll = 0` —
+  each tab now reads its own markdown at its own position, no cross-tab bleed, and returning to a
+  tab restores its md scroll like it already restores diff_scroll. Promoted the probe whole to
+  permanent gate scripts/tui-mdscroll-test.sh (ok A seed / B1 render / B2 scroll-routing /
+  C no-bleed) wired into tui-all.sh; teeth-verified RED at Phase C ("b.md not at its top") with the
+  fix reverted, GREEN restored. 49 cargo tests + lua suite green; build clean. Matrix Row 11
+  view-state (scroll routing) + Row 11 timing (cross-tab) updated.
+- 2026-07-10 scenario-matrix (deleted-file cluster — Row 5 file-state flip-on-deleted + Row 4
+  file-state delete-underneath-selection + Row 2/4 × tab): BUG found+fixed. One fixture (a 15-line
+  committed file `mod.rs` modified to enter Changes, driven under --poll 100). Root cause: a file
+  DELETED underneath while it is the selected Changes file never reached the editor — nvim_sync's
+  same-view dedup (`same_view = !force && same_path && last_base && last_focus`) tracked path/base/
+  focus but NOT on-disk existence, so the deletion flipped nothing in the dedup key, the tick hit
+  the early return at the top of nvim_sync, and the `show_deleted` branch (the all-red base view
+  that exists precisely to answer this transition) never ran. The editor kept the stale working-copy
+  buffer up — still painted as a diff, still nvim-"modified", still showing the worktree-only TAIL
+  line — while the file-list correctly re-derived the file as a deletion: editor and sidebar
+  disagreed. Fix (src/lib.rs, strictly tightening, in the existing session-memory vocabulary): a new
+  `NvimSession.last_existed: Option<bool>` records `app.repo.join(&rel).exists()` at each publish and
+  joins the same_view conjunction, so an existence flip (delete OR recreate) under an unchanged
+  selection invalidates the dedup; and the in-place `sync_view` branch is gated on
+  `last_existed == Some(true)` so the reverse transition (deleted-scratch → file recreated) falls
+  through to a full `open_file` instead of trying to sync a real file over the nofile scratch. Reset
+  in `start()` and the parked-empty branch alongside the other last_* fields. Once the deletion
+  reaches the editor the flip/paste keys are inert by design: the `reviewr://deleted/` scratch is
+  nofile+nomodifiable and `install_edit_maps` only runs from `lock()` (which skips non-lockable
+  buffers), so `i`/`o`/paste answer E21 and never resurrect the file on disk. Promoted the probe to
+  permanent gate scripts/tui-delflip-test.sh (ok 0–4: painted+locked → deleted scratch after rm →
+  `i` inert+no-resurrect → paste inert+no-resurrect → tab round-trip keeps the scratch with no stale
+  TAIL bleed) wired into tui-all.sh; teeth-verified RED at ok 1 ("stuck: TAIL CHANGE") when the
+  existence fold is removed. 56 cargo tests + lua suite green; fmt/clippy clean. Matrix Rows 4/5
+  file-state updated; Row 5 flip-on-deleted closed, Row 4 delete-underneath-selection closed
+  (rename-onto-deleted + case-only rename still open).
+- 2026-07-10 edge-hardening (size/content extremes, class 4 — Rows 2/3/11 × file-state): CLEAN,
+  no product bug (empty pass on the bug axis). One fixture, four hostile-but-legal files all listed
+  in Changes: a huge 5000-line modification (3 scattered edits), a 0-byte added file, a binary
+  (NUL-byte) added file, and a 20000-char single-line file. Drove each in the nvim editor: the huge
+  diff paints its edited lines AND folds collapse the ~4994 unchanged lines (foldtext renders, no
+  hang — foldexpr is O(#hunks) per line, ~3 hunks here so O(n), not O(n^2)); the binary/zero/long
+  files each open without crashing the pane; the reviewer stays responsive (Changes↔All files tab
+  switch works) after all of them and quits clean with zero orphan embeds. Notable: the nvim paint
+  path (diff.lua) has NO binary/too-large guard — unlike the built-in pane (src/diff.rs
+  FileState::Binary on a NUL byte, FileState::TooLarge past MAX_LINES=50000/MAX_BYTES=2_000_000) —
+  but it degrades gracefully anyway (vim.diff + per-line extmarks are all pcall-wrapped; nvim opens
+  binary buffers without erroring). A false lead during probing (clicking a committed-unchanged
+  neighbour that is NOT listed in Changes → an empty-coord mouse click) was chased to ground: a
+  malformed `\033[<0;;M` mouse sequence does NOT crash the reviewer (session stays alive), and the
+  fixture was corrected to only interact with listed files. Promoted the passing probe to permanent
+  gate scripts/tui-extremes-test.sh (ok 0–3) wired into tui-all.sh — a characterization/regression
+  lock (no teeth-RED since there is no fix, cf. tui-revrace/tui-renamefile). Matrix Rows 2/3/11
+  file-state updated; the "huge diff / very long lines / folds on huge diff" open cells closed.
+- 2026-07-10 scenario-matrix (revert-race cluster, ranked 10 — Row 7 × timing + Row 2 × timing):
+  CLEAN, no product bug (empty pass on the bug axis). Drove one fixture (3 changed files under
+  --poll 100) end-to-end: (0) rapid LIST j/k selection changes — editor paint settles on the
+  final file (list sorts alphabetically one/three/two) with no stale intermediate or start paint;
+  (1) reverting one.txt's hunk while an agent concurrently overwrites three.txt — both survive:
+  revert's `silent! update!` writes only its own buffer, the agent write lands on a different
+  file, and poll `reload()` re-derives entries by PATH anchor so neither is lost; (2) reverting
+  one.txt's LAST hunk fires `nav next` and the walk advances to a still-changed file cleanly while
+  --poll 100 churns the changeset underneath (no stranded/wrong selection). One probe expectation
+  was wrong first pass (assumed one/two/three list order); corrected, product behaviour confirmed
+  right. Promoted the passing probe to permanent gate scripts/tui-revrace-test.sh (ok 0/1/2) wired
+  into tui-all.sh — a characterization/regression lock (no teeth-RED since there is no fix; the
+  loop already promotes clean probes, cf. tui-renamefile). Ranked-10 closed; Row 2 residual now
+  just md_view × rapid switches.
+- 2026-07-09 scenario-matrix (rename cluster, ranked 11 — 5/6/7 × file-state): CLEAN, no product
+  bug; new gate. Drove a staged rename (`git mv` + one edited line) end-to-end: (a) the edit paints
+  against the OLD path's base via base_lines' `M._renames` fallback (not one big insertion); (b) a
+  reviewed tick lands on the renamed file, keyed by the new-path content hash; (c) `space rh` reverts
+  the hunk — the base line returns at the NEW path on disk and the old path is NOT resurrected (per-
+  hunk base_text captured through the rename-aware base_lines). Two false starts corrected on the
+  probe side, both confirming correct product behavior: (1) with `number` on the mod sign renders
+  `~   6 EDITED CONTENT 06` (sign + number cell), not `~ …`; (2) the reviewed tick correctly SURVIVES
+  the revert — reverting a file's LAST changed hunk fires `nav next` → advance_reviewed_file →
+  mark_reviewed (the documented walk contract; on a plain file this is invisible because the file
+  also leaves the changeset, but a pure rename stays a change so it remains listed AND ticked, its
+  stored hash re-tracking the post-revert content). Promoted the passing probe to permanent gate
+  scripts/tui-renamefile-test.sh (ok 0–3) wired into tui-all.sh; teeth-verified RED (ok 0 fails
+  "old-path base not resolved") when base_lines' rename fallback is neutered, GREEN restored. Matrix
+  Rows 5/6/7 file-state updated; ranked-11 rename portion closed (rename-onto-deleted + case-only
+  rename still open).
 - 2026-07-08 c1.p5 (edge-hardening, class 1 re-run — empty/degenerate git state): BUG found+fixed
   that c1.p5's earlier throwaway (deleted, ungated) missed. On an UNBORN repo (git init, no HEAD)
   the Changes tab lists an untracked file correctly (host-side changed_files/content_sides use the
