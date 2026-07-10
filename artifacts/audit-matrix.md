@@ -39,6 +39,36 @@ Gate scripts not cited above still count toward coverage of their primary rows:
 tui-edit (8), tui-trio (8, 16), tui-undo (5), tui-picker (14, 16), tui-death (1),
 tui-wrap (2), tui-test (2, 3, 4, 13).
 
+## Coverage delta — 2026-07-09 refresh (nvim-harden-quality loop)
+
+Gates added since the last matrix update, mapped to the cells they now cover:
+
+- **tui-reviewtick** → Row 6 (reviewed ticks): ticks are now **per-tab** (not
+  cross-tab). Changes and All files carry independent tick sets; a content change
+  unticks both. Supersedes the old "cross-tab ticks" note under tui-nav.
+- **tui-allwalk** → Row 6 (tab + focus): the All-files review walk steps through
+  **every** file (editor Enter *and* files-pane Enter/Space), skipping ignored-dir
+  placeholders — no longer restricted to the changeset. Closes the "walk targets"
+  gap in Row 6.
+- **tui-del** → Row 6 (file-state) + Row 14: a **deleted** file stays tickable
+  across rescans (prune retains by content-hash, not disk existence), and All files
+  lists the worktree ∪ changeset so a **staged deletion** stays visible instead of
+  vanishing from `git ls-files`.
+- **tui-resurrect** → Row 9 (file-state): opening a file, deleting it underneath,
+  then switching away no longer resurrects it — the view-switch autosave
+  (`reviewr.live.save_live()`) skips a buffer whose file was deleted underneath.
+  **Closes** the Row 9 open cell "agent deletes open file mid-edit" (the
+  delete-underneath direction).
+- **tui-cbracket** → Row 16: bracket-key pane resize path.
+
+Removed: **tui-nextcomment** gate + the cross-file "next comment" walk feature
+(Row 8) were deleted this session at the user's request — the header button and
+`n`/`N` cross-file walk are gone (`commented_lines`/`jump_to_comment` kept). Row 8's
+FEATURE note about that walk is historical.
+
+Newly closed open cells: Row 9 file-state (delete-underneath) via tui-resurrect;
+Row 6 walk-targets via tui-allwalk. Re-ranked worklist below reflects these.
+
 ## Open cells, ranked by risk
 
 State-carrying features × timing rank highest (that's where every past live bug
