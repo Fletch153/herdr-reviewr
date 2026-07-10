@@ -13,7 +13,7 @@ for gate in tui-test.sh tui-edit-test.sh tui-scope-test.sh tui-mouse-test.sh \
             tui-degenerate-test.sh tui-pollswap-test.sh tui-anchor-test.sh tui-conflict-test.sh \
             tui-reviewtick-test.sh tui-allwalk-test.sh tui-del-test.sh tui-resurrect-test.sh \
             tui-renamefile-test.sh tui-revrace-test.sh tui-extremes-test.sh tui-delflip-test.sh \
-            tui-mdscroll-test.sh; do
+            tui-mdscroll-test.sh tui-symlink-test.sh; do
   echo "== $gate"
   if ! bash "$DIR/$gate"; then
     echo "== $gate FAILED"
