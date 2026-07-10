@@ -1347,7 +1347,7 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
             }
             // The markdown viewer paints over the editor grid; p/esc (or the [raw] chip)
             // returns to the editor.
-            (Char('p'), false) => app.open_preview(),
+            (Char('p'), false) => app.toggle_md_view(),
             (Backspace, _) => app.request_delete(),
             (Char('/'), false) => app.slash(),
             (Char('?'), _) => app.open_help(),
@@ -1416,7 +1416,7 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
         (Char('s' | 'S'), _) => app.export(&Agent),
         (Char('y' | 'Y'), _) => app.export(&Clipboard),
         (Char('l'), _) => app.open_list(),
-        (Char('p'), false) => app.open_preview(),
+        (Char('p'), false) => app.toggle_md_view(),
         (Char('+'), _) => app.send_path_to_agent(),
         (Char(' '), _) => app.review_advance(),
         // `x` expands every folder containing a change; press again to collapse back.
