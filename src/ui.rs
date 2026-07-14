@@ -604,7 +604,9 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
-    let title = if app.filter.is_empty() {
+    let title = if app.mode == Mode::ExtExpand {
+        format!("Files  .{}▏", app.ext_query)
+    } else if app.filter.is_empty() {
         "Files".to_string()
     } else if app.mode == Mode::Filter {
         format!("Files  /{}▏", app.filter)
@@ -1636,6 +1638,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Search => ("/", "search"),
         A::SearchNext => ("enter", "next match"),
         A::ApplyFilter => ("enter", "apply"),
+        A::RevealExt => ("enter", "reveal"),
         A::PickCommit | A::PickBranch => ("enter", "compare"),
         A::Send => return ("s".into(), format!("send {}", app.unsent_count())),
         A::List => ("l", "list"),
@@ -1865,6 +1868,10 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("Tab", "switch files ⇄ editor (editor: normal/visual mode only)"),
                     ("← / →", "collapse / expand a folder"),
                     ("x", "expand every folder with changes · again collapses back"),
+                    (
+                        ".",
+                        "reveal folders holding a file of an extension (.rs⏎) · empty ⏎ collapses back",
+                    ),
                     ("backspace", "delete the file / folder under the cursor (confirms first)"),
                     ("[ / ]", "narrow / widen the file list"),
                     ("/", "filter the file list"),
@@ -1949,6 +1956,10 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 ("← / →", "collapse/expand dir · expand fold · scroll diff"),
                 ("Enter", "expand/collapse the tree under a folder"),
                 ("x", "expand every folder with changes · again collapses back"),
+                (
+                    ".",
+                    "reveal folders holding a file of an extension (.rs⏎) · empty ⏎ collapses back",
+                ),
                 ("backspace", "delete the file / folder under the cursor (confirms first)"),
                 ("w", "toggle line wrap"),
                 ("[ / ]", "narrow / widen the file list"),

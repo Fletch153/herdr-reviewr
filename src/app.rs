@@ -88,6 +88,7 @@ struct TabStash {
     file_scroll: usize,
     toggled_dirs: HashSet<String>,
     expand_snapshot: Option<HashSet<String>>,
+    ext_expand_snapshot: Option<HashSet<String>>,
     diff: FileDiff,
     visible: Vec<Row>,
     expanded_folds: HashSet<u32>,
@@ -141,6 +142,9 @@ pub enum Mode {
     Filter,
     /// Incremental text search within the open diff/file; the query lives in `search`.
     Search,
+    /// Typing an extension after `.` (the entered text lives in `ext_query`). `⏎` reveals every
+    /// folder holding a file of that extension; an empty `.⏎` collapses those reveals back.
+    ExtExpand,
     /// Browsing the `?` keybinding help overlay.
     Help,
     /// Confirming a file/folder deletion; the target lives in `pending_delete`.
@@ -187,6 +191,8 @@ pub enum FooterAction {
     Filter,
     ApplyFilter,
     ClearFilter,
+    /// Enter in `ExtExpand` mode: reveal every folder holding a file of the typed extension.
+    RevealExt,
     /// `/` when the diff is focused: search the open file.
     Search,
     /// Enter in search mode: jump to the next match.
@@ -281,6 +287,15 @@ pub struct App {
     /// second `x` restores the tree to exactly its pre-expand state. `None` when `x` is not
     /// holding an expansion open. Per-tab (stashed on a tab switch); survives a poll.
     expand_snapshot: Option<HashSet<String>>,
+    /// The `toggled_dirs` snapshot saved when the first `.`-reveal (`ExtExpand`) expanded folders
+    /// by extension, so an empty `.⏎` restores the tree to exactly its pre-reveal state. Successive
+    /// `.ext⏎` reveals accumulate against this one baseline; `None` when no reveal is held open.
+    /// Per-tab (stashed on a tab switch); survives a poll — mirrors `expand_snapshot`.
+    ext_expand_snapshot: Option<HashSet<String>>,
+    /// The extension being typed after `.` in `Mode::ExtExpand` (without the leading dot); empty
+    /// outside that momentary input. Not per-tab: the mode captures `1`/`2`/`3` as text, so a tab
+    /// switch cannot happen mid-input and there is nothing to stash.
+    pub ext_query: String,
     /// Reviewed marks, split per tab so `Changes` (happy-with-the-diff) and `All files`
     /// (audited-the-whole-file) tick independently — the same file can be ticked in one and not
     /// the other. Inner map: path → worktree-content hash at review time, so the mark clears when
@@ -444,6 +459,8 @@ impl App {
             resume_list: false,
             toggled_dirs: HashSet::new(),
             expand_snapshot: None,
+            ext_expand_snapshot: None,
+            ext_query: String::new(),
             reviewed,
             reviewed_rev: 0,
             reviewed_saved_rev: 0,
@@ -1702,6 +1719,7 @@ impl App {
         std::mem::swap(&mut self.file_scroll, &mut self.stash.file_scroll);
         std::mem::swap(&mut self.toggled_dirs, &mut self.stash.toggled_dirs);
         std::mem::swap(&mut self.expand_snapshot, &mut self.stash.expand_snapshot);
+        std::mem::swap(&mut self.ext_expand_snapshot, &mut self.stash.ext_expand_snapshot);
         // `reviewed` is deliberately NOT stashed: it is one global map keyed by tab, so switching
         // tabs already resolves to the right tick set on read — there is nothing to swap. Changes
         // and All files hold independent ticks, but the map that carries both is not per-tab state.
@@ -1907,6 +1925,85 @@ impl App {
     fn change_ancestor_dirs(&self) -> Vec<String> {
         let mut set = HashSet::new();
         for path in self.changed.keys() {
+            let mut idx = 0;
+            while let Some(rel) = path[idx..].find('/') {
+                idx += rel;
+                set.insert(path[..idx].to_string());
+                idx += 1;
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    /// `.`: begin typing a file extension to reveal. Focus snaps to the files pane (like
+    /// `start_filter`) so both the typed extension and the tree it reveals stay in view. A no-op
+    /// off the file tabs — there is no tree to expand on the PR tab.
+    pub fn start_ext_expand(&mut self) {
+        if !self.tab.is_file_tab() {
+            return;
+        }
+        self.focus = Focus::Files;
+        self.ext_query.clear();
+        self.mode = Mode::ExtExpand;
+    }
+
+    pub fn ext_push(&mut self, c: char) {
+        self.ext_query.push(c);
+    }
+
+    pub fn ext_backspace(&mut self) {
+        self.ext_query.pop();
+    }
+
+    /// Leave `ExtExpand` without touching the tree (`esc`).
+    pub fn cancel_ext_expand(&mut self) {
+        self.ext_query.clear();
+        if self.mode == Mode::ExtExpand {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// `⏎` in `ExtExpand`. With an extension typed: reveal every folder holding a file of that
+    /// extension, accumulating against one saved baseline. With nothing typed: restore that
+    /// baseline — the "un-spam" that collapses every `.`-reveal back to the pre-reveal tree.
+    pub fn commit_ext_expand(&mut self) {
+        let ext = self.ext_query.trim().trim_start_matches('.').to_lowercase();
+        self.ext_query.clear();
+        self.mode = Mode::Normal;
+        if ext.is_empty() {
+            if let Some(prior) = self.ext_expand_snapshot.take() {
+                self.toggled_dirs = prior;
+                self.apply_dir_change();
+            }
+            return;
+        }
+        let dirs = self.ext_ancestor_dirs(&ext);
+        if dirs.is_empty() {
+            self.status = format!("no .{ext} files to reveal");
+            return;
+        }
+        // Save the pre-reveal tree once; successive `.ext⏎` accumulate against this single
+        // baseline, so a later empty `.⏎` unwinds all of them at once (mirrors the `x` snapshot).
+        if self.ext_expand_snapshot.is_none() {
+            self.ext_expand_snapshot = Some(self.toggled_dirs.clone());
+        }
+        for d in &dirs {
+            self.set_dir_expanded(d, true);
+        }
+        self.apply_dir_change();
+    }
+
+    /// Every ancestor directory of a (non-directory) entry whose path ends in `.<ext>` — the
+    /// folders to open so every `<ext>` file shows, e.g. `a/b/c.rs` for `rs` yields `a` and `a/b`.
+    /// `ext` is lower-case and dot-free; matching is case-insensitive. Deduplicated.
+    fn ext_ancestor_dirs(&self, ext: &str) -> Vec<String> {
+        let suffix = format!(".{ext}");
+        let mut set = HashSet::new();
+        for e in &self.entries {
+            if e.is_dir || !e.path.to_lowercase().ends_with(&suffix) {
+                continue;
+            }
+            let path = &e.path;
             let mut idx = 0;
             while let Some(rel) = path[idx..].find('/') {
                 idx += rel;
@@ -2456,6 +2553,7 @@ impl App {
             | Mode::BranchPick
             | Mode::Filter
             | Mode::Search
+            | Mode::ExtExpand
             | Mode::Help
             | Mode::ConfirmDelete
             | Mode::ConfirmQuit => None,
@@ -3062,6 +3160,9 @@ impl App {
             }
             Mode::Filter => {
                 return vec![(A::ApplyFilter, Primary), (A::ClearFilter, Normal)];
+            }
+            Mode::ExtExpand => {
+                return vec![(A::RevealExt, Primary), (A::Cancel, Normal)];
             }
             Mode::Search => {
                 return vec![(A::SearchNext, Primary), (A::Cancel, Normal)];

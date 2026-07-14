@@ -1178,6 +1178,21 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
         return Ok(());
     }
 
+    if app.mode == Mode::ExtExpand {
+        match key.code {
+            Esc => app.cancel_ext_expand(),
+            Enter => app.commit_ext_expand(),
+            Backspace => app.ext_backspace(),
+            Up => app.move_cursor(-1)?,
+            Down => app.move_cursor(1)?,
+            PageUp => app.move_cursor(-PAGE)?,
+            PageDown => app.move_cursor(PAGE)?,
+            Char(c) if !ctrl => app.ext_push(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if app.mode == Mode::Search {
         match key.code {
             Esc => app.clear_search(),
@@ -1329,6 +1344,7 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
             (Right, _) if app.on_folder() => app.expand_dir(),
             (Left, _) if app.on_folder() => app.collapse_dir(),
             (Char('x'), _) => app.expand_changes(),
+            (Char('.'), false) => app.start_ext_expand(),
             (Char(']'), _) => app.resize_list(4),
             (Char('['), _) => app.resize_list(-4),
             (Char('b'), false) => app.set_scope(Scope::Branch)?,
@@ -1421,6 +1437,7 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
         (Char(' '), _) => app.review_advance(),
         // `x` expands every folder containing a change; press again to collapse back.
         (Char('x'), _) => app.expand_changes(),
+        (Char('.'), false) => app.start_ext_expand(),
         (Char('?'), _) => app.open_help(),
         (Backspace, _) => app.request_delete(),
         (Char('/'), false) => app.slash(),

@@ -89,6 +89,7 @@ below are the full reference.
 | `→` `←` | Expand / collapse a directory or expand a fold; otherwise scroll the diff sideways |
 | `w` | Toggle line wrap |
 | `/` | Filter the file tree by name (type to filter, `esc` clears, `enter` keeps it) |
+| `.` | Reveal by extension — type an extension then `enter` to expand every folder holding a file of that type (e.g. `.rs` shows every Rust file); an empty `.` `enter` collapses those reveals back. `esc` cancels |
 | `]` `[` | Widen / narrow the file list |
 | `⌫` Backspace | Delete the file or folder under the cursor from the working tree — asks to confirm first (`y`/`enter` deletes, `n`/`esc` cancels) |
 | `?` | Show every keybinding in an overlay (`j`/`k` scroll, `esc` closes) |
