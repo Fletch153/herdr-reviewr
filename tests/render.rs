@@ -1,7 +1,7 @@
 mod common;
 
 use common::Repo;
-use herdr_reviewr::app::{App, Focus, Mode};
+use herdr_reviewr::app::{App, Focus, Mode, Tab};
 use herdr_reviewr::model::Scope;
 use herdr_reviewr::ui::{self, HeaderHit};
 use ratatui::Terminal;
@@ -667,14 +667,31 @@ fn the_comments_list_groups_by_base_and_shows_checkboxes() {
 }
 
 #[test]
-fn the_delete_confirmation_overlay_names_the_target() {
-    let mut app = edited_app();
+fn the_delete_overlay_offers_reset_for_a_changed_file() {
+    let mut app = edited_app(); // hello.rs is modified → has a review base → resettable
     app.request_delete();
     let out = render(&app);
-    assert!(out.contains("Delete file"), "the overlay names the action");
-    assert!(out.contains("hello.rs"), "and the target path");
-    assert!(out.contains("y / enter"), "and the confirm key");
-    assert!(out.contains("working tree"), "and warns it removes the file");
+    assert!(out.contains("hello.rs"), "the overlay names the target path");
+    assert!(out.contains("delete"), "it offers delete");
+    assert!(out.contains("reset"), "and reset");
+    assert!(out.contains("review base"), "explaining reset restores the review base");
+}
+
+#[test]
+fn the_delete_overlay_stays_plain_for_a_file_with_no_base() {
+    let r = Repo::init();
+    r.write("keep.rs", "x\n");
+    r.commit_all("init");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::AllFiles).unwrap();
+    // The All-files cursor rests on keep.rs — unchanged, so there is no review base to reset to.
+    app.request_delete();
+    let out = render(&app);
+    assert!(out.contains("Delete file"), "the plain overlay names the delete action");
+    assert!(out.contains("keep.rs"), "and the target path");
+    assert!(out.contains("y / enter"), "with the y/enter confirm key");
+    assert!(!out.contains("review base"), "and offers no reset for a file with no base");
 }
 
 #[test]

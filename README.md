@@ -91,7 +91,7 @@ below are the full reference.
 | `/` | Filter the file tree by name (type to filter, `esc` clears, `enter` keeps it) |
 | `.` | Reveal by extension — type an extension then `enter` to expand every folder holding a file of that type (e.g. `.rs` shows every Rust file); an empty `.` `enter` collapses those reveals back. `esc` cancels |
 | `]` `[` | Widen / narrow the file list |
-| `⌫` Backspace | Delete the file or folder under the cursor from the working tree — asks to confirm first (`y`/`enter` deletes, `n`/`esc` cancels) |
+| `⌫` Backspace | Delete the file or folder under the cursor from the working tree — asks to confirm first (`y`/`enter` deletes, `n`/`esc` cancels). For a changed (modified or deleted) file the prompt also offers `r` to **reset** it — discard the reviewed changes and restore the review base — instead of deleting (`d` delete · `r` reset · `esc` cancel) |
 | `?` | Show every keybinding in an overlay (`j`/`k` scroll, `esc` closes) |
 | `r` | Refresh now |
 | `q` | Quit |

@@ -158,6 +158,10 @@ pub enum Mode {
 pub struct PendingDelete {
     pub path: String,
     pub is_dir: bool,
+    /// Whether the overlay also offers "reset" — true only for a Modified/Deleted file, which has
+    /// a review base to restore. Added/untracked/renamed files and folders have no clean base, so
+    /// their overlay stays the plain delete Yes/No.
+    pub resettable: bool,
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
@@ -174,6 +178,11 @@ pub enum FooterAction {
     ResolveSelected,
     SelectAll,
     ConfirmDelete,
+    /// The delete verb on the three-way overlay (a resettable file), distinct from
+    /// `ConfirmDelete`'s `y/↵` so its glyph reads `d`.
+    DeleteFile,
+    /// The reset verb on the three-way overlay: restore the file to the review base.
+    ResetFile,
     Review,
     JumpComment,
     ExpandFold,
@@ -798,9 +807,23 @@ impl App {
         }
         let target = self.file_rows.get(self.file_cursor).and_then(|row| {
             if let Some(idx) = row.file_index() {
-                self.entries.get(idx).map(|e| PendingDelete { path: e.path.clone(), is_dir: false })
+                self.entries.get(idx).map(|e| {
+                    // Reset restores the review base, which only exists for a modified or
+                    // deleted file — an added/untracked/renamed file has no clean base to go to.
+                    let resettable = matches!(
+                        self.changed.get(&e.path).map(|a| a.change),
+                        Some(
+                            crate::model::ChangeKind::Modified | crate::model::ChangeKind::Deleted
+                        ),
+                    );
+                    PendingDelete { path: e.path.clone(), is_dir: false, resettable }
+                })
             } else {
-                row.dir_path().map(|p| PendingDelete { path: p.to_string(), is_dir: true })
+                row.dir_path().map(|p| PendingDelete {
+                    path: p.to_string(),
+                    is_dir: true,
+                    resettable: false,
+                })
             }
         });
         match target {
@@ -839,6 +862,38 @@ impl App {
         self.pending_delete = None;
         if self.mode == Mode::ConfirmDelete {
             self.mode = Mode::Normal;
+        }
+    }
+
+    /// Restore the confirmed file to the review base: overwrite the working-tree file with the
+    /// diff's base-side content, discarding the reviewed changes (or bringing back a file deleted
+    /// underneath). Only reachable for a Modified/Deleted file (`resettable`). The base side is
+    /// the exact content the diff compares against, so every scope and the deleted case are
+    /// handled uniformly without a per-scope `git checkout`.
+    pub fn confirm_reset(&mut self) {
+        self.mode = Mode::Normal;
+        let Some(target) = self.pending_delete.take() else { return };
+        let prev = self
+            .entries
+            .iter()
+            .find(|e| e.path == target.path)
+            .and_then(|e| e.previous_path.clone());
+        let (base, _) = self.content_sides(&target.path, prev.as_deref());
+        let full = self.repo.join(&target.path);
+        let result = full
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&full, base));
+        match result {
+            Ok(()) => {
+                logln!("reset {}", target.path);
+                self.status = format!("reset {} to the review base", target.path);
+                let _ = self.reload();
+            }
+            Err(e) => {
+                logln!("reset ERR {}: {e}", target.path);
+                self.status = format!("reset failed: {e}");
+            }
         }
     }
 
@@ -3171,6 +3226,13 @@ impl App {
                 return vec![(A::CloseHelp, Primary)];
             }
             Mode::ConfirmDelete => {
+                if self.pending_delete.as_ref().is_some_and(|p| p.resettable) {
+                    return vec![
+                        (A::DeleteFile, Primary),
+                        (A::ResetFile, Primary),
+                        (A::Cancel, Normal),
+                    ];
+                }
                 return vec![(A::ConfirmDelete, Primary), (A::Cancel, Normal)];
             }
             Mode::ConfirmQuit => {

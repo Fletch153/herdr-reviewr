@@ -14,7 +14,7 @@ for gate in tui-test.sh tui-edit-test.sh tui-scope-test.sh tui-mouse-test.sh \
             tui-reviewtick-test.sh tui-allwalk-test.sh tui-del-test.sh tui-resurrect-test.sh \
             tui-renamefile-test.sh tui-revrace-test.sh tui-extremes-test.sh tui-delflip-test.sh \
             tui-mdscroll-test.sh tui-symlink-test.sh tui-rename2-test.sh tui-mdpreview-test.sh tui-cardreload-test.sh tui-mdtoggle-test.sh tui-quitdeleted-test.sh \
-            tui-extexpand-test.sh; do
+            tui-extexpand-test.sh tui-reset-test.sh; do
   echo "== $gate"
   if ! bash "$DIR/$gate"; then
     echo "== $gate FAILED"

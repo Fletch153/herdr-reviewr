@@ -1599,10 +1599,11 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::ClearSelection | A::ClearFilter => ("esc", "clear"),
         A::EditComment => ("e", "edit"),
         A::OpenEditor => ("e", "editor"),
-        A::DeleteComment => ("d", "delete"),
+        A::DeleteComment | A::DeleteFile => ("d", "delete"),
         A::Resolve | A::ResolveSelected => ("r", "resolve"),
         A::SelectAll => ("a", "select all"),
         A::ConfirmDelete => ("y/↵", "delete"),
+        A::ResetFile => ("r", "reset"),
         A::Review => {
             // nvim mode retired Space: Enter marks from the list and walks in the editor.
             if app.editor_nvim {
@@ -1872,7 +1873,10 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                         ".",
                         "reveal folders holding a file of an extension (.rs⏎) · empty ⏎ collapses back",
                     ),
-                    ("backspace", "delete the file / folder under the cursor (confirms first)"),
+                    (
+                        "backspace",
+                        "delete the file/folder under the cursor · a changed file also offers reset-to-base (confirms first)",
+                    ),
                     ("[ / ]", "narrow / widen the file list"),
                     ("/", "filter the file list"),
                     (
@@ -1960,7 +1964,10 @@ fn help_groups(nvim: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ".",
                     "reveal folders holding a file of an extension (.rs⏎) · empty ⏎ collapses back",
                 ),
-                ("backspace", "delete the file / folder under the cursor (confirms first)"),
+                (
+                    "backspace",
+                    "delete the file/folder under the cursor · a changed file also offers reset-to-base (confirms first)",
+                ),
                 ("w", "toggle line wrap"),
                 ("[ / ]", "narrow / widen the file list"),
             ],
@@ -2106,27 +2113,50 @@ fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup);
 
     let kind = if pd.is_dir { "folder" } else { "file" };
-    let tail = if pd.is_dir { " and everything inside it?" } else { "?" };
     let path = truncate_width(&pd.path, (inner.width as usize).saturating_sub(kind.len() + 10));
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(format!("Delete {kind} "), text_style(p)),
-            Span::styled(path, Style::default().fg(p.mauve).add_modifier(Modifier::BOLD)),
-            Span::styled(tail.to_string(), text_style(p)),
-        ]),
-        Line::default(),
-        Line::from(Span::styled(
-            "This removes it from the working tree.",
-            Style::default().fg(p.subtext0),
-        )),
-        Line::default(),
-        Line::from(vec![
-            Span::styled("y / enter", Style::default().fg(p.red).add_modifier(Modifier::BOLD)),
-            Span::styled(" delete    ", text_style(p)),
-            Span::styled("n / esc", Style::default().fg(p.lavender)),
-            Span::styled(" cancel", Style::default().fg(p.subtext0)),
-        ]),
-    ];
+    let path_span = Span::styled(path, Style::default().fg(p.mauve).add_modifier(Modifier::BOLD));
+    let lines = if pd.resettable {
+        // Three-way: delete the file outright, or reset it to the review base (discard the
+        // reviewed changes). `Enter` is deliberately unbound so a stray keypress fires neither.
+        vec![
+            Line::from(vec![Span::styled(format!("{kind} "), text_style(p)), path_span]),
+            Line::default(),
+            Line::from(Span::styled(
+                "delete removes the file · reset restores the review base (discards changes)",
+                Style::default().fg(p.subtext0),
+            )),
+            Line::default(),
+            Line::from(vec![
+                Span::styled("d", Style::default().fg(p.red).add_modifier(Modifier::BOLD)),
+                Span::styled(" delete    ", text_style(p)),
+                Span::styled("r", Style::default().fg(p.green).add_modifier(Modifier::BOLD)),
+                Span::styled(" reset    ", text_style(p)),
+                Span::styled("n / esc", Style::default().fg(p.lavender)),
+                Span::styled(" cancel", Style::default().fg(p.subtext0)),
+            ]),
+        ]
+    } else {
+        let tail = if pd.is_dir { " and everything inside it?" } else { "?" };
+        vec![
+            Line::from(vec![
+                Span::styled(format!("Delete {kind} "), text_style(p)),
+                path_span,
+                Span::styled(tail.to_string(), text_style(p)),
+            ]),
+            Line::default(),
+            Line::from(Span::styled(
+                "This removes it from the working tree.",
+                Style::default().fg(p.subtext0),
+            )),
+            Line::default(),
+            Line::from(vec![
+                Span::styled("y / enter", Style::default().fg(p.red).add_modifier(Modifier::BOLD)),
+                Span::styled(" delete    ", text_style(p)),
+                Span::styled("n / esc", Style::default().fg(p.lavender)),
+                Span::styled(" cancel", Style::default().fg(p.subtext0)),
+            ]),
+        ]
+    };
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

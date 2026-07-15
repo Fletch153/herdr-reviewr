@@ -1241,8 +1241,14 @@ fn handle_key(app: &mut App, session: &mut NvimSession, key: KeyEvent, area: Rec
     }
 
     if app.mode == Mode::ConfirmDelete {
+        // A resettable file gets the three-way overlay: `d`/`y` delete, `r` resets to the review
+        // base, and `Enter` is inert (two destructive verbs — don't let a stray Enter fire one).
+        // Every other target keeps the plain delete Yes/No, with `y`/`Enter` deleting.
+        let resettable = app.pending_delete().is_some_and(|p| p.resettable);
         match key.code {
-            Char('y') | Enter => app.confirm_delete(),
+            Char('r') if resettable => app.confirm_reset(),
+            Char('d' | 'y') => app.confirm_delete(),
+            Enter if !resettable => app.confirm_delete(),
             Esc | Char('n' | 'q') => app.cancel_delete(),
             _ => {}
         }
