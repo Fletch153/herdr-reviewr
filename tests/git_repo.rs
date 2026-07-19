@@ -4,14 +4,30 @@ use std::collections::HashMap;
 
 use common::Repo;
 use herdr_reviewr::git::{
-    all_files, base_ref, changed_against_tree, changed_files, file_content, merge_base,
-    read_baseline_ref, read_comments_blob, recent_commits, snapshot_worktree, worktree_key,
-    write_baseline_ref, write_comments_blob,
+    StatusSnapshot, base_ref, changed_against_tree, file_content, merge_base, read_baseline_ref,
+    read_comments_blob, recent_commits, snapshot_worktree, worktree_key, write_baseline_ref,
+    write_comments_blob,
 };
 use herdr_reviewr::model::{ChangeKind, ChangedFile, Scope};
 
 fn by_path(files: &[ChangedFile]) -> HashMap<&str, &ChangedFile> {
     files.iter().map(|f| (f.path.as_str(), f)).collect()
+}
+
+// The production callers collect one StatusSnapshot per reload and thread it through; these
+// wrappers do the same per call so the test bodies stay expressed in terms of the operation.
+fn changed_files(
+    repo: &std::path::Path,
+    scope: Scope,
+    base: Option<&str>,
+) -> anyhow::Result<Vec<ChangedFile>> {
+    let snap = StatusSnapshot::collect(repo)?;
+    herdr_reviewr::git::changed_files(repo, scope, base, &snap)
+}
+
+fn all_files(repo: &std::path::Path) -> anyhow::Result<Vec<herdr_reviewr::git::WorktreeEntry>> {
+    let snap = StatusSnapshot::collect(repo)?;
+    herdr_reviewr::git::all_files(repo, &snap)
 }
 
 #[test]
@@ -495,12 +511,12 @@ fn working_status_reports_staged_unstaged_and_untracked() {
     r.write("new.rs", "n\n");
     r.write("a.rs", "ONE\n");
 
-    let st = herdr_reviewr::git::working_status(r.path()).unwrap();
+    let st = StatusSnapshot::collect(r.path()).unwrap().file_statuses();
     assert_eq!(st.get("new.rs").map(|s| (s.marker, s.staged)), Some(('?', false)));
     assert_eq!(st.get("a.rs").map(|s| (s.marker, s.staged)), Some(('M', false)));
 
     r.git(&["add", "new.rs", "a.rs"]);
-    let st = herdr_reviewr::git::working_status(r.path()).unwrap();
+    let st = StatusSnapshot::collect(r.path()).unwrap().file_statuses();
     assert_eq!(st.get("new.rs").map(|s| (s.marker, s.staged)), Some(('A', true)));
     assert_eq!(st.get("a.rs").map(|s| (s.marker, s.staged)), Some(('M', true)));
 }
@@ -557,4 +573,40 @@ fn two_panes_on_one_repo_keep_both_comments() {
     let persisted = read_comments_blob(r.path(), &key).expect("ref exists after the writes");
     assert!(persisted.contains("AONE"), "pane A's comment must survive pane B's write");
     assert!(persisted.contains("BONE"), "pane B's comment must survive pane A's write");
+}
+
+// --- untracked-additions cache: correct counts without re-reading unchanged files ---------
+
+#[test]
+fn untracked_addition_counts_stay_correct_across_cached_rescans() {
+    let r = Repo::init();
+    r.write("base.rs", "x\n");
+    r.commit_all("init");
+    r.write("u.txt", "one\ntwo\n"); // untracked, 2 lines
+
+    let mut cache = herdr_reviewr::git::AdditionsCache::default();
+    let count = |cache: &mut herdr_reviewr::git::AdditionsCache| {
+        let snap = StatusSnapshot::collect(r.path()).unwrap();
+        let files =
+            herdr_reviewr::git::changed_files_cached(r.path(), Scope::Commit, None, &snap, cache)
+                .unwrap();
+        by_path(&files).get("u.txt").map(|f| f.additions)
+    };
+
+    assert_eq!(count(&mut cache), Some(2), "first scan counts the lines");
+    assert_eq!(count(&mut cache), Some(2), "a cached rescan keeps the count");
+
+    // An append (size change) must refresh the count, not serve the cached one.
+    r.write("u.txt", "one\ntwo\nthree\n");
+    assert_eq!(count(&mut cache), Some(3), "an appended line shows on the next scan");
+
+    // A same-size rewrite must refresh via mtime: 6 bytes / 3 lines -> 6 bytes / 1 line.
+    r.write("u.txt", "a\nb\nc\n");
+    assert_eq!(count(&mut cache), Some(3), "3 one-char lines");
+    r.write("u.txt", "abcde\n");
+    assert_eq!(count(&mut cache), Some(1), "a same-size rewrite still refreshes the count");
+
+    // A deleted untracked file drops out entirely (and its cache entry with it).
+    std::fs::remove_file(r.path().join("u.txt")).unwrap();
+    assert_eq!(count(&mut cache), None, "a removed untracked file leaves the changeset");
 }

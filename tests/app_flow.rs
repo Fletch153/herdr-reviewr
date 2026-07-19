@@ -3423,3 +3423,79 @@ fn all_files_keeps_a_staged_deletion_visible() {
     let del = app.entries.iter().find(|e| e.path == "del.txt").unwrap();
     assert!(del.annotation.is_some(), "the deleted file lost its change marker in All files");
 }
+
+// --- poll digest: an unchanged repo skips the rebuild; any real change still lands ---------
+
+#[test]
+fn an_unchanged_repo_skips_the_poll_rebuild() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "one\nTWO\n");
+
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    let after_first = app.rebuild_count;
+    app.reload().unwrap(); // poll tick, nothing moved
+    app.reload().unwrap(); // and another
+    assert_eq!(app.rebuild_count, after_first, "idle polls must not rebuild");
+}
+
+#[test]
+fn an_untracked_content_edit_refreshes_despite_identical_porcelain() {
+    let r = Repo::init();
+    r.write("base.rs", "x\n");
+    r.commit_all("init");
+    r.write("u.txt", "one\n"); // untracked: porcelain says `?? u.txt` before AND after the edit
+
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    assert_eq!(app.changed_annotation("u.txt").map(|a| a.additions), Some(1));
+
+    r.write("u.txt", "one\ntwo\nthree\n"); // same porcelain record, different content
+    app.reload().unwrap();
+    assert_eq!(
+        app.changed_annotation("u.txt").map(|a| a.additions),
+        Some(3),
+        "the +N annotation must track an untracked file's content, not just its presence"
+    );
+}
+
+#[test]
+fn a_tracked_re_edit_refreshes_despite_identical_porcelain() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "one\nTWO\n"); // ` M a.rs` — and still ` M a.rs` after the next edit
+
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    assert_eq!(app.changed_annotation("a.rs").map(|a| a.additions), Some(1));
+
+    r.write("a.rs", "one\nTWO\nTHREE\nFOUR\n");
+    app.reload().unwrap();
+    assert_eq!(
+        app.changed_annotation("a.rs").map(|a| a.additions),
+        Some(3),
+        "a modified file edited again must refresh even though its status letter is unchanged"
+    );
+}
+
+#[test]
+fn a_new_commit_refreshes_the_changeset() {
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "one\nTWO\n");
+
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    assert!(app.changed_annotation("a.rs").is_some(), "the edit is in the changeset");
+
+    r.commit_all("absorb"); // the edit is committed; the changeset must empty on the next poll
+    app.reload().unwrap();
+    assert!(
+        app.changed_annotation("a.rs").is_none(),
+        "a commit must clear the changeset on the next poll"
+    );
+}

@@ -319,6 +319,18 @@ pub struct App {
     changed: HashMap<String, Annotation>,
     /// Each file's `git status` state (vs HEAD), for the staging marker; refreshed every reload.
     file_status: HashMap<String, crate::model::FileStatus>,
+    /// Untracked-file line counts memoized across reloads by `(size, mtime)`, so a poll re-reads
+    /// only the untracked files that actually changed since the last tick. Repo-wide, not
+    /// per-tab: both file tabs annotate the same untracked set.
+    additions_cache: git::AdditionsCache,
+    /// The change digest of the last completed rebuild. A poll whose digest matches skips the
+    /// whole rebuild — on a many-thousand-file worktree the rescan costs hundreds of
+    /// milliseconds on the UI thread, and almost every tick observes an unchanged repo.
+    /// Deliberately NOT per-tab: the digest hashes the active tab, so consecutive ticks on one
+    /// tab compare like-for-like and any switch rebuilds.
+    last_reload_digest: Option<u64>,
+    /// How many reloads ran the full rebuild (vs digest-skipped). Diagnostics and tests.
+    pub rebuild_count: u32,
     pub diff: FileDiff,
     /// The rows actually shown: `diff.rows` with each fold collapsed to a marker or
     /// expanded to its lines. The cursor, scroll, selection, and hit-testing index this.
@@ -476,6 +488,9 @@ impl App {
             stash: TabStash::default(),
             changed: HashMap::new(),
             file_status: HashMap::new(),
+            additions_cache: git::AdditionsCache::default(),
+            last_reload_digest: None,
+            rebuild_count: 0,
             diff: FileDiff::empty(),
             visible: Vec::new(),
             expanded_folds: HashSet::new(),
@@ -1005,7 +1020,7 @@ impl App {
     /// The `All files` entries: every worktree path (ignored dimmed), with the children of
     /// expanded ignored directories loaded lazily (`specs/file-list.md`). Only directories the
     /// user has expanded are walked, so the cost tracks what is on screen, not the whole tree.
-    fn all_files_entries(&self) -> Result<Vec<Entry>> {
+    fn all_files_entries(&self, status: &git::StatusSnapshot) -> Result<Vec<Entry>> {
         let to_entry = |w: git::WorktreeEntry| Entry {
             annotation: self.changed.get(&w.path).cloned(),
             path: w.path,
@@ -1014,7 +1029,7 @@ impl App {
             is_dir: w.is_dir,
         };
         let mut entries: Vec<Entry> =
-            git::all_files(&self.repo)?.into_iter().map(&to_entry).collect();
+            git::all_files(&self.repo, status)?.into_iter().map(&to_entry).collect();
         let mut i = 0;
         while i < entries.len() {
             if entries[i].is_dir && self.toggled_dirs.contains(&entries[i].path) {
@@ -1087,6 +1102,19 @@ impl App {
             Scope::Commit => self.selected_commit.clone(),
             Scope::LastTurn => None,
         };
+        // One repo-sized `git status` walk per reload, shared by the change digest, the
+        // changed-file assembly, the staging markers, and the `All files` worktree listing below.
+        let status = git::StatusSnapshot::collect(&self.repo)?;
+        // Nothing observable moved since the last completed rebuild → keep every view as-is.
+        // The digest covers repo state (HEAD, porcelain, per-record stats) and view keys (tab,
+        // scope, base); anything it misses would go permanently stale, so additions belong in
+        // `reload_digest`, not here.
+        let digest = self.reload_digest(&status);
+        if self.last_reload_digest == Some(digest) {
+            return Ok(());
+        }
+        // The picker list depends only on HEAD, which the digest hashes — refreshing it on
+        // rebuild ticks alone keeps it current without a per-tick `git log`.
         if self.scope == Scope::Commit && self.mode != Mode::CommitPick {
             self.commit_choices = git::recent_commits(&self.repo, COMMIT_PICK_LIMIT);
         }
@@ -1095,14 +1123,20 @@ impl App {
                 Some(t) => git::changed_against_tree(&self.repo, t)?,
                 None => Vec::new(),
             },
-            _ => git::changed_files(&self.repo, self.scope, self.resolved_base.as_deref())?,
+            _ => git::changed_files_cached(
+                &self.repo,
+                self.scope,
+                self.resolved_base.as_deref(),
+                &status,
+                &mut self.additions_cache,
+            )?,
         };
         self.changed = changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
-        self.file_status = git::working_status(&self.repo).unwrap_or_default();
+        self.file_status = status.file_statuses();
         self.prune_reviewed();
         self.entries = match self.tab {
             // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
-            Tab::AllFiles => self.all_files_entries()?,
+            Tab::AllFiles => self.all_files_entries(&status)?,
             // `Changes` (the `PR` tab returned early above).
             _ => changed.iter().map(Entry::from_changed).collect(),
         };
@@ -1121,11 +1155,11 @@ impl App {
         // the same reason: the anchor and cursor are `visible` indices, and a rebuild under
         // them would re-target the selection so the captured snippet no longer matches what
         // the reader marked. The file list still updates above.
-        if !self.composing()
+        let refresh_left = !self.composing()
             && self.select_anchor.is_none()
             && self.mode != Mode::List
-            && self.mode != Mode::CommitPick
-        {
+            && self.mode != Mode::CommitPick;
+        if refresh_left {
             // A poll keeps the reader on the same file; only a different shown file resets
             // the diff view to the top.
             if self.shown_entry().map(|e| e.path) != self.diff_path {
@@ -1133,7 +1167,51 @@ impl App {
             }
             self.load_left();
         }
+        // Only a COMPLETE rebuild records its digest. A freeze (composing, a live selection, an
+        // open overlay) defers the left-pane refresh above, so the screen does not yet reflect
+        // this digest — recording it would let the next poll skip and strand the deferred
+        // refresh after the freeze lifts. Leaving `None` makes polling retry until it lands.
+        self.last_reload_digest = refresh_left.then_some(digest);
+        self.rebuild_count += 1;
         Ok(())
+    }
+
+    /// The u64 fingerprint of everything a rebuild can observe. Two consecutive reloads with an
+    /// equal digest would rebuild identical state, so the second is skipped. Inputs: the view
+    /// keys (tab, scope, base, picked commit, turn baseline), `HEAD`, the raw porcelain walk,
+    /// and — because a re-edited file changes bytes without changing its porcelain record — the
+    /// `(size, mtime)` of every non-ignored record path, plus each toggled directory's mtime
+    /// (a lazily-walked ignored dir surfaces new children through its dir mtime).
+    fn reload_digest(&self, status: &git::StatusSnapshot) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::mem::discriminant(&self.tab).hash(&mut h);
+        std::mem::discriminant(&self.scope).hash(&mut h);
+        self.base.hash(&mut h);
+        self.resolved_base.hash(&mut h);
+        self.selected_commit.hash(&mut h);
+        self.turn.baseline().hash(&mut h);
+        git::head_commit(&self.repo).hash(&mut h);
+        status.raw().hash(&mut h);
+        for path in status.record_paths() {
+            path.hash(&mut h);
+            let stat =
+                std::fs::metadata(self.repo.join(path)).map(|m| (m.len(), m.modified().ok())).ok();
+            stat.hash(&mut h);
+        }
+        let mut toggled: Vec<&String> = self.toggled_dirs.iter().collect();
+        toggled.sort();
+        for dir in toggled {
+            dir.hash(&mut h);
+            std::fs::metadata(self.repo.join(dir)).and_then(|m| m.modified()).ok().hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// The scope annotation of `path`, when it is in the active changeset (tests and callers
+    /// that need one file's stats without walking `entries`).
+    pub fn changed_annotation(&self, path: &str) -> Option<&Annotation> {
+        self.changed.get(path)
     }
 
     /// Load the left pane for the active tab: the scope diff in `Changes`, the whole-file
@@ -2111,7 +2189,8 @@ impl App {
         // In `All files`, expanding an ignored directory loads its children lazily, so the
         // entry set is rebuilt before the rows (file-list.md). Other tabs just re-flatten.
         if self.tab == Tab::AllFiles
-            && let Ok(entries) = self.all_files_entries()
+            && let Ok(entries) =
+                git::StatusSnapshot::collect(&self.repo).and_then(|s| self.all_files_entries(&s))
         {
             self.entries = entries;
         }

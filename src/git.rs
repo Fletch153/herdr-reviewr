@@ -446,7 +446,24 @@ pub fn diff_base(repo: &Path) -> String {
 
 /// The changed files for `scope`, sorted by path. `base` overrides the branch base ref.
 /// `last-turn` is resolved separately by [`changed_against_tree`], so it lists nothing here.
-pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Vec<ChangedFile>> {
+pub fn changed_files(
+    repo: &Path,
+    scope: Scope,
+    base: Option<&str>,
+    status: &StatusSnapshot,
+) -> Result<Vec<ChangedFile>> {
+    changed_files_cached(repo, scope, base, status, &mut AdditionsCache::default())
+}
+
+/// [`changed_files`] with a caller-held [`AdditionsCache`], so a polling caller pays to read
+/// an untracked file's content only when that file actually changed.
+pub fn changed_files_cached(
+    repo: &Path,
+    scope: Scope,
+    base: Option<&str>,
+    status: &StatusSnapshot,
+    cache: &mut AdditionsCache,
+) -> Result<Vec<ChangedFile>> {
     let (numstat, name_status) = match scope {
         // Commit compares the worktree against the chosen commit. With none (an unborn repo has
         // no HEAD to default to), fall back to the empty tree so a fresh `git init` lists its
@@ -468,8 +485,9 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
         Scope::LastTurn => return Ok(Vec::new()),
     };
     // that `git diff` never reports.
-    let include_untracked = matches!(scope, Scope::Branch | Scope::Commit);
-    assemble(repo, &numstat, &name_status, include_untracked)
+    let untracked =
+        matches!(scope, Scope::Branch | Scope::Commit).then(|| status.untracked_paths());
+    Ok(assemble(repo, &numstat, &name_status, untracked, cache))
 }
 
 /// The changed files between the turn baseline `tree` and the live worktree, for
@@ -482,7 +500,7 @@ pub fn changed_against_tree(repo: &Path, tree: &str) -> Result<Vec<ChangedFile>>
     let current = snapshot_worktree(repo)?;
     let numstat = git(repo, &["diff", tree, &current, "--numstat", "-z"])?;
     let name_status = git(repo, &["diff", tree, &current, "--name-status", "-z"])?;
-    assemble(repo, &numstat, &name_status, false)
+    Ok(assemble(repo, &numstat, &name_status, None, &mut AdditionsCache::default()))
 }
 
 /// One entry in the `All files` worktree listing: a path plus whether git ignores it and
@@ -499,7 +517,7 @@ pub struct WorktreeEntry {
 /// `git status --ignored` — a wholly-ignored directory collapsed to one `is_dir` placeholder,
 /// an individually-ignored file as itself. `.git` is never reported. Deduped and sorted; `-z`
 /// keeps paths with spaces or special characters verbatim.
-pub fn all_files(repo: &Path) -> Result<Vec<WorktreeEntry>> {
+pub fn all_files(repo: &Path, status: &StatusSnapshot) -> Result<Vec<WorktreeEntry>> {
     let tracked = git(repo, &["ls-files", "-z"])?;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -508,7 +526,7 @@ pub fn all_files(repo: &Path) -> Result<Vec<WorktreeEntry>> {
             out.push(WorktreeEntry { path: path.to_string(), ignored: false, is_dir: false });
         }
     }
-    for path in untracked(repo)? {
+    for path in status.untracked_paths() {
         if seen.insert(path.clone()) {
             out.push(WorktreeEntry { path, ignored: false, is_dir: false });
         }
@@ -561,8 +579,9 @@ fn assemble(
     repo: &Path,
     numstat: &str,
     name_status: &str,
-    include_untracked: bool,
-) -> Result<Vec<ChangedFile>> {
+    untracked: Option<Vec<String>>,
+    cache: &mut AdditionsCache,
+) -> Vec<ChangedFile> {
     let counts = parse_numstat(numstat);
     let mut seen = HashSet::new();
     let mut files = Vec::new();
@@ -574,11 +593,12 @@ fn assemble(
         files.push(ChangedFile { path, kind, additions, deletions, previous_path });
     }
 
-    if include_untracked {
+    if let Some(untracked) = untracked {
         // Untracked-not-ignored files list as additions.
-        for path in untracked(repo)? {
+        cache.retain_paths(&untracked);
+        for path in untracked {
             if seen.insert(path.clone()) {
-                let additions = untracked_additions(repo, &path);
+                let additions = cache.additions(repo, &path);
                 files.push(ChangedFile {
                     path,
                     kind: ChangeKind::Untracked,
@@ -591,44 +611,72 @@ fn assemble(
     }
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(files)
+    files
 }
 
-/// Untracked file paths from `git status --porcelain -z --untracked-files=all`. The `-z`
+/// One `git status --porcelain -z --untracked-files=all` walk, held raw. A reload collects it
+/// once and threads it through the changed-file assembly, the staging markers, and the worktree
+/// listing — the repo-sized status scan is paid once per tick, not once per consumer. The `-z`
 /// form is NUL-delimited and never quotes or escapes a path, so names with spaces or special
 /// characters survive verbatim — no trimming or unquoting. `--untracked-files=all` lists each
 /// file inside a brand-new directory instead of collapsing it to one `dir/` entry, so the
 /// files in a freshly-created folder are reviewable individually (.gitignore still applies).
-fn untracked(repo: &Path) -> Result<Vec<String>> {
-    let status = git(repo, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
-    Ok(porcelain_records(&status)
-        .into_iter()
-        .filter(|(xy, _)| *xy == "??")
-        .map(|(_, path)| path.to_string())
-        .collect())
+#[derive(Debug)]
+pub struct StatusSnapshot {
+    raw: String,
 }
 
-/// Each file's working-tree state vs `HEAD` (`git status --porcelain`), keyed by path: the status
-/// letter and whether it is staged. Untracked is `('?', false)`; ignored (`!!`) is skipped; a
-/// staged file takes the index letter `X`, an unstaged one the worktree letter `Y`.
-pub fn working_status(repo: &Path) -> Result<std::collections::HashMap<String, FileStatus>> {
-    let status = git(repo, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
-    let mut out = std::collections::HashMap::new();
-    for (xy, path) in porcelain_records(&status) {
-        if xy == "!!" {
-            continue;
-        }
-        let bytes = xy.as_bytes();
-        let (x, y) = (bytes[0] as char, bytes[1] as char);
-        let file = if xy == "??" {
-            FileStatus { marker: '?', staged: false }
-        } else {
-            let staged = x != ' ';
-            FileStatus { marker: if staged { x } else { y }, staged }
-        };
-        out.insert(path.to_string(), file);
+impl StatusSnapshot {
+    pub fn collect(repo: &Path) -> Result<Self> {
+        Ok(Self { raw: git(repo, &["status", "--porcelain", "-z", "--untracked-files=all"])? })
     }
-    Ok(out)
+
+    /// The raw porcelain bytes — the change-digest's cheap "did anything move?" input.
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// Every non-ignored record path of this walk — the files whose worktree bytes can differ
+    /// from the last tick without the porcelain text itself changing (a modified file edited
+    /// again, an untracked file appended to). The change digest stats each of these.
+    pub fn record_paths(&self) -> Vec<&str> {
+        porcelain_records(&self.raw)
+            .into_iter()
+            .filter(|(xy, _)| *xy != "!!")
+            .map(|(_, path)| path)
+            .collect()
+    }
+
+    /// The untracked (`??`) paths of this walk.
+    fn untracked_paths(&self) -> Vec<String> {
+        porcelain_records(&self.raw)
+            .into_iter()
+            .filter(|(xy, _)| *xy == "??")
+            .map(|(_, path)| path.to_string())
+            .collect()
+    }
+
+    /// Each file's working-tree state vs `HEAD`, keyed by path: the status letter and whether it
+    /// is staged. Untracked is `('?', false)`; ignored (`!!`) is skipped; a staged file takes the
+    /// index letter `X`, an unstaged one the worktree letter `Y`.
+    pub fn file_statuses(&self) -> std::collections::HashMap<String, FileStatus> {
+        let mut out = std::collections::HashMap::new();
+        for (xy, path) in porcelain_records(&self.raw) {
+            if xy == "!!" {
+                continue;
+            }
+            let bytes = xy.as_bytes();
+            let (x, y) = (bytes[0] as char, bytes[1] as char);
+            let file = if xy == "??" {
+                FileStatus { marker: '?', staged: false }
+            } else {
+                let staged = x != ' ';
+                FileStatus { marker: if staged { x } else { y }, staged }
+            };
+            out.insert(path.to_string(), file);
+        }
+        out
+    }
 }
 
 /// The `(xy, path)` of each `git status --porcelain -z` record. Each record is `XY␠PATH`; the
@@ -655,6 +703,40 @@ fn porcelain_records(status: &str) -> Vec<(&str, &str)> {
 /// nothing reports (0 for empty or binary). Read locally rather than shelling
 /// `git diff --no-index` per file — with `--untracked-files=all` a large untracked tree
 /// would otherwise fork git once per file on every poll and freeze the UI.
+/// Line-addition counts for untracked files, memoized by `(size, mtime)`. The `+N` annotation
+/// requires reading each untracked file's bytes; on a worktree with thousands of them that
+/// per-tick re-read dominated reload, so the count is served from here while the file's stat
+/// is unchanged. A same-size same-mtime content rewrite is indistinguishable, but nanosecond
+/// mtimes make that practically impossible outside a deliberate construction.
+#[derive(Debug, Default)]
+pub struct AdditionsCache {
+    entries: HashMap<String, (u64, Option<std::time::SystemTime>, u32)>,
+}
+
+impl AdditionsCache {
+    fn additions(&mut self, repo: &Path, path: &str) -> u32 {
+        let Ok(meta) = std::fs::metadata(repo.join(path)) else {
+            return 0; // vanished mid-tick — same as a failed read below
+        };
+        let (size, mtime) = (meta.len(), meta.modified().ok());
+        if let Some(&(s, t, n)) = self.entries.get(path)
+            && s == size
+            && t == mtime
+        {
+            return n;
+        }
+        let n = untracked_additions(repo, path);
+        self.entries.insert(path.to_string(), (size, mtime, n));
+        n
+    }
+
+    /// Drop entries whose paths are no longer untracked, so churn cannot grow the map.
+    fn retain_paths(&mut self, live: &[String]) {
+        let live: HashSet<&str> = live.iter().map(String::as_str).collect();
+        self.entries.retain(|p, _| live.contains(p.as_str()));
+    }
+}
+
 fn untracked_additions(repo: &Path, path: &str) -> u32 {
     let Ok(bytes) = std::fs::read(repo.join(path)) else { return 0 };
     if bytes.is_empty() || bytes.contains(&0) {
