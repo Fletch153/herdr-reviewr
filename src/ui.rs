@@ -2442,29 +2442,36 @@ fn render_pr_nav(frame: &mut Frame, app: &App, area: Rect) {
     let dim = Style::default().fg(p.overlay0);
     let now = std::time::SystemTime::now();
 
-    // (row spans, is the navigator cursor on this row). Only comment rows are selectable; the
-    // checks section is a status display.
-    let mut rows: Vec<(Vec<Span<'static>>, bool)> = Vec::new();
-    rows.push((vec![Span::styled(pr_checks_header(s), dim)], false));
-    for c in &s.checks {
-        let (glyph, color) = check_glyph(p, c.status);
-        rows.push((
-            vec![
-                Span::styled(format!(" {glyph} "), Style::default().fg(color)),
-                Span::styled(c.name.clone(), text_style(p)),
-            ],
-            false,
-        ));
-    }
-    rows.push((Vec::new(), false));
-    rows.push((vec![Span::styled(format!("comments · {}", s.comments.len()), dim)], false));
-    for (j, cm) in s.comments.iter().enumerate() {
-        rows.push((pr_comment_row(cm, width, now, p), app.pr_cursor == j));
-    }
+    // Every check and comment row is a cursor stop; only the section headers and the blank
+    // separator are display-only. The painter and the click hit-test share `pr_nav_layout` +
+    // `pr_nav_scroll`, so the painted rows and the hit math cannot drift.
+    let layout = pr_nav_layout(s);
+    let rows: Vec<(Vec<Span<'static>>, bool)> = layout
+        .iter()
+        .map(|nav| match *nav {
+            PrNavRow::ChecksHeader => (vec![Span::styled(pr_checks_header(s), dim)], false),
+            PrNavRow::Blank => (Vec::new(), false),
+            PrNavRow::CommentsHeader => {
+                (vec![Span::styled(format!("comments · {}", s.comments.len()), dim)], false)
+            }
+            PrNavRow::Select(i) => {
+                let spans = if let Some(c) = s.checks.get(i) {
+                    let (glyph, color) = check_glyph(p, c.status);
+                    vec![
+                        Span::styled(format!(" {glyph} "), Style::default().fg(color)),
+                        Span::styled(c.name.clone(), text_style(p)),
+                    ]
+                } else {
+                    pr_comment_row(&s.comments[i - s.checks.len()], width, now, p)
+                };
+                (spans, app.pr_cursor == i)
+            }
+        })
+        .collect();
 
     let viewport = inner.height as usize;
     let selected = rows.iter().position(|(_, sel)| *sel).unwrap_or(0);
-    let scroll = selected.saturating_sub(viewport.saturating_sub(1));
+    let scroll = pr_nav_scroll(rows.len(), selected, viewport);
     let items: Vec<ListItem> = rows
         .into_iter()
         .skip(scroll)
@@ -2472,6 +2479,33 @@ fn render_pr_nav(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(spans, sel)| selectable_row(spans, width, sel.then(|| p.cursor_bg(true))))
         .collect();
     frame.render_widget(List::new(items), inner);
+}
+
+/// One display row of the PR navigator. `Select(i)` is a cursor stop — `i` indexes checks then
+/// comments, the same space as `App::pr_cursor`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PrNavRow {
+    ChecksHeader,
+    Blank,
+    CommentsHeader,
+    Select(usize),
+}
+
+/// The navigator's display rows in paint order — the single home of the layout, shared by the
+/// painter and the click hit-test.
+fn pr_nav_layout(s: &forge::PrSnapshot) -> Vec<PrNavRow> {
+    let mut rows = vec![PrNavRow::ChecksHeader];
+    rows.extend((0..s.checks.len()).map(PrNavRow::Select));
+    rows.push(PrNavRow::Blank);
+    rows.push(PrNavRow::CommentsHeader);
+    rows.extend((s.checks.len()..s.checks.len() + s.comments.len()).map(PrNavRow::Select));
+    rows
+}
+
+/// The navigator's scroll: center the selected display row so its neighbors on BOTH sides stay
+/// visible — a bottom-pinned selection on a checks-heavy PR hid every comment below it.
+fn pr_nav_scroll(rows: usize, selected: usize, viewport: usize) -> usize {
+    selected.saturating_sub(viewport / 2).min(rows.saturating_sub(viewport))
 }
 
 /// The `checks` section header with its rollup (`✗ 1 failing` / `✓ N passed` / `running`).
@@ -2514,9 +2548,11 @@ fn pr_comment_row(
 fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let selected = app.pr_selected_comment();
-    let title = match selected {
-        Some(cm) => format!("@{} · {}", cm.author, cm.anchor),
-        None => "PR".to_string(),
+    let check = app.pr_selected_check();
+    let title = match (selected, check) {
+        (Some(cm), _) => format!("@{} · {}", cm.author, cm.anchor),
+        (None, Some(c)) => format!("check · {}", c.name),
+        (None, None) => "PR".to_string(),
     };
     let block = bordered(&title, false, p);
     let inner = block.inner(area);
@@ -2524,7 +2560,31 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     let width = inner.width as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    if let Some(cm) = selected {
+    if let Some(c) = check {
+        // A selected check: its status, where its page lives, and how to get there.
+        let (glyph, color) = check_glyph(p, c.status);
+        lines.push(Line::from(vec![
+            Span::styled(format!("{glyph} "), Style::default().fg(color)),
+            Span::styled(check_status_word(c.status), Style::default().fg(color)),
+        ]));
+        lines.push(Line::raw(""));
+        match &c.url {
+            Some(url) => {
+                for piece in wrap_text(url, width.max(1)) {
+                    lines.push(Line::from(Span::styled(piece, Style::default().fg(p.overlay1))));
+                }
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    "o opens this check ↗",
+                    Style::default().fg(p.overlay0),
+                )));
+            }
+            None => lines.push(Line::from(Span::styled(
+                "this check publishes no details page — o opens the PR ↗",
+                Style::default().fg(p.overlay0),
+            ))),
+        }
+    } else if let Some(cm) = selected {
         if let Some(hunk) = &cm.snippet {
             for raw in hunk.lines() {
                 let color = match raw.bytes().next() {
@@ -2598,21 +2658,17 @@ pub fn pr_nav_hit(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
         return None;
     }
     let s = app.pr_snapshot()?;
-    // The first comment's display row, mirroring `render_pr_nav`'s layout; the view windows on
-    // the selected comment exactly as the painter does.
-    let first = pr_nav_comment_offset(s);
-    let sel_display = first + app.pr_cursor;
+    // Reconstruct the painted window from the shared layout, then map the clicked display row
+    // back to its cursor stop (checks and comments alike; headers and the blank are inert).
+    let layout = pr_nav_layout(s);
+    let selected = layout.iter().position(|r| *r == PrNavRow::Select(app.pr_cursor)).unwrap_or(0);
     let viewport = inner.height as usize;
-    let scroll = sel_display.saturating_sub(viewport.saturating_sub(1));
+    let scroll = pr_nav_scroll(layout.len(), selected, viewport);
     let d = (row - inner.y) as usize + scroll;
-    (d >= first && d - first < s.comments.len()).then(|| d - first)
-}
-
-/// The display row of the first comment in `render_pr_nav`'s navigator — past the checks header,
-/// the checks themselves, a blank, and the comments header. The single home for that layout
-/// offset, shared with the click hit-test so the painted rows and the hit math can't drift.
-fn pr_nav_comment_offset(s: &forge::PrSnapshot) -> usize {
-    s.checks.len() + 3
+    match layout.get(d) {
+        Some(PrNavRow::Select(i)) => Some(*i),
+        _ => None,
+    }
 }
 
 /// The status glyph and Catppuccin accent for a check.
@@ -2623,6 +2679,17 @@ fn check_glyph(p: &Palette, status: forge::CheckStatus) -> (&'static str, Color)
         forge::CheckStatus::Running => ("●", p.yellow),
         forge::CheckStatus::Pending => ("○", p.overlay0),
         forge::CheckStatus::Skipped => ("⊘", p.overlay0),
+    }
+}
+
+/// The read pane's word for a check's outcome.
+fn check_status_word(status: forge::CheckStatus) -> &'static str {
+    match status {
+        forge::CheckStatus::Success => "passed",
+        forge::CheckStatus::Failure => "failed",
+        forge::CheckStatus::Running => "running",
+        forge::CheckStatus::Pending => "pending",
+        forge::CheckStatus::Skipped => "skipped",
     }
 }
 

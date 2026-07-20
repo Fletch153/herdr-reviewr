@@ -2136,7 +2136,7 @@ fn the_pr_tab_detour_preserves_each_file_tab_state() {
 }
 
 #[test]
-fn pr_navigator_walks_comments_only_and_clamps() {
+fn pr_navigator_walks_checks_and_comments_and_clamps() {
     use herdr_reviewr::app::Tab;
     use herdr_reviewr::forge::{
         Check, CheckStatus, Comment, CommentKind, Merge, PrSnapshot, PrState, PrView, Sync,
@@ -2164,8 +2164,8 @@ fn pr_navigator_walks_comments_only_and_clamps() {
         merge: Merge::Clean,
         sync: Sync::InSync,
         checks: vec![
-            Check { name: "build".into(), status: CheckStatus::Success },
-            Check { name: "test".into(), status: CheckStatus::Failure },
+            Check { name: "build".into(), status: CheckStatus::Success, url: None },
+            Check { name: "test".into(), status: CheckStatus::Failure, url: None },
         ],
         comments: vec![finding("first"), finding("second")],
         truncated: false,
@@ -2176,9 +2176,10 @@ fn pr_navigator_walks_comments_only_and_clamps() {
     r.commit_all("init");
     let mut app = app_on(&r);
     app.set_tab(Tab::Pr).unwrap();
-    app.pr = PrView::Pr(Box::new(snap));
+    app.apply_pr(PrView::Pr(Box::new(snap)));
 
-    assert_eq!(app.pr_row_count(), 2, "two comments; the two checks are not cursor stops");
+    assert_eq!(app.pr_row_count(), 4, "two checks + two comments are all cursor stops");
+    // A fresh snapshot lands on the first comment (the read pane's richer content), past checks.
     assert_eq!(app.pr_selected_comment().map(|c| c.author.as_str()), Some("first"));
     app.pr_move(1);
     assert_eq!(app.pr_selected_comment().map(|c| c.author.as_str()), Some("second"));
@@ -2188,11 +2189,13 @@ fn pr_navigator_walks_comments_only_and_clamps() {
         Some("second"),
         "clamps at the last comment"
     );
+    // Walking back up crosses out of the comments and into the checks block.
     app.pr_move(-10);
+    assert!(app.pr_selected_comment().is_none(), "the first row is a check, not a comment");
     assert_eq!(
-        app.pr_selected_comment().map(|c| c.author.as_str()),
-        Some("first"),
-        "clamps at the first comment"
+        app.pr_selected_check().map(|c| c.name.as_str()),
+        Some("build"),
+        "clamps at the first check"
     );
 }
 
@@ -2260,8 +2263,8 @@ fn apply_pr_follows_the_selected_comment_across_a_refresh() {
     ]));
     assert_eq!(
         app.pr_selected_comment().map(|c| c.author.as_str()),
-        Some("ann"),
-        "a vanished selection clamps to the last row"
+        Some("cara"),
+        "a vanished selection re-lands on the first comment"
     );
 }
 
@@ -3497,5 +3500,118 @@ fn a_new_commit_refreshes_the_changeset() {
     assert!(
         app.changed_annotation("a.rs").is_none(),
         "a commit must clear the changeset on the next poll"
+    );
+}
+
+// --- PR navigator: every row (check or comment) is selectable and readable ------------------
+
+use herdr_reviewr::forge::CheckStatus;
+
+fn pr_app(view: herdr_reviewr::forge::PrView) -> (Repo, App) {
+    let r = Repo::init();
+    r.write("a.rs", "x\n");
+    r.commit_all("init");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::Pr).unwrap();
+    app.apply_pr(view);
+    (r, app)
+}
+
+fn two_and_two() -> herdr_reviewr::forge::PrView {
+    common::pr_view(
+        vec![
+            common::pr_check("build", CheckStatus::Success, Some("https://ci.invalid/build")),
+            common::pr_check("clippy", CheckStatus::Failure, None),
+        ],
+        vec![
+            common::pr_comment("alice", "src/a.rs:10", "ALPHA body"),
+            common::pr_comment("bob", "src/b.rs:20", "BETA body"),
+        ],
+    )
+}
+
+#[test]
+fn every_pr_nav_row_is_selectable_checks_included() {
+    let (_r, mut app) = pr_app(two_and_two());
+    assert_eq!(app.pr_row_count(), 4, "2 checks + 2 comments are all cursor stops");
+    app.pr_select(0);
+    assert_eq!(app.pr_selected_check().map(|c| c.name.as_str()), Some("build"));
+    assert!(app.pr_selected_comment().is_none(), "a check row is not a comment");
+    app.pr_select(2);
+    assert_eq!(app.pr_selected_comment().map(|c| c.author.as_str()), Some("alice"));
+}
+
+#[test]
+fn j_walks_from_the_checks_into_the_comments() {
+    let (_r, mut app) = pr_app(two_and_two());
+    app.pr_select(0);
+    app.pr_move(1);
+    assert_eq!(app.pr_selected_check().map(|c| c.name.as_str()), Some("clippy"));
+    app.pr_move(1);
+    assert_eq!(app.pr_selected_comment().map(|c| c.author.as_str()), Some("alice"));
+}
+
+#[test]
+fn o_targets_the_selected_check_url_and_falls_back_to_the_pr() {
+    let (_r, mut app) = pr_app(two_and_two());
+    app.pr_select(0); // build, has a details url
+    assert_eq!(app.pr_open_target(), Some("https://ci.invalid/build".to_string()));
+    app.pr_select(1); // clippy, no url -> the PR itself
+    assert_eq!(app.pr_open_target(), Some("https://example.invalid/pr/7".to_string()));
+    app.pr_select(2); // a comment -> the PR itself
+    assert_eq!(app.pr_open_target(), Some("https://example.invalid/pr/7".to_string()));
+}
+
+#[test]
+fn a_fresh_snapshot_lands_on_the_first_comment_not_a_check() {
+    let (_r, app) = pr_app(two_and_two());
+    assert_eq!(
+        app.pr_selected_comment().map(|c| c.author.as_str()),
+        Some("alice"),
+        "the read pane opens on the first comment, past the checks block"
+    );
+}
+
+#[test]
+fn a_refresh_follows_the_selected_check_by_name() {
+    let (_r, mut app) = pr_app(two_and_two());
+    app.pr_select(1); // clippy
+    // A refresh reorders the checks (clippy first now).
+    app.apply_pr(common::pr_view(
+        vec![
+            common::pr_check("clippy", CheckStatus::Success, None),
+            common::pr_check("build", CheckStatus::Success, None),
+        ],
+        vec![common::pr_comment("alice", "src/a.rs:10", "ALPHA body")],
+    ));
+    assert_eq!(
+        app.pr_selected_check().map(|c| c.name.as_str()),
+        Some("clippy"),
+        "the selection follows the check by name across a refresh"
+    );
+}
+
+#[test]
+fn a_refresh_still_follows_the_selected_comment_past_new_checks() {
+    let (_r, mut app) = pr_app(two_and_two());
+    app.pr_select(3); // bob
+    // The refresh adds a check (indices shift) and inserts a newer comment at the top.
+    app.apply_pr(common::pr_view(
+        vec![
+            common::pr_check("build", CheckStatus::Success, None),
+            common::pr_check("clippy", CheckStatus::Success, None),
+            common::pr_check("extra", CheckStatus::Running, None),
+        ],
+        vec![
+            common::pr_comment("carol", "src/c.rs:30", "NEW body"),
+            common::pr_comment("alice", "src/a.rs:10", "ALPHA body"),
+            common::pr_comment("bob", "src/b.rs:20", "BETA body"),
+        ],
+    ));
+    assert_eq!(
+        app.pr_selected_comment().map(|c| c.author.as_str()),
+        Some("bob"),
+        "the selection follows the comment by identity even as rows shift"
     );
 }

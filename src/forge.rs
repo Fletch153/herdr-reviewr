@@ -83,6 +83,9 @@ pub enum Sync {
 pub struct Check {
     pub name: String,
     pub status: CheckStatus,
+    /// Where the check's own page lives — a check run's `detailsUrl` or a commit status's
+    /// `targetUrl`. `o` on a selected check opens this; absent on providers that set neither.
+    pub url: Option<String>,
 }
 
 /// A check's outcome, normalised across check runs and commit statuses.
@@ -296,7 +299,7 @@ fn pr_detail(repo: &Path, owner: &str, name: &str, number: u64) -> Result<Value,
          pullRequest(number:{number}){{\
          number title url isDraft state mergeable mergeStateStatus baseRefName headRefOid \
          commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{pageInfo{{hasNextPage}} nodes{{__typename \
-         ... on CheckRun{{name status conclusion}} ... on StatusContext{{context state}}}}}}}}}}}}}} \
+         ... on CheckRun{{name status conclusion detailsUrl}} ... on StatusContext{{context state targetUrl}}}}}}}}}}}}}} \
          reviews(last:100){{pageInfo{{hasPreviousPage}} nodes{{author{{login}} body state submittedAt}}}} \
          comments(first:100){{pageInfo{{hasNextPage}} nodes{{author{{login}} body createdAt}}}} \
          reviewThreads(first:100){{pageInfo{{hasNextPage}} nodes{{isResolved isOutdated path line \
@@ -396,11 +399,13 @@ fn normalize_checks(rollup: &Value) -> Vec<Check> {
             continue;
         }
         let status = check_status(node);
+        let url =
+            node["detailsUrl"].as_str().or_else(|| node["targetUrl"].as_str()).map(String::from);
         // Latest wins: a later array entry for the same name (a re-run) replaces the earlier.
         if let Some(slot) = out.iter_mut().find(|c| c.name == name) {
-            *slot = Check { name, status };
+            *slot = Check { name, status, url };
         } else {
-            out.push(Check { name, status });
+            out.push(Check { name, status, url });
         }
     }
     out
@@ -677,7 +682,10 @@ mod tests {
             base_ref: String::new(),
             merge: Merge::Clean,
             sync: Sync::InSync,
-            checks: statuses.iter().map(|&s| Check { name: "c".into(), status: s }).collect(),
+            checks: statuses
+                .iter()
+                .map(|&s| Check { name: "c".into(), status: s, url: None })
+                .collect(),
             comments: Vec::new(),
             truncated: false,
         };

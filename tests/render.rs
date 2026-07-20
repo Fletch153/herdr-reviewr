@@ -438,7 +438,7 @@ fn the_pr_footer_keeps_the_open_action_when_the_state_line_is_long() {
         base_ref: "main".into(),
         merge: Merge::Conflicting,
         sync: Sync::Behind(3),
-        checks: vec![Check { name: "ci".into(), status: CheckStatus::Failure }],
+        checks: vec![Check { name: "ci".into(), status: CheckStatus::Failure, url: None }],
         comments: vec![],
         truncated: true,
     }));
@@ -988,4 +988,49 @@ fn the_branch_picker_title_counts_only_selectable_branches() {
     assert_eq!(app.branch_choices.len(), 3, "main + divider + origin/main");
     let out = render(&app);
     assert!(out.contains("Compare with branch (2)"), "the count excludes the divider: {out}");
+}
+
+#[test]
+fn every_painted_pr_nav_row_is_clickable_and_headers_are_inert() {
+    use herdr_reviewr::forge::CheckStatus;
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::Pr).unwrap();
+    app.apply_pr(common::pr_view(
+        vec![
+            common::pr_check("build", CheckStatus::Success, Some("https://ci.invalid/b")),
+            common::pr_check("clippy", CheckStatus::Failure, None),
+        ],
+        vec![
+            common::pr_comment("alice", "src/a.rs:10", "ALPHABODY"),
+            common::pr_comment("bob", "src/b.rs:20", "BETABODY"),
+        ],
+    ));
+
+    // The whole frame the painter used; the hit-test must window the same area.
+    let area = Rect::new(0, 0, 140, 40);
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    terminal.draw(|f| ui::render(f, &app)).unwrap();
+
+    // Scan the nav pane column top-to-bottom; the selectable rows must appear in cursor order
+    // 0,1,2,3 (checks then comments) with no gaps, and the two headers + blank must be inert.
+    let col = 130u16;
+    let hits: Vec<usize> =
+        (0..40u16).filter_map(|row| ui::pr_nav_hit(area, &app, col, row)).collect();
+    assert_eq!(hits, vec![0, 1, 2, 3], "checks then comments, every row a cursor stop, in order");
+
+    // Clicking a check row selects the check and the read pane shows its detail.
+    app.pr_select(0);
+    let out = render(&app);
+    assert!(out.contains("check · build"), "the read pane titles the selected check:\n{out}");
+    assert!(out.contains("passed"), "and shows its status");
+
+    // Clicking a comment row selects the comment and the read pane shows its body.
+    app.pr_select(2);
+    let out = render(&app);
+    assert!(out.contains("@alice"), "the read pane titles the selected comment:\n{out}");
+    assert!(out.contains("ALPHABODY"), "and shows its body");
 }

@@ -1763,25 +1763,36 @@ impl App {
             self.status = format!("PR refresh failed: {msg}");
             return;
         }
-        // Follow the selected comment by identity, not index, so a refresh that inserts a newer
-        // comment (the list is newest-first) keeps the cursor on the same one and leaves the read
-        // scroll intact — only a vanished or absent selection resets it (mirrors the file tabs'
-        // poll-preservation, specs/tui.md).
-        let selected = self
+        // Follow the selection by identity, not index — a comment by (author, created, anchor)
+        // since the newest-first list shifts under inserts, a check by name since re-runs reorder
+        // — so a refresh keeps the cursor on the same row and leaves the read scroll intact.
+        // Only a vanished or absent selection re-lands (mirrors the file tabs' poll-preservation,
+        // specs/tui.md).
+        let comment = self
             .pr_selected_comment()
             .map(|c| (c.author.clone(), c.created_at.clone(), c.anchor.clone()));
+        let check = self.pr_selected_check().map(|c| c.name.clone());
         self.pr = view;
-        let restored = selected.as_ref().and_then(|(author, created, anchor)| {
-            self.pr_snapshot()?.comments.iter().position(|c| {
-                c.author == *author && c.created_at == *created && c.anchor == *anchor
-            })
-        });
+        let checks = self.pr_snapshot().map_or(0, |s| s.checks.len());
+        let restored = if let Some((author, created, anchor)) = &comment {
+            self.pr_snapshot()
+                .and_then(|s| {
+                    s.comments.iter().position(|c| {
+                        c.author == *author && c.created_at == *created && c.anchor == *anchor
+                    })
+                })
+                .map(|j| checks + j)
+        } else if let Some(name) = &check {
+            self.pr_snapshot().and_then(|s| s.checks.iter().position(|c| c.name == *name))
+        } else {
+            None
+        };
         if let Some(i) = restored {
             self.pr_cursor = i;
-        } else if self.pr_cursor >= self.pr_row_count() {
-            // The selection vanished (or there was none) and the cursor now points past the end:
-            // clamp it back into range and reset the read pane.
-            self.pr_cursor = self.pr_row_count().saturating_sub(1);
+        } else {
+            // The selection vanished (or there was none): land on the first comment — the read
+            // pane's richer content — falling back to the last row on a comment-less PR.
+            self.pr_cursor = checks.min(self.pr_row_count().saturating_sub(1));
             self.pr_read_scroll = 0;
         }
     }
@@ -1799,13 +1810,29 @@ impl App {
     /// stop — landing on one shows nothing the row itself doesn't.
     #[must_use]
     pub fn pr_row_count(&self) -> usize {
-        self.pr_snapshot().map_or(0, |s| s.comments.len())
+        self.pr_snapshot().map_or(0, |s| s.checks.len() + s.comments.len())
     }
 
     /// The comment under the navigator cursor, for the read pane.
     #[must_use]
     pub fn pr_selected_comment(&self) -> Option<&forge::Comment> {
-        self.pr_snapshot()?.comments.get(self.pr_cursor)
+        let s = self.pr_snapshot()?;
+        s.comments.get(self.pr_cursor.checked_sub(s.checks.len())?)
+    }
+
+    /// The check under the navigator cursor — the cursor indexes checks then comments.
+    pub fn pr_selected_check(&self) -> Option<&forge::Check> {
+        self.pr_snapshot()?.checks.get(self.pr_cursor)
+    }
+
+    /// What `o` opens for the current selection: a selected check's own page when it has one,
+    /// else the PR. A distinct seam from the open itself so the choice is testable.
+    pub fn pr_open_target(&self) -> Option<String> {
+        let s = self.pr_snapshot()?;
+        if let Some(url) = self.pr_selected_check().and_then(|c| c.url.clone()) {
+            return Some(url);
+        }
+        Some(s.url.clone())
     }
 
     /// Move the navigator cursor by `delta`, resetting the read pane to the top.
@@ -1819,7 +1846,7 @@ impl App {
 
     /// Select navigator row `i`, resetting the read pane to the top — the one place the
     /// cursor-move and the read-scroll reset stay paired (a click and `j`/`k` share it).
-    pub(crate) fn pr_select(&mut self, i: usize) {
+    pub fn pr_select(&mut self, i: usize) {
         self.pr_cursor = i;
         self.pr_read_scroll = 0;
     }
@@ -1833,6 +1860,22 @@ impl App {
     /// Open the pull request in the browser (`specs/tui.md`). A resolved PR always carries a
     /// `url`, so there is nothing to guard against.
     pub fn pr_open(&mut self) {
+        let Some(url) = self.pr_open_target() else {
+            return;
+        };
+        let what = if self.pr_selected_check().is_some_and(|c| c.url.is_some()) {
+            "opened check in browser"
+        } else {
+            "opened PR in browser"
+        };
+        match crate::browser::open(&url) {
+            Ok(()) => self.status = what.to_string(),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    /// Open the PR page itself regardless of the selection — the header chip's `#N ↗`.
+    pub fn pr_open_home(&mut self) {
         let Some(url) = self.pr_snapshot().map(|s| s.url.clone()) else {
             return;
         };

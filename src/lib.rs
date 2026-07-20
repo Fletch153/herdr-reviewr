@@ -1553,7 +1553,7 @@ fn handle_mouse(
                 if let Some(ui::HeaderHit::Tab(tab)) = ui::hit_header(area, app, m.column, m.row) {
                     app.set_tab(tab)?;
                 } else if ui::hit_pr_open(area, app, m.column, m.row) {
-                    app.pr_open();
+                    app.pr_open_home();
                 } else if let Some(i) = ui::pr_nav_hit(area, app, m.column, m.row) {
                     app.pr_select(i);
                 }
