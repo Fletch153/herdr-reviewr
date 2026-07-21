@@ -1034,3 +1034,28 @@ fn every_painted_pr_nav_row_is_clickable_and_headers_are_inert() {
     assert!(out.contains("@alice"), "the read pane titles the selected comment:\n{out}");
     assert!(out.contains("ALPHABODY"), "and shows its body");
 }
+
+#[test]
+fn the_nvim_editor_title_follows_a_jump_outside_the_changeset() {
+    // A changeset with one changed file; the host opens it, so diff_path == "changed.rs".
+    let r = Repo::init();
+    r.write("changed.rs", "one\n");
+    r.commit_all("init");
+    r.write("changed.rs", "one\ntwo\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("changed.rs"), "the changed file is open");
+
+    // Embedded-nvim mode; the user drills into a definition that lands in a file OUTSIDE the
+    // changeset. The host records the editor's real buffer in nvim_buf but leaves diff_path put.
+    app.editor_nvim = true;
+    app.nvim_buf = Some("src/deep/dep.rs".into());
+
+    let out = render(&app);
+    // The jumped-to file only ever appears in the editor pane's title (it is not in the
+    // changeset, so not in the file list) — its presence is proof the title followed the jump.
+    assert!(
+        out.contains("src/deep/dep.rs"),
+        "the editor title names the file nvim actually shows:\n{out}"
+    );
+}

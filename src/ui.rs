@@ -1151,10 +1151,25 @@ fn render_confirm_quit(frame: &mut Frame, app: &App, area: Rect) {
 /// The left pane's title: the open file (with its old name on a rename), else the tab's noun.
 /// Shared by the diff view and the embedded-nvim view.
 fn diff_title(app: &App) -> String {
-    match (&app.diff_path, &app.diff.previous_path) {
-        (Some(new), Some(old)) => format!("{old} → {new}"),
-        (Some(new), None) => new.clone(),
-        (None, _) => match app.tab {
+    // In embedded-nvim mode the editor can jump anywhere — a tag jump / go-to-definition can land
+    // on a file outside the changeset, which the host tracks in `nvim_buf` without moving
+    // `diff_path`. The title must name the file actually on screen, so there it follows the
+    // editor's real buffer (mirroring `current_entry`'s precedence). The built-in diff can only
+    // show `diff_path`, so it is unchanged.
+    let shown = if app.editor_nvim {
+        app.nvim_buf.as_deref().or(app.diff_path.as_deref())
+    } else {
+        app.diff_path.as_deref()
+    };
+    match shown {
+        // The rename arrow belongs to the changeset entry itself; a jumped-to file that is not
+        // `diff_path` carries no rename, so show its bare path.
+        Some(new) if app.diff_path.as_deref() == Some(new) => match &app.diff.previous_path {
+            Some(old) => format!("{old} → {new}"),
+            None => new.to_string(),
+        },
+        Some(new) => new.to_string(),
+        None => match app.tab {
             Tab::AllFiles => "File",
             _ => "Diff",
         }

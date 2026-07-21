@@ -68,8 +68,9 @@ frame | grep -q "unchanged lines" || fail "O: alpha lost its focused fold paint 
 echo "ok O - Ctrl-o returns to alpha: selection + focused paint restored, no stale beta paint"
 
 # --- G: a TAG jump OUTSIDE the changeset keeps the selection put, editor is not yanked back -----
-# EXPECT: editor shows gamma (out of changeset, no list row), the sidebar STAYS on alpha, and a
-# poll cycle does not yank the editor back onto the changeset file.
+# EXPECT: editor shows gamma (out of changeset, no list row), the sidebar STAYS on alpha, a poll
+# cycle does not yank the editor back, AND the editor pane TITLE follows to gamma (the title names
+# the file nvim actually shows, not the stale changeset file the sidebar still points at).
 esc
 keys -l '/gammadef'; keys Enter; sleep 0.3
 ctrl_bracket; sleep 0.9
@@ -77,7 +78,11 @@ frame | grep -q "GAMMA_STABLE" || fail "G: the Ctrl-] jump to the out-of-changes
 sleep 0.8                                       # a poll cycle must not yank it back
 frame | grep -q "GAMMA_STABLE" || fail "G: the host yanked the editor off the out-of-changeset file"
 row_selected alpha.txt || fail "G: the sidebar selection was lost on an out-of-changeset tag jump"
-echo "ok G - Ctrl-] outside the changeset keeps the selection put and holds the buffer"
+# The pane border row (herdr-drawn '┌' box, not nvim's grid) must name the jumped-to file.
+title_row() { frame | grep -aF '┌'; }
+title_row | grep -qaF 'gamma.txt' || fail "G: the editor title did not follow the jump (stale title still on the changeset file)"
+title_row | grep -qaF 'alpha.txt' && fail "G: the editor title still shows the stale changeset file after the jump"
+echo "ok G - Ctrl-] outside the changeset: selection put, buffer held, and the title follows to gamma"
 
 # --- N: the 'No tag file' intermittent — Ctrl-] with a tag miss, then with NO tags file ---------
 # EXPECT (N1): tags file present but the word is not a tag -> nvim's own 'tag not found' (E426);
