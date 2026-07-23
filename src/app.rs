@@ -1097,22 +1097,27 @@ impl App {
         // and comment staleness stay correct even while `All files` lists the whole worktree.
         // last-turn diffs the captured baseline; with none yet, it is empty until a turn start
         // is observed (specs/review-model.md).
-        self.resolved_base = match self.scope {
-            Scope::Branch => git::base_ref(&self.repo, self.base.as_deref()),
-            Scope::Commit => self.selected_commit.clone(),
-            Scope::LastTurn => None,
-        };
         // One repo-sized `git status` walk per reload, shared by the change digest, the
         // changed-file assembly, the staging markers, and the `All files` worktree listing below.
         let status = git::StatusSnapshot::collect(&self.repo)?;
         // Nothing observable moved since the last completed rebuild → keep every view as-is.
         // The digest covers repo state (HEAD, porcelain, per-record stats) and view keys (tab,
         // scope, base); anything it misses would go permanently stale, so additions belong in
-        // `reload_digest`, not here.
+        // `reload_digest`, not here. Deliberately BEFORE resolving the branch base: on a large
+        // monorepo `base_ref` walks every merged ref, so an idle poll must short-circuit on the
+        // digest without paying it (the base depends only on HEAD + the ref set, and HEAD is in
+        // the digest — a bare ref-set change with no other movement self-heals on the next real
+        // reload). The digest reads the base from the *previous* completed reload, which stays
+        // valid exactly as long as the digest matches.
         let digest = self.reload_digest(&status);
         if self.last_reload_digest == Some(digest) {
             return Ok(());
         }
+        self.resolved_base = match self.scope {
+            Scope::Branch => git::base_ref(&self.repo, self.base.as_deref()),
+            Scope::Commit => self.selected_commit.clone(),
+            Scope::LastTurn => None,
+        };
         // The picker list depends only on HEAD, which the digest hashes — refreshing it on
         // rebuild ticks alone keeps it current without a per-tick `git log`.
         if self.scope == Scope::Commit && self.mode != Mode::CommitPick {
@@ -1187,8 +1192,13 @@ impl App {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         std::mem::discriminant(&self.tab).hash(&mut h);
         std::mem::discriminant(&self.scope).hash(&mut h);
+        // `resolved_base` is intentionally NOT hashed: it is derived (Branch → `base_ref` of
+        // HEAD + the ref set + `self.base`; Commit → `selected_commit`), and its inputs
+        // `self.base`, `selected_commit`, and `head_commit` are all hashed here. Hashing the
+        // derived value too would let its post-short-circuit update (it is resolved only after
+        // this digest, to keep an idle poll off `base_ref`) flip the digest on the very next
+        // poll and force one redundant full reload.
         self.base.hash(&mut h);
-        self.resolved_base.hash(&mut h);
         self.selected_commit.hash(&mut h);
         self.turn.baseline().hash(&mut h);
         git::head_commit(&self.repo).hash(&mut h);

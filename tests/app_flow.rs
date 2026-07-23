@@ -3615,3 +3615,28 @@ fn a_refresh_still_follows_the_selected_comment_past_new_checks() {
         "the selection follows the comment by identity even as rows shift"
     );
 }
+
+#[test]
+fn idle_branch_polls_short_circuit_without_re_resolving_the_base() {
+    // On a feature branch with a merged ancestor, Branch scope resolves a real base via base_ref
+    // (which walks the merged refs). An idle poll must NOT pay that again — on a big monorepo it
+    // is seconds of work and froze the UI every tick.
+    let r = Repo::init();
+    r.write("base.rs", "1\n");
+    r.commit_all("base");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("f.rs", "x\n");
+    r.commit_all("feature work");
+
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+    app.set_scope(Scope::Branch).unwrap();
+    assert!(app.changed_annotation("f.rs").is_some(), "the branch changeset resolved");
+    let after_switch = app.rebuild_count;
+    app.reload().unwrap();
+    app.reload().unwrap();
+    assert_eq!(
+        app.rebuild_count, after_switch,
+        "idle Branch polls must short-circuit on the digest, not rebuild every tick"
+    );
+}

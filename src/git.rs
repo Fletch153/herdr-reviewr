@@ -185,24 +185,11 @@ pub fn ancestor_branches(repo: &Path) -> AncestorBranches {
 
 fn lineage_branches(repo: &Path) -> Vec<(usize, String, bool)> {
     let current = current_branch(repo);
-    let out = git(
-        repo,
-        &[
-            "for-each-ref",
-            "--merged",
-            "HEAD",
-            "--format=%(refname)",
-            "refs/heads",
-            "refs/remotes/origin",
-        ],
-    )
-    .unwrap_or_default();
     let mut rows: Vec<(usize, String, bool)> = Vec::new();
-    for refname in out.lines() {
+    for (dist, refname) in merged_ref_distances(repo) {
         if refname.ends_with("/HEAD") {
             continue;
         }
-        let Some(dist) = commit_distance(repo, refname) else { continue };
         if let Some(name) = refname.strip_prefix("refs/heads/") {
             if current.as_deref() == Some(name) {
                 continue;
@@ -214,6 +201,62 @@ fn lineage_branches(repo: &Path) -> Vec<(usize, String, bool)> {
     }
     rows.sort();
     rows
+}
+
+/// `(distance-below-HEAD, refname)` for every ref merged into `HEAD`. git ≥2.41 computes all
+/// distances in ONE `for-each-ref` via `%(ahead-behind:HEAD)` (`behind` = commits in `HEAD` but
+/// not the ref = the distance); on a big monorepo the previous per-ref `rev-list --count` fork —
+/// hundreds of subprocesses on the UI thread — froze the plugin for >10s on every branch-scope
+/// reload. Older git rejects the atom (empty output); the caller detects that and forks per ref.
+fn merged_ref_distances(repo: &Path) -> Vec<(usize, String)> {
+    let batched = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--merged",
+            "HEAD",
+            // "<ahead> <behind> <refname>"; refname has no spaces, so it is the 3rd field.
+            "--format=%(ahead-behind:HEAD) %(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+    )
+    .unwrap_or_default();
+    // Fast path detection: the first line's second field is the numeric `behind` count. Empty
+    // output (old git errored on the atom, or no merged refs) drops to the per-ref fallback.
+    let fast = batched
+        .lines()
+        .next()
+        .and_then(|l| l.split(' ').nth(1))
+        .is_some_and(|behind| behind.parse::<usize>().is_ok());
+    if fast {
+        return batched
+            .lines()
+            .filter_map(|line| {
+                // "<ahead> <behind> <refname>"; a refname never contains a space.
+                let mut it = line.split(' ');
+                let (_ahead, behind, refname) = (it.next(), it.next()?, it.next()?);
+                Some((behind.parse().ok()?, refname.to_string()))
+            })
+            .collect();
+    }
+    // Fallback (git <2.41): list the merged refs, then one `rev-list --count` per ref.
+    let names = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--merged",
+            "HEAD",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+    )
+    .unwrap_or_default();
+    names
+        .lines()
+        .filter_map(|refname| Some((commit_distance(repo, refname)?, refname.to_string())))
+        .collect()
 }
 
 fn commit_distance(repo: &Path, git_ref: &str) -> Option<usize> {

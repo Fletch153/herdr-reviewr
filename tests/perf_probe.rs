@@ -99,3 +99,16 @@ fn perf_probe() {
     }
     probe("ignored", &c);
 }
+
+#[test]
+#[ignore = "repro: HERDR_PROBE_DIR=<worktree> cargo test --release --test perf_probe branch_scope_repro -- --ignored --nocapture"]
+fn branch_scope_repro() {
+    let Ok(dir) = std::env::var("HERDR_PROBE_DIR") else { return };
+    println!("== branch-scope repro on {dir}");
+    let mut app = App::new(dir.clone().into(), Scope::Commit, None);
+    time("startup reload (Changes)", || app.reload().unwrap());
+    // The exact user action: press `b` -> set_scope(Branch). This is the suspected freeze.
+    time("set_scope(Branch)  <-- the `b` key", || app.set_scope(Scope::Branch).ok());
+    time("poll reload (Branch)", || app.reload().unwrap());
+    time("poll reload (Branch) 2", || app.reload().unwrap());
+}
