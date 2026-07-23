@@ -80,7 +80,7 @@ The binary reviews one worktree: the pane's working directory, normalized to its
 The `split`, `overlay`, and `zoomed` placements all open in the agent's tab, so reviewr shares it; the `tab` placement gives reviewr its own tab, so the shared-tab signal is absent and `Send` resolves through the workspace fallback below. `Send` always hands over every written comment at once. To send, the binary:
 
 - resolves the target from `herdr agent list`: the agent in the sidebar's `$HERDR_TAB_ID`, else the sole agent in its `$HERDR_WORKSPACE_ID`;
-- writes all comment blocks into that pane with `herdr agent send <agent_pane> "<text>"`, without submitting;
+- writes all comment blocks into that pane with `herdr pane send-text <agent_pane> "<text>"`, without submitting (herdr ≥0.7.5; 0.7.5 removed the earlier `agent send` — its `send-keys` replacement takes key names only, and `agent prompt` submits, which Send must never do);
 - focuses that pane with `herdr agent focus <agent_pane>`, so you add context and press enter.
 
 If no agent resolves, or there are two and none shares the tab, the send fails and the status says so; the comments stay in the list. Clipboard copy (also the whole set) still works.
@@ -102,7 +102,7 @@ The snapshot is non-disruptive. reviewr writes a tree from the worktree through 
 ## Failure semantics
 
 - The send path needs the herdr CLI; browsing diffs and the clipboard export do not, so the core works from a plain shell minus the agent send.
-- If the clipboard utility or `herdr agent send` fails, the export reports an error and the comment stays in the list (see `review-model.md`).
+- If the clipboard utility or `herdr pane send-text` fails, the export reports an error and the comment stays in the list (see `review-model.md`). herdr ≥0.7.5 reports CLI failures as a non-zero exit with the JSON error envelope on stdout; pre-0.7.5 hosts exited 0 with the envelope, so both are surfaced.
 - With `tab` placement, `Send` cannot use the shared-tab signal, so it resolves the sole agent in the workspace; when the workspace holds more than one agent it fails and the status says so, while `split`/`overlay`/`zoomed` still disambiguate by the shared tab.
 - Turn tracking needs the agent status from the herdr CLI; without it the `last-turn` scope stays empty, while `uncommitted` and `branch` are unaffected.
 - A turn that starts and ends within one poll interval — or whose start is masked by a transient `unknown` status — is never seen entering `working`, so its start is not snapshotted; `last-turn` then shows the changes accumulated since the last observed turn start, more than one turn, never lines the agent did not write.
@@ -121,7 +121,7 @@ These are not built here; the architecture only stays open to them.
 - A herdr plugin, not raw pane splits — the official plugin system (`herdr-plugin.toml` with pane entrypoints, actions, and events) gives the keybind, the right-split sidebar, and worktree autolaunch, and is installable/shareable via `herdr plugin install`. Rejected: a user-config `[[keys.command]]` shell script driving `herdr pane split`, which can't declare an entrypoint pane or an event hook.
 - Pane command by absolute path under the plugin root, not a relative path or a bare name — a split pane runs with the repo as its cwd, so `./target/release/herdr-reviewr` resolves against the wrong directory, and the prebuilt binary is not on `PATH`; it is invoked as `$HERDR_PLUGIN_ROOT/bin/herdr-reviewr`.
 - Prebuilt binaries over build-on-install — `herdr/install.sh` downloads a release binary so users need no Rust toolchain and the install is fast; building from source stays the path for `herdr plugin link` and contributors.
-- Send via the herdr CLI, not the raw socket — `$HERDR_BIN_PATH agent send/focus/list` is the documented, transport-stable interface.
+- Send via the herdr CLI, not the raw socket — `$HERDR_BIN_PATH pane send-text` / `agent focus/list` is the documented, transport-stable interface.
 - Browsing and clipboard need no herdr — only the agent-send export and `last-turn` tracking depend on herdr, so the rest of the review loop degrades gracefully without it.
 - Poll `agent_status`, not subscribe to events — the existing worktree poll already runs every couple of seconds and the CLI already lists agent status, so reading it there adds no socket plumbing or listener thread; the cost is missing a turn shorter than a poll. Rejected: a `pane.agent_status_changed` socket subscription, precise but heavier — a persistent socket connection and a listener thread.
 - Snapshot through a temporary index into a private ref, not a stash or a branch — a temp-index `write-tree` captures the worktree without touching the index, worktree, or any branch, and a `refs/reviewr/` ref keeps the tree from being garbage-collected while staying out of branch lists. Rejected: `git stash`, which mutates the worktree; a real branch, which pollutes the user's refs.

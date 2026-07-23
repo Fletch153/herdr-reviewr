@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# A fake `herdr` for the reviewr.nvim headless tests. It mimics the real CLI's key quirk — every
-# call exits 0, reporting failure only via a JSON `{"error":...}` envelope on stdout — and records
-# `agent send` invocations to $REVIEWR_STUB_LOG so a test can assert what was delivered.
+# A fake `herdr` for the reviewr.nvim headless tests, mimicking the herdr ≥0.7.5 CLI: text lands
+# via `pane send-text <pane> <text>` (EMPTY stdout on success), and failures print a JSON
+# `{"error":...}` envelope on stdout AND exit non-zero. (Pre-0.7.5 hosts had `agent send` and
+# reported failures with a zero exit; 0.7.5 removed that subcommand — exactly the breakage the
+# send path must survive.) Deliveries are recorded to $REVIEWR_STUB_LOG so a test can assert
+# what was sent.
 #
 # The listed tab holds two Claude agents, so resolution is ambiguous *unless* the focused-pane
-# preference kicks in — that's what the test checks. Set REVIEWR_STUB_MODE=error to make `send`
-# return an error envelope.
+# preference kicks in — that's what the test checks. Set REVIEWR_STUB_MODE=error to make
+# `pane send-text` return an error envelope.
 set -euo pipefail
 
 case "${1:-} ${2:-}" in
@@ -18,21 +21,24 @@ case "${1:-} ${2:-}" in
 ]},"type":"agent_list"}
 JSON
     ;;
-  "agent send")
+  "pane send-text")
     pane="${3:-}"
     shift 3 || true
     printf 'send %s %s\n' "$pane" "$*" >>"${REVIEWR_STUB_LOG:?}"
     if [ "${REVIEWR_STUB_MODE:-}" = "error" ]; then
-      echo '{"error":{"code":"agent_not_found","message":"agent target not found"},"id":"cli:agent:send"}'
-    else
-      echo '{"id":"cli:agent:send","result":{"ok":true},"type":"agent_send"}'
+      echo '{"error":{"code":"pane_not_found","message":"pane target not found"},"id":"cli:request"}'
+      exit 1
     fi
+    # Success is EMPTY stdout on the real ≥0.7.5 CLI — deliberately print nothing.
     ;;
   "agent focus")
     echo '{"id":"cli:agent:focus","result":{"ok":true}}'
     ;;
   *)
+    # Unknown subcommand — including the REMOVED `agent send`: the real CLI prints usage and
+    # fails. An envelope + non-zero exit models it closely enough for the tests.
     echo "{\"error\":{\"message\":\"stub: unhandled ${*}\"}}"
+    exit 1
     ;;
 esac
 exit 0

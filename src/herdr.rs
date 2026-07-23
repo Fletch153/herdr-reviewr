@@ -19,15 +19,22 @@ fn herdr(args: &[&str]) -> Result<String> {
         .output()
         .with_context(|| format!("running herdr {args:?}"))?;
     if !out.status.success() {
+        // herdr ≥0.7.5 fails with a non-zero exit AND the JSON error envelope on stdout
+        // (stderr stays empty — e.g. `pane_not_found`), so the envelope carries the message;
+        // usage errors and older hosts speak on stderr. Surface whichever does.
+        if let Err(e) = ok_or_api_error(String::from_utf8_lossy(&out.stdout).into_owned()) {
+            bail!("herdr {args:?} failed: {e}");
+        }
         bail!("herdr {args:?} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     ok_or_api_error(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The herdr socket API reports failures as a JSON `{"error": {...}}` envelope on stdout *with a
-/// zero exit code* — e.g. a Send to a stale or non-agent pane returns `agent_not_found` and still
-/// exits 0. So the exit status alone can't be trusted: surface an error envelope as the failure it
-/// is, otherwise pass the output through unchanged (not every call returns JSON).
+/// Surface a JSON `{"error": {...}}` envelope on stdout as the failure it is; pass anything else
+/// through unchanged (not every call returns JSON — `pane send-text` prints nothing on success).
+/// Kept on the success path too: pre-0.7.5 hosts reported failures this way *with a zero exit*
+/// (e.g. a Send to a stale pane returned `agent_not_found` and still exited 0), so the exit
+/// status alone has never been trustworthy.
 pub(crate) fn ok_or_api_error(stdout: String) -> Result<String> {
     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(&stdout)
         && let Some(err) = obj.get("error")
@@ -195,9 +202,11 @@ fn sole_pane(agents: &[Value], key: &str, want: Option<&str>, me: Option<&str>) 
     sole_agent(agents, key, want, me).and_then(pane_id)
 }
 
-/// Write literal text into the agent pane's input, without submitting.
+/// Write literal text into the agent pane's input, without submitting. herdr ≥0.7.5 spells this
+/// `pane send-text` — 0.7.5 removed the old `agent send` (its `send-keys` replacement takes key
+/// names only, and `agent prompt` would submit, which Send must never do).
 pub fn send_text(pane: &str, text: &str) -> Result<()> {
-    herdr(&["agent", "send", pane, text])?;
+    herdr(&["pane", "send-text", pane, text])?;
     Ok(())
 }
 
@@ -250,7 +259,8 @@ mod tests {
 
     #[test]
     fn an_error_envelope_fails_even_though_herdr_exits_zero() {
-        // `herdr agent send` to a stale/invalid pane returns this on stdout and exits 0.
+        // Pre-0.7.5 hosts returned this on stdout WITH a zero exit; ≥0.7.5 pairs the same
+        // envelope with a non-zero exit. Either way the envelope is the failure.
         let err = r#"{"error":{"code":"agent_not_found","message":"agent target x not found"},"id":"cli:agent:send"}"#;
         let e = ok_or_api_error(err.to_string()).unwrap_err();
         assert!(e.to_string().contains("not found"), "surfaces the herdr message: {e}");
