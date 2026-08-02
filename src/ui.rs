@@ -2766,3 +2766,42 @@ fn centered(area: Rect, pct_x: u16, pct_y: u16) -> Rect {
     ])
     .split(v[1])[1]
 }
+
+#[cfg(test)]
+mod empty_pane_click_tests {
+    use super::{Rect, hit_divider, hit_file, in_files_pane};
+
+    // The contract the mouse dispatch's empty-pane fallback rests on: with no file rows,
+    // `hit_file` misses everywhere, yet `in_files_pane` still owns the clicks — so a click
+    // in an emptied list (e.g. a filter with no matches) can claim focus instead of falling
+    // through to the diff pane.
+    #[test]
+    fn empty_list_clicks_stay_in_files_pane() {
+        let area = Rect::new(0, 0, 100, 30);
+        let list_pct = 30;
+        let mut pane_points = 0;
+        for row in 0..30 {
+            for col in 0..100 {
+                assert_eq!(hit_file(area, list_pct, col, row, 0, 0), None);
+                if in_files_pane(area, list_pct, col, row) && !hit_divider(area, list_pct, col, row)
+                {
+                    pane_points += 1;
+                }
+            }
+        }
+        assert!(pane_points > 0, "the files pane should own some clickable area");
+    }
+
+    // With rows present, a click below the last row is still a pane click, not a file hit —
+    // the same fallback focuses the pane rather than doing nothing.
+    #[test]
+    fn click_below_last_row_misses_files_but_stays_in_pane() {
+        let area = Rect::new(0, 0, 100, 30);
+        let list_pct = 30;
+        // Files pane: right 30% of the body band → x=70..100; inner rows start at y=2.
+        let (col, row) = (80, 10);
+        assert!(in_files_pane(area, list_pct, col, row));
+        assert_eq!(hit_file(area, list_pct, col, row, 3, 0), None, "row 10 is past 3 files");
+        assert!(hit_file(area, list_pct, col, 2, 3, 0).is_some(), "top inner row hits file 0");
+    }
+}

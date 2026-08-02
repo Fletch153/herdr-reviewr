@@ -1611,6 +1611,10 @@ fn handle_mouse(
                     {
                         app.select_file(i)?;
                     }
+                } else if ui::in_files_pane(area, app.list_pct, m.column, m.row) {
+                    // Empty pane space still claims focus — an empty filter result must not
+                    // strand the keyboard in the other pane.
+                    app.focus = Focus::Files;
                 } else if in_grid {
                     app.focus = Focus::Diff; // a click claims focus, like the old diff pane
                     session.mouse_down = true;
@@ -1692,6 +1696,10 @@ fn handle_mouse(
                 {
                     app.select_file(i)?;
                 }
+            } else if ui::in_files_pane(area, app.list_pct, m.column, m.row) {
+                // Empty pane space still claims focus — an empty filter result must not
+                // strand the keyboard in the other pane.
+                app.focus = Focus::Files;
             } else if let Some(i) =
                 ui::hit_diff(area, app.list_pct, m.column, m.row, heights, app.diff_scroll)
             {
