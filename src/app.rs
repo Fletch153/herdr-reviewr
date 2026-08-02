@@ -103,6 +103,7 @@ struct TabStash {
     preview_scroll: usize,
     select_anchor: Option<usize>,
     filter: String,
+    filter_open: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -264,6 +265,11 @@ pub struct App {
     /// `file_cursor` indexes this, not `entries`.
     pub file_rows: Vec<file_list::Row>,
     pub filter: String,
+    /// Whether the filter box was open (mid-typing) when a tab switch closed it, so returning
+    /// to the tab reopens it — the title keeps painting the query, and keystrokes must land in
+    /// the box it shows, not on global bindings. Per-tab (stashed); an Enter-confirmed box
+    /// records `false` and stays closed.
+    filter_open: bool,
     /// The in-diff search query (`Mode::Search`); empty when not searching.
     pub search: String,
     /// The diff cursor when the search opened — incremental matches anchor from here so refining
@@ -468,6 +474,7 @@ impl App {
             entries: Vec::new(),
             file_rows: Vec::new(),
             filter: String::new(),
+            filter_open: false,
             search: String::new(),
             search_origin: 0,
             preview_scroll: 0,
@@ -1736,7 +1743,11 @@ impl App {
         }
         // The filter query is per-tab (it shapes the left pane, swapped below); a mouse tab
         // click can arrive mid-typing, and the box must not stay open editing the other
-        // tab's query.
+        // tab's query. Remember it was open: the leaving tab reopens it on return. The PR
+        // tab has no box — leaving it must not clobber the frozen file tab's flag.
+        if self.tab.is_file_tab() {
+            self.filter_open = self.mode == Mode::Filter;
+        }
         self.confirm_filter();
         self.tab = tab;
         // Entering the PR tab leaves the file tabs frozen in place and fetches the PR. A
@@ -1757,6 +1768,11 @@ impl App {
         // empty — focuses the tree, so the cursor keys aren't trapped on a pane with nothing to
         // move (specs/tui.md).
         if self.visible.is_empty() {
+            self.focus = Focus::Files;
+        }
+        // A box this tab left open mid-typing comes back open, keys landing in it again.
+        if self.filter_open {
+            self.mode = Mode::Filter;
             self.focus = Focus::Files;
         }
         self.reveal_files = true; // pull the restored cursor back into view
@@ -1919,6 +1935,7 @@ impl App {
         std::mem::swap(&mut self.preview_scroll, &mut self.stash.preview_scroll);
         std::mem::swap(&mut self.select_anchor, &mut self.stash.select_anchor);
         std::mem::swap(&mut self.filter, &mut self.stash.filter);
+        std::mem::swap(&mut self.filter_open, &mut self.stash.filter_open);
     }
 
     pub fn toggle_focus(&mut self) {

@@ -2537,6 +2537,70 @@ fn a_leading_slash_is_ignored_when_filtering() {
     assert_eq!(app.filter, "evm/", "a slash inside the query is kept");
 }
 
+// A mouse tab click can land mid-typing; the box closes for the other tab, but coming back
+// must reopen it — the title keeps painting the query, and a user who resumes typing would
+// otherwise fire global bindings (a live report: `x` expanded the tree mid-search).
+#[test]
+fn an_open_filter_box_survives_a_tab_round_trip() {
+    let r = Repo::init();
+    r.write("src/evm.rs", "1\n");
+    r.commit_all("init");
+    r.write("src/evm.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    app.start_filter();
+    for c in "zzz".chars() {
+        app.filter_push(c);
+    }
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert_eq!(app.mode, Mode::Normal, "the other tab does not inherit the open box");
+
+    app.set_tab(Tab::Changes).unwrap();
+    assert_eq!(app.mode, Mode::Filter, "returning reopens the box left open");
+    assert_eq!(app.focus, Focus::Files, "with the file list focused");
+    app.filter_push('x');
+    assert_eq!(app.filter, "zzzx", "typing continues the query, not a global binding");
+}
+
+#[test]
+fn a_confirmed_filter_stays_closed_across_a_tab_round_trip() {
+    let r = Repo::init();
+    r.write("src/evm.rs", "1\n");
+    r.commit_all("init");
+    r.write("src/evm.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    app.start_filter();
+    app.filter_push('e');
+    app.confirm_filter();
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.set_tab(Tab::Changes).unwrap();
+    assert_eq!(app.mode, Mode::Normal, "a deliberately confirmed box stays closed");
+    assert_eq!(app.filter, "e", "while its query keeps shaping the list");
+}
+
+// The PR tab freezes the file tab in place (no stash swap) — the reopen must ride that
+// path too, and the box must not be live while the PR tab owns the keys.
+#[test]
+fn an_open_filter_box_survives_a_pr_round_trip() {
+    let r = Repo::init();
+    r.write("src/evm.rs", "1\n");
+    r.commit_all("init");
+    r.write("src/evm.rs", "2\n");
+    let mut app = App::new(r.path_buf(), Scope::Commit, None);
+    app.reload().unwrap();
+
+    app.start_filter();
+    app.filter_push('z');
+    app.set_tab(Tab::Pr).unwrap();
+    assert_eq!(app.mode, Mode::Normal, "the PR tab owns the keys, box closed");
+    app.set_tab(Tab::Changes).unwrap();
+    assert_eq!(app.mode, Mode::Filter, "returning from PR reopens the box");
+    assert_eq!(app.filter, "z", "with the query intact");
+}
+
 #[test]
 fn filtering_focuses_files_and_arrows_navigate_the_results() {
     let r = Repo::init();
