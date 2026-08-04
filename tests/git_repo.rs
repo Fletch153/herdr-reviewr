@@ -192,6 +192,52 @@ fn branch_scope_auto_base_is_the_nearest_fork_not_mainline() {
     );
 }
 
+// A live report from a large monorepo: a stale snapshot of the mainline (fully merged into
+// HEAD, e.g. `origin/develop-fresh`) sat nearer in the merged-ref ranking than the true fork
+// parent — which, being the moving trunk, is never itself merged into HEAD — so the auto base
+// diffed 27 mainline commits into the branch changeset. The trunk must compete, ranked by how
+// far HEAD sits above their merge-base (the distance the diff base actually lands at).
+#[test]
+fn auto_base_prefers_trunk_over_a_stale_merged_snapshot() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.commit_all("A");
+    // The stale snapshot: the mainline as it was at A, still an ancestor of the branch.
+    r.git(&["update-ref", "refs/remotes/origin/develop-fresh", "main"]);
+    r.write("b.rs", "1\n");
+    r.commit_all("B");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("f.rs", "1\n");
+    r.commit_all("F");
+    // The trunk moved on after the fork: its tip is NOT an ancestor of the branch.
+    r.git(&["checkout", "-q", "main"]);
+    r.write("c.rs", "1\n");
+    r.commit_all("C");
+    r.git(&["update-ref", "refs/remotes/origin/develop", "main"]);
+    r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"]);
+    r.git(&["checkout", "-q", "feature"]);
+
+    // Trunk's diff base is the fork point (1 commit below HEAD); the snapshot's is its own
+    // tip (2 below). Nearest diff base wins.
+    assert_eq!(
+        base_ref(r.path(), None).as_deref(),
+        Some("origin/develop"),
+        "the trunk outranks a stale merged snapshot of itself"
+    );
+    let changed = changed_files(r.path(), Scope::Branch, None).unwrap();
+    let files = by_path(&changed);
+    assert!(files.contains_key("f.rs"), "the branch's own change is shown");
+    assert!(!files.contains_key("b.rs"), "mainline commits below the fork stay out");
+
+    // The picker offers the trunk too — it was absent entirely while only merged refs listed.
+    let a = herdr_reviewr::git::ancestor_branches(r.path());
+    assert!(
+        a.remote.contains(&"origin/develop".to_string()),
+        "the trunk is offered in the branch picker: {:?}",
+        a.remote
+    );
+}
+
 #[test]
 fn rename_is_reported_at_the_new_path() {
     let r = Repo::init();

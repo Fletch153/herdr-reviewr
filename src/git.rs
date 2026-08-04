@@ -149,6 +149,12 @@ pub fn base_ref(repo: &Path, base: Option<&str>) -> Option<String> {
     if let Some(near) = nearest_ancestor_branch(repo) {
         return Some(near);
     }
+    trunk_ref(repo)
+}
+
+/// The repo's trunk: the branch `origin/HEAD` points at, else the first conventional
+/// mainline name that exists.
+fn trunk_ref(repo: &Path) -> Option<String> {
     if let Some(head) =
         git_line(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
         && ref_exists(repo, &head)
@@ -198,6 +204,21 @@ fn lineage_branches(repo: &Path) -> Vec<(usize, String, bool)> {
         } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
             rows.push((dist, name.to_string(), false));
         }
+    }
+    // The trunk usually is NOT merged into HEAD (it moves on past the fork), so the walk above
+    // cannot see it — while a stale snapshot of it can outrank everything (a live report:
+    // `origin/develop-fresh`, 27 commits deep, shadowed the true fork parent and pulled a
+    // month of mainline into the branch diff). Let the trunk compete, ranked by how far HEAD
+    // sits above their merge-base — where its diff base would actually land.
+    if let Some(trunk) = trunk_ref(repo)
+        && current.as_deref() != Some(trunk.as_str())
+        && !rows.iter().any(|(_, name, _)| *name == trunk)
+        && let Some(mb) = git_line(repo, &["merge-base", &trunk, "HEAD"])
+        && let Some(dist) = git_line(repo, &["rev-list", "--count", &format!("{mb}..HEAD")])
+            .and_then(|c| c.parse::<usize>().ok())
+    {
+        let local = !trunk.starts_with("origin/");
+        rows.push((dist, trunk, local));
     }
     rows.sort();
     rows
