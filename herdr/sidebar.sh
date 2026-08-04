@@ -20,8 +20,16 @@ H="${HERDR_BIN_PATH:-herdr}"
 ws="${HERDR_WORKSPACE_ID:-}"
 pane="${HERDR_PANE_ID:-}"
 cwd=""
-[ -n "${HERDR_PLUGIN_CONTEXT_JSON:-}" ] &&
-  cwd=$(printf '%s' "$HERDR_PLUGIN_CONTEXT_JSON" | jq -r '.focused_pane_cwd // .workspace_cwd // empty' 2>/dev/null)
+if [ -n "${HERDR_PLUGIN_CONTEXT_JSON:-}" ]; then
+  cwd=$(printf '%s' "$HERDR_PLUGIN_CONTEXT_JSON" | jq -r '.focused_pane_cwd // empty' 2>/dev/null)
+  # A plugin pane's cwd is its own checkout under herdr's plugins dir — machinery, not a
+  # review target. Its checkout IS a git repo, so the repo guard below cannot catch it: with
+  # a plugin pane focused, the sidebar opened on that plugin's repo and showed "0 changed".
+  plugins_dir=$(dirname "$(dirname "${HERDR_PLUGIN_ROOT:-/nonexistent}")")
+  case "$cwd" in "$plugins_dir"/*) cwd="" ;; esac
+  [ -n "$cwd" ] || cwd=$(printf '%s' "$HERDR_PLUGIN_CONTEXT_JSON" |
+    jq -r '.worktree.checkout_path // .workspace_cwd // empty' 2>/dev/null)
+fi
 
 # An event fires without a focused pane; target the new worktree's workspace from the payload
 # (worktree.created shape: .data.workspace.workspace_id, .data.workspace.worktree.checkout_path).
