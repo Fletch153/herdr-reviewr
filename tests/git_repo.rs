@@ -238,6 +238,36 @@ fn auto_base_prefers_trunk_over_a_stale_merged_snapshot() {
     );
 }
 
+// A worktree branch cut straight off the trunk's tip has zero commits of its own: the trunk
+// sits at distance 0 and the `>= 1` ancestor filter used to skip it as "same commit", then
+// fall through to a stale fully-merged sibling many commits back (a live report: a
+// 100-commit-stale worktree branch became the base, showing a bogus 100-commit diff). The
+// trunk at distance 0 IS the base; the empty diff is the truthful answer.
+#[test]
+fn auto_base_is_the_trunk_for_a_fresh_branch_cut_from_its_tip() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.commit_all("A");
+    // The stale sibling: fully merged, two commits back by the end.
+    r.git(&["branch", "worktree-calm-stone", "main"]);
+    r.write("b.rs", "1\n");
+    r.commit_all("B");
+    r.write("c.rs", "1\n");
+    r.commit_all("C");
+    r.git(&["update-ref", "refs/remotes/origin/develop", "main"]);
+    r.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"]);
+    // The fresh branch: cut from the trunk's tip, zero commits of its own.
+    r.git(&["checkout", "-q", "-b", "worktree-clear-river"]);
+
+    assert_eq!(
+        base_ref(r.path(), None).as_deref(),
+        Some("origin/develop"),
+        "the trunk at distance 0 outranks a stale merged sibling"
+    );
+    let changed = changed_files(r.path(), Scope::Branch, None).unwrap();
+    assert!(changed.is_empty(), "a zero-commit branch diffs empty: {changed:?}");
+}
+
 #[test]
 fn rename_is_reported_at_the_new_path() {
     let r = Repo::init();

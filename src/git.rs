@@ -169,8 +169,18 @@ fn trunk_ref(repo: &Path) -> Option<String> {
 
 pub fn nearest_ancestor_branch(repo: &Path) -> Option<String> {
     let own_twin = current_branch(repo).map(|b| format!("origin/{b}"));
-    lineage_branches(repo)
-        .into_iter()
+    let rows = lineage_branches(repo);
+    // A branch cut straight off the trunk's tip has zero commits of its own: the trunk sits
+    // at distance 0, and the `>= 1` filter below — there to keep a branch's identical twin
+    // from becoming its base — would skip it and fall through to some stale fully-merged
+    // sibling many commits back (a live report: a 100-commit-stale worktree branch). The
+    // trunk at distance 0 IS the base; the empty diff is the truthful answer.
+    if let Some(trunk) = trunk_ref(repo)
+        && rows.iter().any(|(dist, name, _)| *dist == 0 && *name == trunk)
+    {
+        return Some(trunk);
+    }
+    rows.into_iter()
         .find(|(dist, name, _)| *dist >= 1 && Some(name.as_str()) != own_twin.as_deref())
         .map(|(_, name, _)| name)
 }
