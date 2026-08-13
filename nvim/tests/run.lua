@@ -115,6 +115,50 @@ end
 check("old-side card renders without the accent", card2 == 1 and accent2 == 0)
 comments.apply({})
 
+-- act() translates a cursor hit on a painted card back to the comment's original anchor:
+-- a comment anchored past EOF paints clamped at the last line, and acting there must send
+-- the stored anchor and side — not the cursor position, which the host could never match.
+vim.api.nvim_set_current_buf(buf)
+comments.apply({
+  { start = 9, ["end"] = 10, side = "new", text = "stale", location = "y.rs:9-10", sent = false },
+})
+local acted = {}
+local act_notify = comments.notify
+comments.notify = function(action, payload)
+  acted[#acted + 1] = { action = action, payload = payload }
+  return true
+end
+vim.api.nvim_win_set_cursor(0, { 4, 0 }) -- 4-line buffer: the card clamps to line 4
+comments.act("resolve")
+check(
+  "act through a clamped card sends the original anchor",
+  #acted == 1 and acted[1].payload.line == 9 and acted[1].payload.side == "new",
+  vim.inspect(acted)
+)
+
+-- An old-side card boxed on the live buffer must act with the comment's side, not the buffer's.
+comments.apply({
+  { start = 2, ["end"] = 2, side = "old", text = "gone", location = "y.rs:2 (removed)", sent = true },
+})
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+comments.act("resolve")
+check(
+  "act through an old-side card sends side=old",
+  #acted == 2 and acted[2].payload.side == "old" and acted[2].payload.line == 2,
+  vim.inspect(acted[2])
+)
+
+-- Off-card lines keep the plain cursor anchor.
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+comments.act("resolve")
+check(
+  "act off-card keeps the cursor anchor",
+  #acted == 3 and acted[3].payload.line == 1 and acted[3].payload.side == "new",
+  vim.inspect(acted[3])
+)
+comments.notify = act_notify
+comments.apply({})
+
 -- The focused (Changes) view's fold expression: changed lines and their 3-line context stay
 -- visible (0); everything else folds (1); buffers without hunk data never fold.
 local fbuf = vim.api.nvim_create_buf(false, true)

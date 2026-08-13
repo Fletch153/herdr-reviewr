@@ -9,6 +9,11 @@
 local M = {}
 local ns = vim.api.nvim_create_namespace("reviewr_comments")
 
+-- The cards painted by the last apply(), keyed by buffer: the painted (EOF-clamped) range
+-- plus the comment's original anchor and side, so act() can translate a cursor hit on the
+-- card back to the anchor the host's store matches on.
+M._cards = {}
+
 -- The host's RPC channel: the attached UI (the reviewer). nil when nvim runs standalone or
 -- headless (tests) — then notify() reports failure and apply() can still be driven directly.
 local function chan()
@@ -123,13 +128,24 @@ function M.comment_visual()
 end
 
 -- <leader>re / rx / rr: edit / delete / resolve the host's comment covering the cursor line.
+-- The cursor hit is translated through the painted cards: a card can sit clamped at EOF
+-- while its comment anchors beyond it (the file shrank after the comment was made), and an
+-- old-side card also boxes on the live buffer — sending the card's original anchor and side
+-- keeps every visible card actionable instead of "no comment under the cursor".
 function M.act(action)
   local a = M.anchor()
   if not a then
     vim.notify("reviewr: this buffer has no file to comment on", vim.log.levels.WARN)
     return
   end
-  if not M.notify(action, { file = a.file, side = a.side, line = a.start }) then
+  local line, side = a.start, a.side
+  for _, card in ipairs(M._cards[vim.api.nvim_get_current_buf()] or {}) do
+    if line >= card.lo and line <= card.hi then
+      line, side = card.start, card.side
+      break
+    end
+  end
+  if not M.notify(action, { file = a.file, side = side, line = line }) then
     vim.notify("reviewr: no reviewer attached", vim.log.levels.WARN)
   end
 end
@@ -176,6 +192,9 @@ end
 function M.apply(items)
   local bufnr = vim.api.nvim_get_current_buf()
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  -- Only the current buffer's cards are live; a stale map for a recycled bufnr must not
+  -- redirect acts, so the whole table resets on every push.
+  M._cards = { [bufnr] = {} }
   if type(items) ~= "table" or #items == 0 then
     return
   end
@@ -188,9 +207,11 @@ function M.apply(items)
   local indent = (" "):rep(2)
   local box_w = math.max(width - 2, 10)
   local text_w = math.max(box_w - 4, 1)
+  local cards = M._cards[bufnr]
   for _, c in ipairs(items) do
     local lo = math.min(math.max(c.start or 1, 1), last)
     local hi = math.min(math.max(c["end"] or lo, lo), last)
+    cards[#cards + 1] = { lo = lo, hi = hi, start = c.start or lo, side = c.side }
     if c.side == buf_side then
       for l = lo, hi do
         pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, l - 1, 0, {
