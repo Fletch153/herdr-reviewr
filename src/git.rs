@@ -364,9 +364,12 @@ pub fn snapshot_worktree(repo: &Path) -> Result<String> {
     let git_dir = PathBuf::from(git(repo, &["rev-parse", "--absolute-git-dir"])?.trim());
     let tmp_index = git_dir.join("reviewr-turn-index");
     let real_index = git_dir.join("index");
-    // Clear any temp index a prior hard crash left, then drop it on every exit path via the
-    // guard, so even a failed snapshot leaves nothing behind in the git dir.
+    // Clear any temp index a prior hard crash left — including the `.lock` git takes beside
+    // it, which a killed `add -A` strands and which then fails every later snapshot with
+    // "Unable to create ... File exists" — then drop both on every exit path via the guard,
+    // so even a failed snapshot leaves nothing behind in the git dir.
     let _ = std::fs::remove_file(&tmp_index);
+    let _ = std::fs::remove_file(tmp_index.with_extension("lock"));
     let _guard = TempIndex(&tmp_index);
     // Seed from the real index so git's stat cache lets unchanged files skip hashing;
     // a fresh repo may have no index yet, so start empty in that case.
@@ -378,12 +381,14 @@ pub fn snapshot_worktree(repo: &Path) -> Result<String> {
     Ok(tree.trim().to_string())
 }
 
-/// Removes a temporary index on drop, so a snapshot that fails midway never leaves one behind.
+/// Removes a temporary index (and any `.lock` git left beside it) on drop, so a snapshot
+/// that fails midway never leaves anything behind.
 struct TempIndex<'a>(&'a Path);
 
 impl Drop for TempIndex<'_> {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.0);
+        let _ = std::fs::remove_file(self.0.with_extension("lock"));
     }
 }
 
