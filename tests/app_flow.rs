@@ -3704,3 +3704,40 @@ fn idle_branch_polls_short_circuit_without_re_resolving_the_base() {
         "idle Branch polls must short-circuit on the digest, not rebuild every tick"
     );
 }
+
+// The branch-scope auto base is memoized on (HEAD, explicit base): `base_ref` walks every
+// merged ref with ahead-behind — ~0.4 s on a many-thousand-ref monorepo — and a rebuilding
+// poll (an agent writing files every tick) must not repay it. The memo hit is a validated
+// pass-through, so a memoized ref deleted mid-session re-resolves instead of failing every
+// diff, and a HEAD move re-resolves as before.
+#[test]
+fn branch_scope_auto_base_survives_a_deleted_memoized_ref() {
+    let r = Repo::init();
+    r.write("a.rs", "1\n");
+    r.commit_all("A");
+    r.git(&["checkout", "-q", "-b", "parent"]);
+    r.write("b.rs", "1\n");
+    r.commit_all("B");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("c.rs", "1\n");
+    r.commit_all("C");
+
+    let mut app = App::new(r.path_buf(), Scope::Branch, None);
+    app.reload().unwrap();
+    assert_eq!(app.resolved_base.as_deref(), Some("parent"), "nearest fork resolves");
+
+    // The memoized base vanishes without HEAD moving; the dirty file forces a real rebuild.
+    r.git(&["branch", "-D", "parent"]);
+    r.write("dirty.rs", "x\n");
+    app.reload().unwrap();
+    assert_eq!(
+        app.resolved_base.as_deref(),
+        Some("main"),
+        "a deleted memoized ref re-resolves instead of erroring"
+    );
+
+    r.write("d.rs", "1\n");
+    r.commit_all("D");
+    app.reload().unwrap();
+    assert_eq!(app.resolved_base.as_deref(), Some("main"), "a HEAD move re-resolves");
+}

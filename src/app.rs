@@ -431,6 +431,12 @@ pub struct App {
     /// The last theme name requested, so re-resolving the same name skips work and logging.
     requested_theme_name: Option<String>,
     cache: DiffCache,
+    /// Memo for the branch-scope auto base: `(HEAD, explicit base) -> resolved`. `base_ref`
+    /// walks every merged ref with ahead-behind — ~0.4 s on a many-thousand-ref monorepo —
+    /// and a rebuilding poll (an agent writing files every tick) must not repay it: its
+    /// inputs only change when HEAD moves or the user picks a base. A bare ref-set change
+    /// goes stale until the next HEAD move, the same tradeoff the digest already takes.
+    base_memo: Option<(Option<String>, Option<String>, Option<String>)>,
     /// The `last-turn` baseline lifecycle, driven by polling the agent's status.
     turn: TurnTracker,
     /// This worktree's key for the private baseline ref, fixed for the session.
@@ -497,6 +503,7 @@ impl App {
             file_status: HashMap::new(),
             additions_cache: git::AdditionsCache::default(),
             last_reload_digest: None,
+            base_memo: None,
             rebuild_count: 0,
             diff: FileDiff::empty(),
             visible: Vec::new(),
@@ -1121,7 +1128,27 @@ impl App {
             return Ok(());
         }
         self.resolved_base = match self.scope {
-            Scope::Branch => git::base_ref(&self.repo, self.base.as_deref()),
+            Scope::Branch => {
+                let head = git::head_commit(&self.repo);
+                let memo = self
+                    .base_memo
+                    .as_ref()
+                    .filter(|(h, b, _)| *h == head && *b == self.base)
+                    .and_then(|(_, _, resolved)| resolved.clone());
+                // A hit is a validated pass-through: one cheap rev-parse, and a memoized
+                // ref deleted mid-session re-walks instead of breaking every diff.
+                if let Some(m) = memo {
+                    let resolved = git::base_ref(&self.repo, Some(&m));
+                    if resolved.as_deref() != Some(m.as_str()) {
+                        self.base_memo = Some((head, self.base.clone(), resolved.clone()));
+                    }
+                    resolved
+                } else {
+                    let resolved = git::base_ref(&self.repo, self.base.as_deref());
+                    self.base_memo = Some((head, self.base.clone(), resolved.clone()));
+                    resolved
+                }
+            }
             Scope::Commit => self.selected_commit.clone(),
             Scope::LastTurn => None,
         };
